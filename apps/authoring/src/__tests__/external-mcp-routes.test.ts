@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { Ajv } from 'ajv';
 import cookie from '@fastify/cookie';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AgentDefinitionSchema,
@@ -15,6 +17,13 @@ import {
 } from '@cb/shared';
 import { buildApp } from '../bootstrap/app.js';
 import { loadEnv } from '../platform/config/env.js';
+import {
+  PROJECT_HISTORY_BUSINESS_HANDOFF,
+  PROJECT_HISTORY_INSTALL_PROMPT,
+  PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE,
+  PROJECT_HISTORY_RECOVERY_SUMMARIES,
+  renderProjectHistoryRecoveryPrompt,
+} from '../modules/external-mcp/handlers.js';
 import { registerExternalMcpRoutes } from '../modules/external-mcp/routes.js';
 
 const ORIGIN = 'https://test.43-160-242-46.sslip.io';
@@ -23,6 +32,25 @@ const TOKEN = `mat1.${'a'.repeat(43)}`;
 const CAPABILITY_ID = '00000000-0000-4000-8000-000000000004';
 const TASK_ID = '00000000-0000-4000-8000-000000000010';
 const NOW = '2026-08-06T00:00:00.000Z';
+const EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT =
+  '阅读 https://test.43-160-242-46.sslip.io/codex-plugin ，帮我安装 Combo 插件并创建一个新任务。';
+const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF =
+  'Combo 插件已经安装好了，请用 Combo 把我以前保存的 Project 里完成过的方法做成一个 Agent：先列出安全的 Project 名称让我选择来源，完整展示将分享的内容，等我确认后创建并核对分享；然后让我选择另一个 Project，并在为它创建的同一个新任务里连续验证两轮。';
+const EXPECTED_PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE =
+  'Combo 安装续接：上一步未完成的低敏摘要是“<summary>”。请只继续核对官方 Combo 0.8.6 安装、Test MCP 与当前任务的 Project-history 能力；不得把本续接任务当作 Project-history 业务已就绪，也不得再创建安装续接任务。修复并验证成功后，创建一个新的 Codex 顶层任务，并把下面这整段话作为唯一第一条消息原样发送：<exact-business-paragraph>';
+const EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES = [
+  '当前任务在 Combo 0.8.6 安装或升级前启动，尚未加载最新 Skill 和工具目录。',
+  'Combo 0.8.6 官方安装元数据尚未完成核对。',
+  'Combo Test MCP 元数据尚未通过核对。',
+  'Combo OAuth 尚未完成。',
+] as const;
+const FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS = [
+  '当前只在 Test 输出 Combo Plugin 0.8.6',
+  '`/codex-plugin` 当前只在 Test 环境提供',
+  '请使用已验收的 Test 安装页',
+  'Combo Plugin 0.8.6 已部署',
+  'Combo Plugin 0.8.6 已验收',
+] as const;
 
 function testEnv() {
   const sourceSha = 'a'.repeat(40);
@@ -46,6 +74,98 @@ function testEnv() {
     RESEND_API_BASE_URL: 'http://127.0.0.1:9',
   };
 }
+
+describe('Project-history fixed bootstrap request', () => {
+  it('exports the exact short installation request without implementation wires', () => {
+    expect(PROJECT_HISTORY_INSTALL_PROMPT).toBe(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT);
+    expect(PROJECT_HISTORY_INSTALL_PROMPT).not.toMatch(/[\r\n]/u);
+    expect(PROJECT_HISTORY_INSTALL_PROMPT).not.toMatch(
+      /create_agent_package|render_agent_package|schema|mcp login|plugin add|marketplace upgrade/iu,
+    );
+    expect(Buffer.byteLength(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8')).toBe(111);
+    expect(createHash('sha256').update(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8').digest('hex')).toBe(
+      'd93995bb094a7d58bd14b34dcc33869627a254694ad51444554441fbfe32525f',
+    );
+
+    const guideUrl = 'https://test.43-160-242-46.sslip.io/codex-plugin';
+    const markdownMirror = PROJECT_HISTORY_INSTALL_PROMPT.replace(
+      guideUrl,
+      `[${guideUrl}](${guideUrl})`,
+    );
+    for (const [rendered, expectedOccurrences] of [
+      [PROJECT_HISTORY_INSTALL_PROMPT, 1],
+      [markdownMirror, 2],
+    ] as const) {
+      const urls = [...rendered.matchAll(/https:\/\/[a-z0-9.-]+(?:\/[a-z0-9._~-]+)*/giu)].map(
+        (match) => match[0],
+      );
+      expect(urls).toHaveLength(expectedOccurrences);
+      expect(new Set(urls)).toEqual(new Set([guideUrl]));
+    }
+  });
+
+  it('exports the exact single-paragraph business handoff for the fresh task', () => {
+    expect(PROJECT_HISTORY_BUSINESS_HANDOFF).toBe(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
+    expect(PROJECT_HISTORY_BUSINESS_HANDOFF).not.toMatch(/[\r\n]/u);
+    expect(PROJECT_HISTORY_BUSINESS_HANDOFF).not.toMatch(
+      /create_agent_package|render_agent_package|schema|mcp login|plugin add|marketplace upgrade/iu,
+    );
+    expect(Buffer.byteLength(PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8')).toBe(345);
+    expect(
+      createHash('sha256').update(PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8').digest('hex'),
+    ).toBe('86035706c60165e4e32f01a8b28cd44960f4a607197cb44dc3dae91ebeb8564b');
+  });
+
+  it('freezes the recovery template and accepts only the ordered low-sensitivity summaries', () => {
+    expect(PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE).toBe(
+      EXPECTED_PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE,
+    );
+    expect(PROJECT_HISTORY_RECOVERY_SUMMARIES).toEqual(EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES);
+    expect(Object.isFrozen(PROJECT_HISTORY_RECOVERY_SUMMARIES)).toBe(true);
+
+    for (const summary of EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES) {
+      const prompt = renderProjectHistoryRecoveryPrompt(summary);
+      expect(prompt).toBe(
+        EXPECTED_PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE.replace('<summary>', summary).replace(
+          '<exact-business-paragraph>',
+          EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF,
+        ),
+      );
+      expect(prompt).not.toMatch(/<summary>|<exact-business-paragraph>/u);
+    }
+
+    for (const rejected of [
+      'raw error: unauthorized',
+      '/Users/example/project',
+      'threadId=abc',
+      'https://untrusted.example',
+      'token=secret',
+    ]) {
+      expect(() => renderProjectHistoryRecoveryPrompt(rejected)).toThrow(
+        'Project-history recovery summary is not allowed',
+      );
+    }
+  });
+
+  it('documents the 0.8.6 guide as an undeployed and unaccepted code contract', () => {
+    const documents = [
+      readFileSync(new URL('../../../../README.md', import.meta.url), 'utf8'),
+      readFileSync(new URL('../modules/external-mcp/README.md', import.meta.url), 'utf8'),
+    ];
+
+    for (const document of documents) {
+      expect(document).toContain('`CODE_CONTRACT`');
+      expect(document).toContain('`NOT_DEPLOYED`');
+      expect(document).toContain('`NOT_UAT`');
+      expect(document).toContain('不是当前 Test 运行输出的证据');
+      expect(document).toContain('合并并部署到 Test 前');
+      expect(document).toContain('完成真实 Test UAT 前');
+      for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
+        expect(document).not.toContain(claim);
+      }
+    }
+  });
+});
 
 describe('external MCP root route integration', () => {
   let app: FastifyInstance;
@@ -191,8 +311,125 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('Combo Plugin 0.8.4 Test');
-    expect(response.body).toContain('Project-history Agent Package');
+    expect(response.body).toContain('Combo Plugin 0.8.6 Test');
+    expect(response.body).toContain('Project-history Agent');
+    expect(response.body).toContain('<code>CODE_CONTRACT</code>');
+    expect(response.body).toContain('<code>NOT_DEPLOYED</code>');
+    expect(response.body).toContain('<code>NOT_UAT</code>');
+    expect(response.body).toContain('不是当前 Test 运行输出的证据');
+    expect(response.body).toContain('合并并部署到 Test 前');
+    expect(response.body).toContain('完成真实 Test UAT 前');
+    for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
+      expect(response.body).not.toContain(claim.replaceAll('`', ''));
+    }
+    expect(response.body).toContain(
+      `<textarea readonly>${EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT}</textarea>`,
+    );
+    expect(response.body.split(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT)).toHaveLength(2);
+    expect(response.body).toContain('Combo Plugin 安装在 Codex Host，不是安装到当前 Project');
+    expect(response.body).toContain('<strong>新安装：</strong>');
+    expect(response.body).toContain('<strong>旧版：</strong>');
+    expect(response.body).toContain('<strong>当前版：</strong>');
+    expect(response.body).toContain('official stable 有效 semver');
+    expect(response.body).toContain('五个 Project-history 工具齐全');
+    expect(response.body).toContain('readiness 实际调用成功且 OAuth ready');
+    expect(response.body).toContain('仅重试该失败的 readiness 一次');
+    expect(response.body).toContain('business create 调用数为 0');
+    expect(response.body).toContain('metadata 已是当前版不等于 OAuth ready');
+    expect(response.body).toContain('在创建 recovery 任务前恰好执行一次 Codex-managed OAuth/login');
+    expect(response.body).toContain('登录成功时用第一个 stale-catalog allowlist 摘要');
+    expect(response.body).toContain('登录失败或用户取消时改用第四个 OAuth allowlist 摘要');
+    expect(response.body).toContain('初始 bootstrap 的 recovery create 总预算始终为 1');
+    expect(response.body).toContain('上述两分支互斥且 business create 调用数为 0');
+    expect(response.body).toContain('<h2>BLOCK：零子任务</h2>');
+    expect(response.body).toContain('同名错源、orphaned Plugin、无效或不兼容版本');
+    expect(response.body).toContain(
+      'remove、overwrite、盲目 upgrade、替换 source、其他 mutation、business create 与 recovery create 的调用数都为 0',
+    );
+    expect(response.body).toContain(
+      'Test MCP 的 name、enabled/disabled 状态、transport.type 或 URL 只要存在明确 mismatch',
+    );
+    expect(response.body).toContain(
+      'current task 已加载五个 Project-history 工具时，任何非 authorization 的 readiness 或内部失败',
+    );
+    expect(response.body).toContain('不得伪装成 OAuth recovery');
+    expect(response.body).toContain('BLOCK 不得映射到四个 recovery 摘要');
+    expect(response.body).toContain('<h2>RECOVERY：仅限四个 typed 分类</h2>');
+    expect(response.body).toContain(
+      '<strong>第二个摘要：</strong>仅限 initial official Marketplace/Plugin absent 或有效旧版',
+    );
+    expect(response.body).toContain(
+      '<strong>第一个摘要：</strong>仅限 final official metadata 与 Test MCP gate 精确通过',
+    );
+    expect(response.body).toContain(
+      '<strong>第三个摘要：</strong>仅限 official mutation 已完成后 Test MCP entry 暂时 missing 或 unavailable',
+    );
+    expect(response.body).toContain('明确 mismatch 或 disabled 属于 BLOCK');
+    expect(response.body).toContain(
+      '<strong>第四个摘要：</strong>仅限 OAuth incomplete、login failure 或用户取消',
+    );
+    expect(response.body).toContain('其他状态不得创建 recovery');
+    expect(response.body).toContain('<code>metadataMutationAttempted=true</code>');
+    expect(response.body).toContain('mutation history 优先于 frozen task catalog 的表面快照');
+    expect(response.body).toContain('无论五工具表面为 true 或 false');
+    expect(response.body).toContain('都必须恰好 login 一次');
+    expect(response.body).toContain('登录后只创建 typed recovery，business create=0');
+    expect(response.body).not.toContain(
+      '同名错源、Plugin/Marketplace orphan 或非法版本用第二个 official-install-metadata 摘要创建 recovery',
+    );
+    expect(response.body).toContain(
+      '不得把 metadata current 冒充为 authorization 或 business ready',
+    );
+    expect(response.body).toContain('安装或升级不会让已经运行的任务热加载');
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
+    expect(response.body).toContain('target:{type:&quot;projectless&quot;}');
+    expect(response.body).toContain('navigate_to_codex_page(threadId)');
+    expect(response.body).toContain('projectless setup 任务不是');
+    expect(response.body).toContain('Combo 安装续接：上一步未完成的低敏摘要是“&lt;summary&gt;”');
+    expect(response.body).toContain('&lt;exact-business-paragraph&gt;');
+    for (const summary of EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES) {
+      expect(response.body).toContain(`<li><code>${summary}</code></li>`);
+    }
+    expect(response.body).not.toContain('exact-low-sensitivity-step-summary');
+    expect(response.body).toContain('recovery 不得声称已安装');
+    expect(response.body).toContain(
+      'create_thread({prompt:recoveryPrompt,target:{type:&quot;projectless&quot;}})',
+    );
+    expect(response.body).toContain('business 与 recovery 两类 create_thread');
+    expect(response.body).toContain('只返回一个非空 clientThreadId 时分类为 QUEUED');
+    expect(response.body).toContain(
+      '不得把 clientThreadId 传给 wait_threads、read_thread 或 navigate_to_codex_page',
+    );
+    expect(response.body).toContain('不得重复调用 create_thread');
+    expect(response.body).toContain('只有同一次 create_thread 同时返回 ready threadId 与 hostId');
+    expect(response.body).toContain('wait_threads({targets:[{threadId,hostId}],timeoutMs:0})');
+    expect(response.body).toContain('wait 成功后才最多调用一次');
+    expect(response.body).toContain('wait 失败时 navigate 调用数为 0');
+    expect(response.body).toContain('::created-thread{clientThreadId=&quot;...&quot;}');
+    expect(response.body).toContain('::created-thread{threadId=&quot;...&quot;}');
+    expect(response.body).toContain('该指令不能代替 ready/open 验证');
+    expect(response.body).toContain(
+      '即使随后的 snapshot 或 navigation 失败，也必须保留 threadId 机器指令这一独立最终行',
+    );
+    expect(response.body).toContain('不得丢弃指令后只返回 marker');
+    expect(response.body).toContain('PROJECT_HISTORY_BOOTSTRAP_CREATE_FAILED');
+    expect(response.body).toContain('PROJECT_HISTORY_BOOTSTRAP_OPEN_FAILED');
+    expect(response.body).toContain('create_thread 能力不可用也使用该 marker');
+    expect(response.body).toContain(
+      'wait_threads 或 navigate_to_codex_page 能力不可用也使用 OPEN_FAILED',
+    );
+    expect(response.body).toContain('用户 prose 只报告唯一固定 marker');
+    expect(response.body).not.toContain('PROJECT_HISTORY_BOOTSTRAP_WAIT_FAILED');
+    expect(response.body).toContain('setup 入口最多创建一个 recovery 任务');
+    expect(response.body).toContain('recovery 入口创建 recovery 任务的预算为 0');
+    expect(response.body).toContain('任何失败都不得继续链式创建');
+    expect(response.body).toContain('readiness 通过后最多创建一个固定 business 任务');
+    expect(response.body).toContain('仅供 Codex 自动处理失败时使用的命令 fallback');
+    expect(response.body.indexOf(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT)).toBeLessThan(
+      response.body.indexOf('仅供 Codex 自动处理失败时使用的命令 fallback'),
+    );
+    expect(response.body).toContain('Legacy current-task Codex Agent 流程');
+    expect(response.body).not.toContain('0.8.4');
     expect(response.body).toContain('plugin marketplace upgrade dangdang-tech-combo --json');
     expect(response.body).toContain('plugin list --json');
     expect(response.body).toContain('marketplaceInitiallyPresent');
@@ -211,9 +448,9 @@ describe('external MCP root route integration', () => {
     expect(marketplaceAddIndex).toBeGreaterThan(-1);
     expect(pluginAddIndex).toBeGreaterThan(marketplaceAddIndex);
     expect(finalCheckIndex).toBeGreaterThan(pluginAddIndex);
-    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.8.4');
+    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.8.6');
     expect(response.body).toContain('marketplace upgrade 最多执行一次');
-    expect(response.body).toContain('官方 Marketplace 需要刷新');
+    expect(response.body).toContain('已有 official Marketplace 但 Plugin 缺失或版本过旧');
     expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
     expect(response.body).toContain('mcp login combo');
     expect(response.body.match(/mcp login combo/gu)).toHaveLength(5);
@@ -266,7 +503,7 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain(
       '只有初始检查既有四工具、新五工具与全部 metadata 已同时满足时才留在当前任务',
     );
-    expect(response.body).toContain('新 Project-history 28-tool 流程要求 0.8.4');
+    expect(response.body).toContain('有效 semver &gt;=0.8.6');
     expect(response.body).toContain('Legacy 兼容不变');
     expect(response.body).toContain('后三项即使为空也显式写 []');
     expect(response.body).toContain('navigate_to_codex_page(threadId)');
@@ -281,7 +518,7 @@ describe('external MCP root route integration', () => {
     expect(response.body).not.toContain('$COMBO_CODEX_CLI');
   });
 
-  it.each(['preview', 'production'] as const)(
+  it.each(['development', 'preview', 'production'] as const)(
     'does not expose a cross-environment install command in %s',
     async (environment) => {
       const isolated = Fastify({ logger: false });
@@ -298,6 +535,8 @@ describe('external MCP root route integration', () => {
         expect(response.body).not.toContain('plugin marketplace add');
         expect(response.body).not.toContain('mcp login combo');
         expect(response.body).not.toContain('codex/combo-plugin-v2-ui');
+        expect(response.body).not.toContain('已验收的 Test 安装页');
+        expect(response.body).toContain('部署并验证后');
       } finally {
         await isolated.close();
       }

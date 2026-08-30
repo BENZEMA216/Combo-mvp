@@ -52,6 +52,38 @@ const MCP_PROTOCOL_VERSIONS = new Set(['2024-11-05', '2025-03-26', '2025-06-18',
 const LATEST_MCP_PROTOCOL_VERSION = '2025-11-25';
 const maybeCleanupOAuthArtifacts = createOAuthCleanupScheduler();
 
+/** `/codex-plugin` 页面供普通用户唯一复制的安装请求。 */
+export const PROJECT_HISTORY_INSTALL_PROMPT =
+  '阅读 https://test.43-160-242-46.sslip.io/codex-plugin ，帮我安装 Combo 插件并创建一个新任务。' as const;
+
+/** Combo 已完成 Host 级安装、授权和可用性校验后，新顶层任务的唯一首条请求。 */
+export const PROJECT_HISTORY_BUSINESS_HANDOFF =
+  'Combo 插件已经安装好了，请用 Combo 把我以前保存的 Project 里完成过的方法做成一个 Agent：先列出安全的 Project 名称让我选择来源，完整展示将分享的内容，等我确认后创建并核对分享；然后让我选择另一个 Project，并在为它创建的同一个新任务里连续验证两轮。' as const;
+
+/** 安装未就绪时，recovery 顶层任务的唯一固定模板。 */
+export const PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE =
+  'Combo 安装续接：上一步未完成的低敏摘要是“<summary>”。请只继续核对官方 Combo 0.8.6 安装、Test MCP 与当前任务的 Project-history 能力；不得把本续接任务当作 Project-history 业务已就绪，也不得再创建安装续接任务。修复并验证成功后，创建一个新的 Codex 顶层任务，并把下面这整段话作为唯一第一条消息原样发送：<exact-business-paragraph>' as const;
+
+/** recovery 只允许带入这四个已脱敏的精确步骤摘要。 */
+export const PROJECT_HISTORY_RECOVERY_SUMMARIES = Object.freeze([
+  '当前任务在 Combo 0.8.6 安装或升级前启动，尚未加载最新 Skill 和工具目录。',
+  'Combo 0.8.6 官方安装元数据尚未完成核对。',
+  'Combo Test MCP 元数据尚未通过核对。',
+  'Combo OAuth 尚未完成。',
+] as const);
+
+/** 只从固定 allowlist 生成 recovery prompt，拒绝任何自由文本或原始错误。 */
+export function renderProjectHistoryRecoveryPrompt(summary: string): string {
+  if (!PROJECT_HISTORY_RECOVERY_SUMMARIES.some((allowed) => allowed === summary)) {
+    throw new TypeError('Project-history recovery summary is not allowed');
+  }
+
+  return PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE.replace('<summary>', summary).replace(
+    '<exact-business-paragraph>',
+    PROJECT_HISTORY_BUSINESS_HANDOFF,
+  );
+}
+
 async function runScheduledOAuthCleanup(req: FastifyRequest): Promise<void> {
   try {
     await maybeCleanupOAuthArtifacts(req.server.infra.db);
@@ -676,21 +708,15 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
           ? 'Preview 环境不提供 Codex Plugin 安装。插件内的 MCP 地址是静态配置，不能用 Test 分支跨环境连接 Preview。'
           : environment === 'production'
             ? 'Production 安装尚未开放。只有独立插件版本把 MCP 地址切到 Production、合并 main 并完成验收后，这里才会提供稳定安装命令。'
-            : '当前开发环境不提供可复制的 Codex Plugin 安装命令。请使用已验收的 Test 安装页。';
+            : '当前开发环境不提供可复制的 Codex Plugin 安装命令。';
       const body = `<h1>Combo Codex 插件暂不可安装</h1><p>${escapeHtml(explanation)}</p>
+<p>Test 候选只有在合并、部署并验证后才可作为安装入口；当前环境不得复制或运行 Test 安装命令。</p>
 <p>此页面不会提供指向其他环境的命令，也不要求 Cookie、验证码或访问令牌。</p>`;
       return reply.code(200).type(HTML_CONTENT_TYPE).send(page('Combo Codex 插件', body));
     }
 
     const codex = '"/Applications/ChatGPT.app/Contents/Resources/codex"';
-    const projectHistoryPrompt = [
-      '请在当前 macOS Codex Desktop 顶层任务中完成“从我明确选择的 saved Project 历史提炼并分享 Agent Package”。',
-      '这是普通用户流程：不得使用 Hook、/hooks、trust 提示、Terminal session 文件、手工 shell、Project 路径、原始 transcript 或伪造 Host。只使用正式 Codex Host 的 saved-Project 选择与有界任务读取能力；Project/task/thread/session ID 只可作为 Host 内部定位，不得传给 Combo、写入 Draft、卡片、Package、share 或公开链接。',
-      '先确认 Combo Plugin exact 0.8.4、Test MCP 和 create_agent_package_draft、render_agent_package_draft、create_agent_package_share、read_agent_package_share、prepare_agent_package_run 五工具；缺失就按本页安装/升级状态机处理。只有工具明确返回 authorization 错误时才执行一次 Codex-managed OAuth 并只重试原调用。',
-      '调用 list_projects，把安全的名称 ordinal 列表显示给我并等待我明确选择；不要替我选择。然后用 Host 有界读取该 saved Project：按稳定顺序最多选择并逐一读取 20 个 eligible Codex 任务，discoveredThreadCount 表示已选数且必须等于 readThreadCount；其余同 Project matching/non-Codex 任务全部计入 omittedThreadCount，上限 10000，不得因 pinned 返回超过 50 条就少报。discovered/read/completedTurn/userVisibleMessage 任一计数为 0 时立即失败关闭，create_agent_package_draft 调用数必须为 0。不得声称完整覆盖；sourceEvidence 必须固定 user_selected_saved_project、best_effort、completeness/hostAttestation/sourceProjectionEnforced=not_proven、rawStored=false，并填入真实计数与三项固定 limitationReasons。',
-      '把 strict candidate 交给 create_agent_package_draft；随后必须调用 render_agent_package_draft 显示 exact typed Draft 卡，完整展示全部内容、来源计数和限制。只有我发送卡片固定的完整确认消息后，才可把 server confirmation token 交给 create_agent_package_share；token 不得显示在卡片、action、HTML 或公开对象中。',
-      '创建后立即仅用返回的 canonical high-entropy shareUrl 调用 read_agent_package_share；链接本身必须可读并返回权威 Package digest。分享是 public-by-link、不过期、不可撤回但不等于 marketplace publication。任何字段、摘要或回读不一致都停止，不得重建。',
-    ].join('');
+    const projectHistoryPrompt = PROJECT_HISTORY_INSTALL_PROMPT;
     const prompt = [
       '请在当前 macOS Codex Desktop 顶层任务中完成“从当前 task 建立并分享 Codex Agent”。',
       '检测或安装前只依据本任务中用户实际表达且对用户可见的需求、约束和结论，在本地提炼 sanitized draft={name,description,agent.instructions（不超过 8000 字符）,1–5 条唯一 starterPrompts,requirements}；此阶段对 Plugin helper、本地文件、tracked guidance、Git 与 Git network 的调用数都为 0，也不读取 repositoryUrl/sourceRef/commitSha/treeSha。recommended_plugins、in-app-browser-context、heartbeat、app-context、codex_delegation、source_thread_id 等 Host 注入 wrapper 不是用户需求，不得进入草稿、handoff 或 manifest。创建者必须自行声明这些公开文本已从当前 task 派生并完成必要去敏，但服务端不能证明 instructions 已脱敏或不含原文。',
@@ -708,7 +734,10 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
       'V1 sourceRef 必须是以字母或数字起始、只含 ASCII 字母数字及 ._/- 的完整 refs/heads/... 或 refs/tags/...，并满足无 ..、//、隐藏 component、.lock component 或尾部点/斜杠；任一不符立即 STOP，不能传给 helper 或创建工具。V0 ref 契约不在本流程内改写。',
       '得到明确确认并确认 worktree clean、HEAD 已 committed 后，由已安装 Skill 按参数契约调用 Plugin 内置 helper 的 verify-source mode 核验当前 root、sourceRef、commitSha、treeSha 与远端 ref；不得内嵌 shell 实现。',
       '验证通过才调用 create_codex_agent_share；成功后立即用服务返回的同一 shareUrl 调用 read_codex_agent_share，逐字段确认 manifest、manifestSha256 与 copyPrompt 和 create 结果完全一致，任何不一致都停止且不得重建。新链路对 create_extraction_task、list_capabilities、create_agent_project、commit_agent_revision、create_project_agent_share 等旧工具的调用数必须为 0。',
-    ].join('');
+    ]
+      .join('')
+      // Legacy current-task 语义保持不变；只与本页共用当前 Test Plugin 安装门槛。
+      .replaceAll('0.8.4', '0.8.6');
     const inspectionCommands =
       `${codex} plugin marketplace list --json\n` +
       `${codex} plugin list --marketplace dangdang-tech-combo --available --json\n` +
@@ -717,16 +746,22 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
     const marketplaceInstallCommand = `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-ui --json`;
     const pluginInstallCommand = `${codex} plugin add combo@dangdang-tech-combo --json`;
     const loginCommand = `${codex} mcp login combo`;
-    const body = `<h1>在 Codex 中使用 Combo Test</h1><p>当前指南对应 Project-history Agent Package 与 Combo Plugin 0.8.4 Test 候选。</p>
-<p>把下面这段普通用户流程复制到 Codex Desktop：</p><textarea readonly>${escapeHtml(projectHistoryPrompt)}</textarea>
-<h2>先做只读精确检查</h2><textarea readonly>${escapeHtml(inspectionCommands)}</textarea><p>Marketplace name 必须对应官方 Git source；同名错源、Plugin 已安装但 Marketplace 缺失、无效版本等异常组合立即停止。新 Project-history 流程要求 Plugin 是已安装且启用的有效 semver &gt;=0.8.4，MCP transport URL 必须精确指向 Combo Test；当前 Test 候选验收另要求 exact 0.8.4。不删除或覆盖现有配置。</p>
-<h2>官方 Marketplace 需要刷新</h2><p>官方 Marketplace 初始已存在且 Plugin 缺失或有效版本低于 0.8.4 时，先验证官方 source，再最多升级 Marketplace 一次并重新执行只读检查：</p><textarea readonly>${escapeHtml(upgradeCommands)}</textarea>
-<h2>Marketplace 与 Combo Plugin 都未安装</h2><p>仅在两者都不存在时先执行 Marketplace add：</p><textarea readonly>${escapeHtml(marketplaceInstallCommand)}</textarea><p>重新执行只读检查并确认 official source。无论 <code>marketplaceInitiallyPresent</code> 初值为何，只要此时已确认 official Marketplace 且 Plugin 仍缺失，就恰好执行一次：</p><textarea readonly>${escapeHtml(pluginInstallCommand)}</textarea><p>同一状态机内 Plugin add 最多一次；fresh install 固定按 Marketplace add → 重新读取并确认 official source → Plugin add → 最终检查执行。若新安装 Plugin 仍低于 0.8.4 且本轮尚未 upgrade，验证官方 source 后恰好补一次 Marketplace upgrade并重新读取；仍低于 0.8.4 就停止。整个状态机最多 upgrade 一次。若同名 source 不同则停止。</p>
-<h2>Codex-managed OAuth</h2><p>初始既有四工具、新五工具与 metadata 全满足而留在当前任务时不主动登录；只有工具明确返回 authorization 错误，才恰好登录一次并只重试原调用。只要进入安装或升级 continuation，则在最终 metadata 校验后、任何 create_thread 前恰好执行一次：</p><textarea readonly>${escapeHtml(loginCommand)}</textarea><p>失败或用户取消立即停止且不创建任务；续跑任务禁止再次登录或再次建任务。验证码只在 Combo Test 浏览器页面输入。</p>
-<ol><li>通过正式 Codex Host 确认 <code>create_agent_package_draft</code>、<code>render_agent_package_draft</code>、<code>create_agent_package_share</code>、<code>read_agent_package_share</code> 与 <code>prepare_agent_package_run</code>。</li><li>全程零重启；若当前任务仍缺工具，准确报告 Plugin tool catalog 阻断，不再登录或重建任务。</li></ol>
-<p>Legacy 兼容不变：Plugin 0.7.0 的既有四工具和 <code>read_project_agent_share</code> 仍可接收旧 share；只有新 Project-history 28-tool 流程要求 0.8.4。</p>
-<details><summary>Legacy current-task Codex Agent 流程（兼容，不用于本次 Project-history 测试）</summary><textarea readonly>${escapeHtml(prompt)}</textarea></details>
-<p>Combo 不要求你在聊天中粘贴 Cookie、验证码或访问令牌。</p>`;
+    const businessTaskCreate = `create_thread({prompt:${JSON.stringify(PROJECT_HISTORY_BUSINESS_HANDOFF)},target:{type:"projectless"}})`;
+    const recoverySummaryList = PROJECT_HISTORY_RECOVERY_SUMMARIES.map(
+      (summary) => `<li><code>${escapeHtml(summary)}</code></li>`,
+    ).join('');
+    const body = `<h1>在 Codex 中安装 Combo Test</h1><p>当前指南对应 Project-history Agent 与 Combo Plugin 0.8.6 Test 候选。</p><p><strong>候选发布状态：</strong><code>CODE_CONTRACT</code> / <code>NOT_DEPLOYED</code> / <code>NOT_UAT</code>。本页是 Combo Plugin 0.8.6 的候选代码合同，不是当前 Test 运行输出的证据；合并并部署到 Test 前保持 <code>NOT_DEPLOYED</code>，完成真实 Test UAT 前保持 <code>NOT_UAT</code>。</p>
+<h2>唯一需要复制的请求</h2><p>把下面这一整段原样发给 Codex Desktop：</p><textarea readonly>${escapeHtml(projectHistoryPrompt)}</textarea><p>这段请求保持短且固定；安装、升级、授权、校验和续跑规则都由本页承担，不塞进用户请求。</p>
+<h2>安装边界</h2><p>Combo Plugin 安装在 Codex Host，不是安装到当前 Project，也不会读写任何 Project 文件。执行此请求的 Codex 代为完成操作；不得要求普通用户手动打开 Terminal、输入命令、提供路径或内部 ID。安装或升级不会让已经运行的任务热加载新 Plugin catalog，不得伪造已加载状态。</p>
+<h2>三种初始状态</h2><ol><li><strong>新安装：</strong>official Marketplace 与 Combo Plugin 都缺失。代为完成 Marketplace add、重读并核对 official source、Plugin add 与最终 metadata 校验；任一安装 mutation 一旦开始，就永久记录 <code>metadataMutationAttempted=true</code>。</li><li><strong>旧版：</strong>official Marketplace 已存在，但 Combo Plugin 缺失或存在可安全升级的有效旧版。先核对 source，再最多 upgrade 一次，必要时 add Plugin 一次，然后重读校验；任一升级 mutation 一旦开始，也永久记录 <code>metadataMutationAttempted=true</code>。</li><li><strong>当前版：</strong>Combo Plugin 是已安装、已启用的 official stable 有效 semver 且版本至少为 0.8.6，Marketplace source 和 Test MCP 精确匹配。如果当前任务的五个 Project-history 工具齐全且已经加载，readiness 实际调用成功且 OAuth ready，则不安装或升级，直接进入 business create。只有 readiness 明确返回 authorization 错误时才登录一次，并仅重试该失败的 readiness 一次；登录未完成使用第四个摘要，重试后的非 authorization 失败进入 BLOCK。当前 Test 候选验收要求 exact 0.8.6。</li></ol>
+<p>metadata 已是当前版不等于 OAuth ready。如果 official stable 版本至少为 0.8.6 且 Test MCP 精确匹配，但当前任务的 Plugin catalog 仍旧或缺失新五工具，必须在创建 recovery 任务前恰好执行一次 Codex-managed OAuth/login。登录成功时用第一个 stale-catalog allowlist 摘要创建 recovery；登录失败或用户取消时改用第四个 OAuth allowlist 摘要创建 recovery。整个初始 bootstrap 的 recovery create 总预算始终为 1，上述两分支互斥且 business create 调用数为 0。</p>
+<p><code>metadataMutationAttempted=true</code> 后不得回退成 current 直通。mutation history 优先于 frozen task catalog 的表面快照：official Plugin metadata 与 Test MCP 的 post-mutation gate 都精确通过时，无论五工具表面为 true 或 false，都必须恰好 login 一次；登录成功使用第一个摘要，登录失败或取消使用第四个摘要。登录后只创建 typed recovery，business create=0。若 official installation metadata 尚未完成就使用第二个摘要；若 official mutation 已完成但 Test MCP entry 暂时 missing 或 unavailable 就使用第三个摘要。不得把 metadata current 冒充为 authorization 或 business ready。</p>
+<h2>BLOCK：零子任务</h2><p>BLOCK 不得映射到四个 recovery 摘要，也不得创建 business。以下硬阻断分类必须准确停止：</p><ol><li>同名错源、orphaned Plugin、无效或不兼容版本只做只读检查；remove、overwrite、盲目 upgrade、替换 source、其他 mutation、business create 与 recovery create 的调用数都为 0。</li><li>Test MCP 的 name、enabled/disabled 状态、transport.type 或 URL 只要存在明确 mismatch，就停止任何后续 mutation，business create 与 recovery create 的调用数都为 0；不得把 mismatch 或 disabled 伪装成第三个摘要。</li><li>current task 已加载五个 Project-history 工具时，任何非 authorization 的 readiness 或内部失败都保持零 mutation、零 child；不得伪装成 OAuth recovery。一次 OAuth retry 之后出现这类失败时同样 BLOCK。</li></ol><p>Host create/open 能力不可用时按后文固定 marker 阻断；这不授权改用 Terminal。</p>
+<h2>RECOVERY：仅限四个 typed 分类</h2><p>只有下面四类能够创建一次 recovery，其他状态不得创建 recovery；四个摘要的文字仍严格使用下列固定 allowlist：</p><ol><li><strong>第二个摘要：</strong>仅限 initial official Marketplace/Plugin absent 或有效旧版，在一次受控 mutation 尝试后 official installation metadata 仍未完成；错源、orphan、无效或不兼容版本不属于此类。</li><li><strong>第一个摘要：</strong>仅限 final official metadata 与 Test MCP gate 精确通过，mandatory OAuth 成功后 frozen task catalog 仍 stale；这包括未 mutation 的 current+stale，以及任何已经发生 metadata mutation 的当前任务。</li><li><strong>第三个摘要：</strong>仅限 official mutation 已完成后 Test MCP entry 暂时 missing 或 unavailable；明确 mismatch 或 disabled 属于 BLOCK。</li><li><strong>第四个摘要：</strong>仅限 OAuth incomplete、login failure 或用户取消；非 authorization readiness/internal failure 不属于此类。</li></ol><ol>${recoverySummaryList}</ol><p>不接受其他摘要；不得放入 raw 或自由错误、命令输出、路径、ID、凭据、URL、用户内容或秘密。用所选摘要精确替换 <code>&lt;summary&gt;</code>，用上述固定业务请求精确替换 <code>&lt;exact-business-paragraph&gt;</code>：</p><pre>${escapeHtml(PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE)}</pre><p>把替换后的整段记为 <code>recoveryPrompt</code>，setup 入口最多创建一个 recovery 任务，并用正式 Host 调用 <code>create_thread({prompt:recoveryPrompt,target:{type:&quot;projectless&quot;}})</code>。recovery 入口创建 recovery 任务的预算为 0，任何失败都不得继续链式创建；recovery 不得声称已安装，不得读取 Project 或创建 Agent。只有它修复并验证成功后，readiness 通过后最多创建一个固定 business 任务。</p>
+<h2>成功后必须创建新任务</h2><p>只有 <code>metadataMutationAttempted=false</code> 的当前版直通，或 recovery 任务已经同时验证 official metadata、Test MCP、五个 Project-history 工具、OAuth 和实际 readiness，才能使用正式 Host 精确调用一次 <code>${escapeHtml(businessTaskCreate)}</code>。固定业务请求必须是该 projectless setup 顶层任务的唯一首条 prompt。任何发生过安装或升级 mutation 的 bootstrap 都必须先进入上述 typed recovery，绝不能因表面工具可用就直接创建 business。不要留在安装任务中执行 Project-history 业务，也不要让用户手工新建任务或再次粘贴请求。</p><p>这个 projectless setup 任务不是用户后续选择的第二个 Project 所绑定的验收任务；它必须先让用户选择来源 Project，再让用户选择另一个 Project，然后另行创建一个绑定后者的新任务，两轮验证都必须在同一个后者任务里连续完成。</p>
+<h2>business 与 recovery 两类 create_thread 共用 Host 返回门禁</h2><p>business 与 recovery 两类 create_thread 在各自允许的创建预算内都只能调用一次，不得重复调用 create_thread。调用失败，或返回值既不是 QUEUED 也不是 READY 的结构时，固定报告 <code>PROJECT_HISTORY_BOOTSTRAP_CREATE_FAILED</code>，零重试，不暴露 raw error、路径、ID、用户内容或秘密；create_thread 能力不可用也使用该 marker。</p><p>只返回一个非空 clientThreadId 时分类为 QUEUED：在 final 中独立一行只向 Host 交付机器指令 <code>::created-thread{clientThreadId=&quot;...&quot;}</code>，用户 prose 不显示、重复或解释 ID；不得把 clientThreadId 传给 wait_threads、read_thread 或 navigate_to_codex_page，也不得声称 READY、已打开或业务已就绪。这一分支零重建。</p><p>只有同一次 create_thread 同时返回 ready threadId 与 hostId，且二者都是非空字符串，才分类为 READY。READY 也必须在 final 中独立一行向 Host 交付机器指令 <code>::created-thread{threadId=&quot;...&quot;}</code>，用户 prose 不显示、重复或解释 ID；该指令不能代替 ready/open 验证。仅该分支恰好调用一次 <code>wait_threads({targets:[{threadId,hostId}],timeoutMs:0})</code> 取得 immediate snapshot；wait 成功后才最多调用一次 <code>navigate_to_codex_page(threadId)</code>，wait 失败时 navigate 调用数为 0。即使随后的 snapshot 或 navigation 失败，也必须保留 threadId 机器指令这一独立最终行；用户 prose 只报告唯一固定 marker <code>PROJECT_HISTORY_BOOTSTRAP_OPEN_FAILED</code>，不得丢弃指令后只返回 marker。该失败分支不重试、不回滚或重建已创建任务，也不输出 raw error、路径、ID、用户内容或秘密。wait_threads 或 navigate_to_codex_page 能力不可用也使用 OPEN_FAILED。Host 阻断必须如实报告，不得要求用户手工打开 Terminal。</p>
+<details><summary>仅供 Codex 自动处理失败时使用的命令 fallback</summary><p>以下命令只供执行安装请求的 Codex 代为使用，不是要求普通用户手动执行。</p><h3>只读精确检查</h3><textarea readonly>${escapeHtml(inspectionCommands)}</textarea><p>Marketplace name 必须对应官方 Git source；同名错源、Plugin 已安装但 Marketplace 缺失、无效或不兼容版本等异常组合立即 BLOCK，不删除、覆盖、盲目升级或替换现有配置。Test MCP 的明确 mismatch 或 disabled 也立即 BLOCK。</p><h3>已有 official Marketplace 但 Plugin 缺失或版本过旧</h3><textarea readonly>${escapeHtml(upgradeCommands)}</textarea><p>核对 official source 后最多执行一次 Marketplace upgrade，再重读 metadata；开始执行就保持 metadataMutationAttempted=true。</p><h3>Marketplace 与 Combo Plugin 都缺失</h3><textarea readonly>${escapeHtml(marketplaceInstallCommand)}</textarea><p>重读并确认 official source 后，Plugin 仍缺失才恰好执行一次：</p><textarea readonly>${escapeHtml(pluginInstallCommand)}</textarea><p>fresh install 固定顺序是 Marketplace add、重读并确认 official source、Plugin add、最终检查。Plugin add 和 Marketplace upgrade 各至多一次。最终要求 installed=true、enabled=true、有效 semver &gt;=0.8.6 和精确 Test MCP；当前候选另要求 exact 0.8.6。任何 mutation 历史都禁止 bootstrap 直接创建 business。</p><h3>Codex-managed OAuth</h3><p>发生过安装或升级且 post-mutation metadata 与 Test MCP gate 精确通过时恰好执行一次：</p><textarea readonly>${escapeHtml(loginCommand)}</textarea><p>无论 frozen catalog 表面是否已有五工具，都只进入第一个或第四个 typed recovery。未 mutation 的当前版且可调用 Combo 时不主动登录；只有 readiness 明确返回 authorization 错误才登录一次并只重试该失败的 readiness 一次。登录失败或取消使用第四个摘要；重试后的非 authorization 失败进入 BLOCK。</p></details>
+<details><summary>Legacy current-task Codex Agent 流程（兼容，不用于 Project-history 短入口）</summary><textarea readonly>${escapeHtml(prompt)}</textarea></details><p>Legacy 兼容不变：Plugin 0.7.0 的既有四工具和 <code>read_project_agent_share</code> 仍可接收旧 share。Combo 不要求你在聊天中粘贴 Cookie、验证码或访问令牌。</p>`;
     return reply.code(200).type(HTML_CONTENT_TYPE).send(page('Combo Codex 插件安装', body));
   };
 }

@@ -409,9 +409,12 @@ pgDescribe('Project-history Agent PostgreSQL persistence', () => {
         WHERE confirmation_token_sha256 = ANY($1::char(64)[])`,
       [digests],
     );
-    expect(afterBounded.rows.map(({ digest }) => digest)).toEqual(
-      expect.arrayContaining([digests[2], digests[3], digests[4]]),
-    );
+    const afterBoundedDigests = afterBounded.rows.map(({ digest }) => digest);
+    expect(afterBoundedDigests).toHaveLength(3);
+    expect(afterBoundedDigests).toEqual(expect.arrayContaining([digests[3], digests[4]]));
+    expect(
+      afterBoundedDigests.filter((digest) => digests.slice(0, 3).includes(digest)),
+    ).toHaveLength(1);
 
     await expect(
       cleanupRetiredProjectHistoryAgentConfirmations(apiPool, 100),
