@@ -1231,6 +1231,20 @@ export class FakeObjectStore implements RuntimeObjectStore {
     if (!v) throw new Error(`FakeObjectStore: missing ${bucket}/${key}`);
     return v;
   }
+  async getObjectBounded(
+    bucket: Bucket,
+    key: string,
+    maxBytes: number,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<Uint8Array> {
+    if (opts?.abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new Error('FakeObjectStore: invalid byte limit');
+    }
+    const value = await this.getObject(bucket, key);
+    if (value.byteLength > maxBytes) throw new Error('FakeObjectStore: object exceeds byte limit');
+    return new Uint8Array(value);
+  }
   /** 测试便捷：直接放一段文本对象。 */
   seedText(bucket: string, key: string, text: string): void {
     this.objects.set(this.k(bucket, key), new TextEncoder().encode(text));

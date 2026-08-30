@@ -2,7 +2,7 @@
   "name": "@cb/runtime",
   "version": "0.0.0",
   "private": true,
-  "description": "试用端 runtime：能力项的「播放器」——按 capabilities.storage_key 从 MinIO 加载 CapabilityDefinition 注入 pi agent，带会话管理的流式对话 + 类 Claude Artifacts 产物画布。只依赖 @cb/shared，绝不 import authoring。",
+  "description": "试用端 Runtime：按 CapabilityDefinition 运行会话、Turn、Artifact 和计费，提供有界对象读取能力，绝不 import authoring 源码。",
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
@@ -19,6 +19,7 @@
     "@ag-ui/core": "0.0.57",
     "@ag-ui/encoder": "0.0.57",
     "@aws-sdk/client-s3": "^3.726.1",
+    "@cb/creator-agent-protocol": "workspace:*",
     "@cb/shared": "workspace:*",
     "@earendil-works/pi-agent-core": "^0.80.2",
     "@earendil-works/pi-ai": "^0.80.2",
