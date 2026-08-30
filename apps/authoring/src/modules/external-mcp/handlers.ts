@@ -12,6 +12,7 @@ import {
   OAUTH_PROTECTED_RESOURCE_METADATA_PATH,
   OAUTH_REGISTRATION_PATH,
   OAUTH_TOKEN_PATH,
+  releaseMetadataFromEnv,
   type OAuthAuthorizationServerMetadata,
   type OAuthErrorResponse,
   type OAuthProtectedResourceMetadata,
@@ -715,6 +716,7 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
       return reply.code(200).type(HTML_CONTENT_TYPE).send(page('Combo Codex 插件', body));
     }
 
+    const releaseMetadata = releaseMetadataFromEnv(req.server.infra.env);
     const codex = '"/Applications/ChatGPT.app/Contents/Resources/codex"';
     const projectHistoryPrompt = PROJECT_HISTORY_INSTALL_PROMPT;
     const prompt = [
@@ -750,7 +752,7 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
     const recoverySummaryList = PROJECT_HISTORY_RECOVERY_SUMMARIES.map(
       (summary) => `<li><code>${escapeHtml(summary)}</code></li>`,
     ).join('');
-    const body = `<h1>在 Codex 中安装 Combo Test</h1><p>当前指南对应 Project-history Agent 与 Combo Plugin 0.8.6 Test 候选。</p><p><strong>候选发布状态：</strong><code>CODE_CONTRACT</code> / <code>NOT_DEPLOYED</code> / <code>NOT_UAT</code>。本页是 Combo Plugin 0.8.6 的候选代码合同，不是当前 Test 运行输出的证据；合并并部署到 Test 前保持 <code>NOT_DEPLOYED</code>，完成真实 Test UAT 前保持 <code>NOT_UAT</code>。</p>
+    const body = `<h1>在 Codex 中安装 Combo Test</h1><p>当前指南对应 Project-history Agent 与 Combo Plugin 0.8.6 Test。</p><p><strong>Test 运行身份：</strong><code>TEST_RUNTIME</code> / <code>environment=${escapeHtml(releaseMetadata.environment)}</code> / <code>sourceSha=${escapeHtml(releaseMetadata.sourceSha)}</code> / <code>releaseId=${escapeHtml(releaseMetadata.releaseId)}</code> / <code>UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED</code>。本页由当前 Test Authoring runtime 生成；同源 <a href="/version.json">/version.json</a> 是部署身份权威。只有它返回 <code>environment=test</code>，且 <code>sourceSha</code> 与 <code>releaseId</code> 与本页运行身份逐字一致时，才继续安装；不一致立即停止。本页不声称普通用户 UAT 已通过，UAT 结论必须由独立验收证据证明。</p>
 <h2>唯一需要复制的请求</h2><p>把下面这一整段原样发给 Codex Desktop：</p><textarea readonly>${escapeHtml(projectHistoryPrompt)}</textarea><p>这段请求保持短且固定；安装、升级、授权、校验和续跑规则都由本页承担，不塞进用户请求。</p>
 <h2>安装边界</h2><p>Combo Plugin 安装在 Codex Host，不是安装到当前 Project，也不会读写任何 Project 文件。执行此请求的 Codex 代为完成操作；不得要求普通用户手动打开 Terminal、输入命令、提供路径或内部 ID。安装或升级不会让已经运行的任务热加载新 Plugin catalog，不得伪造已加载状态。</p>
 <h2>三种初始状态</h2><ol><li><strong>新安装：</strong>official Marketplace 与 Combo Plugin 都缺失。代为完成 Marketplace add、重读并核对 official source、Plugin add 与最终 metadata 校验；任一安装 mutation 一旦开始，就永久记录 <code>metadataMutationAttempted=true</code>。</li><li><strong>旧版：</strong>official Marketplace 已存在，但 Combo Plugin 缺失或存在可安全升级的有效旧版。先核对 source，再最多 upgrade 一次，必要时 add Plugin 一次，然后重读校验；任一升级 mutation 一旦开始，也永久记录 <code>metadataMutationAttempted=true</code>。</li><li><strong>当前版：</strong>Combo Plugin 是已安装、已启用的 official stable 有效 semver 且版本至少为 0.8.6，Marketplace source 和 Test MCP 精确匹配。如果当前任务的五个 Project-history 工具齐全且已经加载，readiness 实际调用成功且 OAuth ready，则不安装或升级，直接进入 business create。只有 readiness 明确返回 authorization 错误时才登录一次，并仅重试该失败的 readiness 一次；登录未完成使用第四个摘要，重试后的非 authorization 失败进入 BLOCK。当前 Test 候选验收要求 exact 0.8.6。</li></ol>

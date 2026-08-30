@@ -147,19 +147,20 @@ describe('Project-history fixed bootstrap request', () => {
     }
   });
 
-  it('documents the 0.8.6 guide as an undeployed and unaccepted code contract', () => {
+  it('documents the 0.8.6 guide without freezing a stale deployment or UAT state', () => {
     const documents = [
       readFileSync(new URL('../../../../README.md', import.meta.url), 'utf8'),
       readFileSync(new URL('../modules/external-mcp/README.md', import.meta.url), 'utf8'),
     ];
 
     for (const document of documents) {
-      expect(document).toContain('`CODE_CONTRACT`');
-      expect(document).toContain('`NOT_DEPLOYED`');
-      expect(document).toContain('`NOT_UAT`');
-      expect(document).toContain('不是当前 Test 运行输出的证据');
-      expect(document).toContain('合并并部署到 Test 前');
-      expect(document).toContain('完成真实 Test UAT 前');
+      expect(document).toContain('`/version.json`');
+      expect(document).toContain('`sourceSha`');
+      expect(document).toContain('`releaseId`');
+      expect(document).toContain('`UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED`');
+      expect(document).not.toContain('`NOT_DEPLOYED`');
+      expect(document).not.toContain('`NOT_UAT`');
+      expect(document).not.toContain('不是当前 Test 运行输出的证据');
       for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
         expect(document).not.toContain(claim);
       }
@@ -313,12 +314,16 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
     expect(response.body).toContain('Combo Plugin 0.8.6 Test');
     expect(response.body).toContain('Project-history Agent');
-    expect(response.body).toContain('<code>CODE_CONTRACT</code>');
-    expect(response.body).toContain('<code>NOT_DEPLOYED</code>');
-    expect(response.body).toContain('<code>NOT_UAT</code>');
-    expect(response.body).toContain('不是当前 Test 运行输出的证据');
-    expect(response.body).toContain('合并并部署到 Test 前');
-    expect(response.body).toContain('完成真实 Test UAT 前');
+    expect(response.body).toContain('<code>TEST_RUNTIME</code>');
+    expect(response.body).toContain('<code>environment=test</code>');
+    expect(response.body).toContain(`<code>sourceSha=${'a'.repeat(40)}</code>`);
+    expect(response.body).toContain(`<code>releaseId=release-${'a'.repeat(40)}</code>`);
+    expect(response.body).toContain('<code>UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED</code>');
+    expect(response.body).toContain('<a href="/version.json">/version.json</a>');
+    expect(response.body).toContain('与本页运行身份逐字一致');
+    expect(response.body).not.toContain('NOT_DEPLOYED');
+    expect(response.body).not.toContain('NOT_UAT');
+    expect(response.body).not.toContain('不是当前 Test 运行输出的证据');
     for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
       expect(response.body).not.toContain(claim.replaceAll('`', ''));
     }
