@@ -186,6 +186,16 @@ test('numstat counts additions and deletions and retains mode-only files', () =>
 test('governance edits cannot share a pull request with product edits', () => {
   const governance = policyPaths.map((path) => entry(path));
   assert.equal(assessPullRequest(contract, governance).mode, 'GOVERNANCE_ONLY');
+  assert.equal(
+    assessPullRequest(contract, [
+      entry('AGENTS.md'),
+      entry('.agents/skills/github-collaboration/SKILL.md'),
+      entry('.agents/skills/github-collaboration/references/governance-and-contributions.md'),
+      entry('.agents/skills/github-collaboration/references/quality-and-pull-requests.md'),
+      entry('.agents/skills/github-collaboration/references/worktree-lifecycle.md'),
+    ]).mode,
+    'GOVERNANCE_ONLY',
+  );
   assert.throws(
     () => assessPullRequest(contract, [...governance, entry('apps/runtime/src/product.ts')]),
     /governance-only/,
@@ -265,9 +275,13 @@ test('product edits must stay inside the declared rebuild surface', () => {
   assert.equal(
     assessPullRequest(
       contract,
-      ['AGENTS.md', 'ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
+      ['ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
     ).mode,
     'PRODUCT',
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('AGENTS.md'), entry('PROJECT.md')]),
+    /governance-only/,
   );
   assert.throws(
     () => assessPullRequest(contract, [entry('packages/creator-agent-snapshot/src/index.ts')]),
