@@ -19,7 +19,7 @@
 - `observability-redaction.test.ts` 使用内存 span 导出器验证查询凭据、客户端地址、请求头、正文和异常文本在导出前被删除，并验证浏览器事件的敏感 pathname 只形成固定路由桶。
 - `routes.test.ts` 核对端点总数、无重复、认证公开面和前置守卫。
 - `external-mcp-tools.test.ts` 验证无状态 MCP 工具的公开投影、显式资源身份、三类案例质量复核与发布门禁，并验证当前任务 Codex Agent 创建/读取不调用旧提取、Capability、Agent Project 或 Project Agent 链路。它还固定 Creator 的 commit/tree 安全确认 action、Receiver 的 strict `codex_agent_restore` 服务端完整构卡、digest/M/N 安全 action，以及 Agent Builder 单个事实可完整承载合法最大 requirements 并拒绝超过二万字符的事实。
-- `external-mcp-routes.test.ts` 验证 OAuth 后的 MCP transport、前二十项兼容工具与末尾三项 Codex Agent 工具发现、Agent Builder MCP App 资源、strict restore 输入、带 `starterOrdinal` 的 prepare 输入输出，以及手写 JSON Schema 与共享契约的一致性。
+- `external-mcp-routes.test.ts` 验证 OAuth 后的 MCP transport、二十三项 legacy 工具与五项 Project-history 工具发现、Agent Builder MCP App 资源、strict restore 输入、带 `starterOrdinal` 的 prepare 输入输出，以及手写 JSON Schema 与共享契约的一致性。它还锁定 `/codex-plugin` 的单行安装请求、固定 business/recovery prompt、BLOCK 与四类 typed recovery 边界、metadata mutation 历史优先级，以及任务创建后的 QUEUED、READY 与打开失败合同。
 - `codex-agent-share.pg.test.ts` 在显式开启时用最小权限 `combo_api` 连接专用 PostgreSQL，验证最长合法 instructions/starter 的 U+0001、CRLF、合法 astral 和 Host delimiter 文本经过 jsonb、公开读取、摘要与 prepare 后逐字不变，并确认 NUL 和未配对 surrogate 在 schema 边界失败且不新增行。
 - `agent-builder-app.test.ts` 用宿主仿真验证 MCP App 的 initialize/initialized 生命周期、工具结果渲染、二万字符事实与五条完整 starter、标准 `ui/message`、兼容消息回退与固定 HTML 摘要。
 - `task-service.test.ts` 验证任务状态机、建任务幂等、重试和过期对账。
