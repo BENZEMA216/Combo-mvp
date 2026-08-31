@@ -31,6 +31,7 @@
     "apps/authoring/tsconfig.vitest.json",
     "docs/deployment-topology.md",
     "docs/knowledge-agent-test-acceptance.md",
+    "docs/leshouying-test-acceptance.md",
     "infra/Dockerfile.api",
     "infra/Dockerfile.runtime",
     "pnpm-lock.yaml",
