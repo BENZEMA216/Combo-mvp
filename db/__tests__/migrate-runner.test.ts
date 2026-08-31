@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0011_recharge_qr_only.sql');
+    expect(plan.head).toBe('0016_project_history_agent_flow.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -23,6 +23,16 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual(migrations);
     expect(plan.pending).toEqual([]);
+  });
+
+  it('plans only the immutable 0016 file when upgrading the live 0015 ledger prefix', () => {
+    const oldHeadIndex = migrations.indexOf('0015_project_agent_shares.sql');
+    const applied = migrations.slice(0, oldHeadIndex + 1);
+    const plan = planMigrations(migrations, applied, migrationHead(migrations));
+
+    expect(oldHeadIndex).toBeGreaterThan(0);
+    expect(plan.applied).toEqual(applied);
+    expect(plan.pending).toEqual(['0016_project_history_agent_flow.sql']);
   });
 
   it('defaults MIGRATION_RUNS to one and accepts only the explicit Test values', () => {
@@ -54,7 +64,7 @@ describe('migration runner contract', () => {
 
   it('rejects a release whose expected migration head differs from source', () => {
     expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
-      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0011_recharge_qr_only\.sql/,
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0016_project_history_agent_flow\.sql/,
     );
   });
 
