@@ -13,6 +13,7 @@ export const INSUFFICIENT_EVIDENCE_ANSWER = '现有知识中没有足够证据�
 const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 const ANSWER_MAX_UTF8_BYTES = 32 * 1_024;
+const ZERO_SOURCE_SHA = '0'.repeat(40);
 
 const CanonicalUuidSchema = z
   .string()
@@ -23,7 +24,13 @@ export const KnowledgeSha256DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64
 export type KnowledgeSha256Digest = z.infer<typeof KnowledgeSha256DigestSchema>;
 
 const ReleaseIdSchema = z.string().regex(/^release[.]agent-package[.][0-9a-f]{32}$/u);
-const SourceShaSchema = z.string().regex(/^[0-9a-f]{40}$/u);
+const SourceShaSchema = z
+  .string()
+  .regex(/^[0-9a-f]{40}$/u)
+  .refine(
+    (value) => value !== ZERO_SOURCE_SHA,
+    'Test Runtime source SHA cannot use the development placeholder',
+  );
 const RuntimeReleaseIdSchema = z.string().regex(/^release-[0-9a-f]{40}$/u);
 const PolicyVersionSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u);
 const ChunkIdSchema = z.string().regex(/^chunk[.]knowledge[.][0-9a-f]{32}$/u);

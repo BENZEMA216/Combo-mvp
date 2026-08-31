@@ -9,6 +9,8 @@ import { FakeDb, FakeObjectStore } from './fakes.js';
 
 const ME = 'user-me';
 const OTHER = 'user-other';
+const PACKAGE_DIGEST = `sha256:${'a'.repeat(64)}`;
+const RELEASE_ID = `release.agent-package.${'1'.repeat(32)}`;
 
 function seedDefinition(
   store: FakeObjectStore,
@@ -71,15 +73,63 @@ describe('loadCapability 权限闸', () => {
     expect(result.kind).toBe('not_found');
   });
 
-  it('version 不认识 → unsupported_version（能力格式过新）', async () => {
+  it('strict Agent Package Capability v2 → unsupported_version（旧 Runtime 明确拒绝）', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
     const cap = db.seedCapability({ owner_user_id: ME });
-    seedDefinition(store, cap.storage_key, { version: 2 });
+    store.seedText(
+      CAPABILITY_BUCKET,
+      cap.storage_key,
+      JSON.stringify({
+        version: 2,
+        protocol: 'combo.agent-package-capability/2',
+        release: {
+          protocol: 'combo.agent-package-release/1',
+          releaseId: RELEASE_ID,
+          packageDigest: PACKAGE_DIGEST,
+        },
+      }),
+    );
 
     const result = await loadCapability(db, store, cap.id, ME);
     expect(result.kind).toBe('unsupported_version');
   });
+
+  it.each([
+    ['protocol only', { protocol: 'combo.agent-package-capability/2' }],
+    [
+      'release only',
+      {
+        release: {
+          protocol: 'combo.agent-package-release/1',
+          releaseId: RELEASE_ID,
+          packageDigest: PACKAGE_DIGEST,
+        },
+      },
+    ],
+    [
+      'protocol and release',
+      {
+        protocol: 'combo.agent-package-capability/2',
+        release: {
+          protocol: 'combo.agent-package-release/1',
+          releaseId: RELEASE_ID,
+          packageDigest: PACKAGE_DIGEST,
+        },
+      },
+    ],
+  ])(
+    'version 1 混入 Agent Package reserved field（%s）→ invalid_definition，不执行 legacy 提示词',
+    async (_caseName, reservedFields) => {
+      const db = new FakeDb();
+      const store = new FakeObjectStore();
+      const cap = db.seedCapability({ owner_user_id: ME });
+      seedDefinition(store, cap.storage_key, reservedFields);
+
+      const result = await loadCapability(db, store, cap.id, ME);
+      expect(result.kind).toBe('invalid_definition');
+    },
+  );
 
   it('定义结构坏了（version 对但缺 instructions）→ invalid_definition', async () => {
     const db = new FakeDb();

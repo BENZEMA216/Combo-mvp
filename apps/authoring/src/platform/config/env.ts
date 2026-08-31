@@ -10,6 +10,8 @@ import { z } from 'zod';
 export const OFFICIAL_RESEND_API_BASE_URL = 'https://api.resend.com';
 export const PRODUCTION_RESEND_FROM_EMAIL = 'Combo <auth@buildwithcombo.com>';
 export const MAX_PUBLIC_APP_ORIGINS = 8;
+export const AGENT_PACKAGE_PUBLISHER_TEST_GATE_ENV =
+  'COMBO_AGENT_PACKAGE_PUBLISHER_TEST_GATE' as const;
 
 const emptyToUndefined = (value: unknown): unknown => (value === '' ? undefined : value);
 const booleanFromString = z
@@ -36,6 +38,7 @@ const EnvSchema = z.object({
   COMBO_WEB_ASSET_MANIFEST: z
     .string()
     .default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_WEB_ASSET_MANIFEST),
+  COMBO_AGENT_PACKAGE_PUBLISHER_TEST_GATE: z.string().default(''),
 
   OTEL_SERVICE_NAME: z.string().default('cb-authoring'),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -86,6 +89,53 @@ const EnvSchema = z.object({
 });
 
 export type Env = z.infer<typeof EnvSchema>;
+
+const AgentPackagePublisherTestGateSchema = z
+  .object({
+    protocol: z.literal('combo.agent-package-publisher-test-gate/1'),
+    sourceSha: z.string().regex(/^[0-9a-f]{40}$/u),
+    publisherUserId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
+    packageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+  })
+  .strict()
+  .readonly();
+
+export type AgentPackagePublisherTestGate = z.infer<typeof AgentPackagePublisherTestGateSchema>;
+
+/**
+ * 解析唯一受控 Test Publisher gate。缺失或 candidate 漂移时路由保持 404；任何非法配置只报告键名。
+ */
+export function agentPackagePublisherTestGateFromEnv(
+  env: Env,
+): AgentPackagePublisherTestGate | null {
+  const raw = env.COMBO_AGENT_PACKAGE_PUBLISHER_TEST_GATE;
+  if (raw === '') return null;
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`[env] ${AGENT_PACKAGE_PUBLISHER_TEST_GATE_ENV} 配置不合法`);
+  }
+  const parsed = AgentPackagePublisherTestGateSchema.safeParse(decoded);
+  if (!parsed.success || JSON.stringify(parsed.data) !== raw) {
+    throw new Error(`[env] ${AGENT_PACKAGE_PUBLISHER_TEST_GATE_ENV} 配置不合法`);
+  }
+
+  let environment: string;
+  try {
+    environment = releaseMetadataFromEnv(env).environment;
+  } catch {
+    throw new Error(`[env] ${AGENT_PACKAGE_PUBLISHER_TEST_GATE_ENV} 配置不合法`);
+  }
+  if (env.PROCESS !== 'api' || environment !== 'test') {
+    throw new Error(`[env] ${AGENT_PACKAGE_PUBLISHER_TEST_GATE_ENV} 只能用于 Test API`);
+  }
+  if (parsed.data.sourceSha !== env.COMBO_SOURCE_SHA) return null;
+  return parsed.data;
+}
 
 function containsControlCharacter(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
@@ -335,11 +385,13 @@ export function loadEnv(): Env {
     console.warn(`[env] dev/test 环境变量校验失败，使用默认配置：${keys.join(', ')}`);
     cached = EnvSchema.parse({ NODE_ENV: process.env.NODE_ENV, PROCESS: processType });
     assertReleaseMetadata(cached);
+    agentPackagePublisherTestGateFromEnv(cached);
     return cached;
   }
 
   cached = parsed.data;
   assertReleaseMetadata(cached);
+  agentPackagePublisherTestGateFromEnv(cached);
 
   if (cached.PROCESS === 'api') {
     try {
