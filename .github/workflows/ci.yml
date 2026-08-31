@@ -182,8 +182,8 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Build shared first
-        run: pnpm -F @cb/shared build
+      - name: Build Runtime workspace dependencies first
+        run: pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/shared build
 
       - name: Install database and Redis clients
         run: |

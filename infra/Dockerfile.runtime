@@ -1,5 +1,5 @@
 # 试用端 runtime（消费链路）镜像：Fastify HTTP + AG-UI SSE + pi 执行层，单进程 api。
-#   多阶段：build 阶段装全依赖 + tsc -b（shared 先于 runtime）；runtime 阶段只带产物 + 生产依赖。
+#   多阶段：build 阶段装全依赖 + tsc -b（protocol/shared 先于 runtime）；runtime 阶段只带产物 + 生产依赖。
 #   与 Dockerfile.api 同模子，但只构建 @cb/runtime；无 Go 导入助手、邮件适配器或多进程分叉。
 FROM node:24-slim AS build
 WORKDIR /app
@@ -10,8 +10,10 @@ COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
 RUN pnpm install --frozen-lockfile
-# shared 先 build（runtime 依赖其 dist + .d.ts），再 build runtime
-RUN pnpm -F @cb/shared build && pnpm -F @cb/runtime build
+# protocol/shared 先 build（runtime 依赖其 dist + .d.ts），再 build runtime
+RUN pnpm -F @cb/creator-agent-protocol build \
+ && pnpm -F @cb/shared build \
+ && pnpm -F @cb/runtime build
 
 FROM node:24-slim AS runtime
 WORKDIR /app
@@ -19,10 +21,12 @@ ENV NODE_ENV=production
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 # 工作区清单 + 各包 package.json（--prod install 需要）
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
+COPY --from=build /app/packages/creator-agent-protocol/package.json ./packages/creator-agent-protocol/package.json
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /app/apps/runtime/package.json ./apps/runtime/package.json
 RUN pnpm install --prod --frozen-lockfile
-# 产物：shared dist + runtime dist
+# 产物：protocol/shared dist + runtime dist
+COPY --from=build /app/packages/creator-agent-protocol/dist ./packages/creator-agent-protocol/dist
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/apps/runtime/dist ./apps/runtime/dist
 EXPOSE 3100

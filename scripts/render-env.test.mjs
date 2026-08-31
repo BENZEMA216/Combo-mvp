@@ -147,3 +147,27 @@ test('renders the optional controlled Publisher gate only as one API secret refe
   }
   rmSync(dirname(path), { recursive: true, force: true });
 });
+
+test('renders the optional Knowledge Agent gate only as one Runtime secret reference', () => {
+  const manifest = fixtureManifest();
+  const path = join(mkdtempSync(join(tmpdir(), 'render-env-knowledge-gate-')), 'release.json');
+  writeFileSync(path, serializeReleaseManifest(manifest));
+  const digest = releaseManifestDigest(manifest);
+  for (const environment of ['test', 'preview', 'production']) {
+    const apps = render(environment, 'apps', path, digest);
+    assert.equal(
+      [...apps.matchAll(/name: COMBO_KNOWLEDGE_AGENT_TEST_GATE/g)].length,
+      1,
+      `${environment} must wire the gate only into the Runtime deployment`,
+    );
+    assert.match(
+      apps,
+      /name: COMBO_KNOWLEDGE_AGENT_TEST_GATE\s*\n\s+valueFrom:\s*\n\s+secretKeyRef:\s*\n\s+key: COMBO_KNOWLEDGE_AGENT_TEST_GATE\s*\n\s+name: combo-env\s*\n\s+optional: true/,
+    );
+    assert.doesNotMatch(
+      apps,
+      /combo[.]knowledge-agent-runtime-test-gate|publisherUserId|packageDigest|validatorPolicyVersion|questionDigest/,
+    );
+  }
+  rmSync(dirname(path), { recursive: true, force: true });
+});
