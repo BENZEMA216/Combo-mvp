@@ -55,6 +55,18 @@ function setProductionInfrastructure(): void {
 }
 
 describe('runtime authentication configuration', () => {
+  it('uses the documented three-use and one-cent fallback outside production', async () => {
+    for (const key of MANAGED_KEYS) delete process.env[key];
+    process.env.NODE_ENV = 'test';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    const env = loadEnv();
+
+    expect(env.RUNTIME_BILLING_FREE_USES).toBe(3);
+    expect(env.RUNTIME_BILLING_UNIT_PRICE_CENTS).toBe(1);
+  });
+
   it('does not expose remote identity-provider or local token-signing configuration', async () => {
     setProductionInfrastructure();
     vi.resetModules();
@@ -131,6 +143,15 @@ describe('runtime authentication configuration', () => {
     expect(message).toContain('RUNTIME_BILLING_FREE_USES');
     expect(message).toContain('RUNTIME_BILLING_UNIT_PRICE_CENTS');
     expect(message).not.toMatch(/identity|issuer|jwks|audience|session.*secret/i);
+  });
+
+  it('does not allow production to inherit the one-cent fallback', async () => {
+    setProductionInfrastructure();
+    delete process.env.RUNTIME_BILLING_UNIT_PRICE_CENTS;
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    expect(() => loadEnv()).toThrowError('RUNTIME_BILLING_UNIT_PRICE_CENTS');
   });
 
   it('validates configurable free uses and integer cent price', async () => {

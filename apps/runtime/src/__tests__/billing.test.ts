@@ -42,6 +42,7 @@ async function fixture(
     freeUses?: number;
     unitPriceCents?: number;
     sweepIntervalMs?: number;
+    omitBillingPolicy?: boolean;
   } = {},
 ) {
   const db = new FakeDb();
@@ -62,10 +63,14 @@ async function fixture(
     agentFactory: handle.factory,
     idleTimeoutMs: 60_000,
     interrupts,
-    billingPolicy: {
-      freeUses: options.freeUses ?? 3,
-      unitPriceCents: options.unitPriceCents ?? 100,
-    },
+    ...(options.omitBillingPolicy
+      ? {}
+      : {
+          billingPolicy: {
+            freeUses: options.freeUses ?? 3,
+            unitPriceCents: options.unitPriceCents ?? 100,
+          },
+        }),
     ...(options.sweepIntervalMs === undefined ? {} : { sweepIntervalMs: options.sweepIntervalMs }),
     log: silentLog,
   });
@@ -128,6 +133,29 @@ function serializeTransactions(db: FakeDb): void {
 }
 
 describe('Agent 使用计费', () => {
+  it('未注入策略时默认三次免费，后续固定按一分计费', async () => {
+    const { db, handle, runner, start } = await fixture(undefined, {
+      omitBillingPolicy: true,
+    });
+    for (let index = 1; index <= 3; index += 1) {
+      expect((await start(index)).status).toBe('started');
+      await waitForTerminalCount(db, index);
+    }
+
+    await expect(start(4)).resolves.toEqual({
+      status: 'recharge_required',
+      balanceCents: 0n,
+      requiredCents: 1n,
+    });
+    expect([...db.usageCharges.values()].map((charge) => charge.unit_price_cents)).toEqual([
+      1n,
+      1n,
+      1n,
+    ]);
+    expect(handle.calls).toHaveLength(3);
+    await runner.dispose();
+  });
+
   it('前三次成功使用免费，第四次余额不足且不创建 Turn、Message 或 Agent', async () => {
     const { db, handle, runner, start } = await fixture();
     for (let index = 1; index <= 3; index += 1) {
