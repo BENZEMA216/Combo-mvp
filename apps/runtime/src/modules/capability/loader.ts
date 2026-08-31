@@ -27,6 +27,8 @@ export type LoadCapabilityResult =
 
 export type CapabilityAccess = 'consume' | 'owner';
 
+const AGENT_PACKAGE_CAPABILITY_RESERVED_FIELDS = ['protocol', 'release'] as const;
+
 interface CapabilityDbRow {
   id: string;
   owner_user_id: string;
@@ -72,6 +74,20 @@ export async function loadCapability(
   // version 前置判定：不是当前认识的 1 → 格式过新（与「结构坏了」区分，报不同人话）。
   const version = (raw as { version?: unknown } | null)?.version;
   if (version !== 1) return { kind: 'unsupported_version' };
+
+  // Agent Package Capability v2 deliberately owns these top-level fields. A value that claims
+  // legacy version 1 while carrying either field is malformed, not a compatible v1 extension.
+  // CapabilityDefinitionSchema currently strips unknown keys, so this check must happen first or
+  // a rolling-deployment hybrid could execute mutable legacy instructions under a v2 projection.
+  if (
+    raw !== null &&
+    typeof raw === 'object' &&
+    AGENT_PACKAGE_CAPABILITY_RESERVED_FIELDS.some((field) =>
+      Object.prototype.hasOwnProperty.call(raw, field),
+    )
+  ) {
+    return { kind: 'invalid_definition' };
+  }
 
   const parsed = CapabilityDefinitionSchema.safeParse(raw);
   if (!parsed.success) return { kind: 'invalid_definition' };

@@ -186,6 +186,16 @@ test('numstat counts additions and deletions and retains mode-only files', () =>
 test('governance edits cannot share a pull request with product edits', () => {
   const governance = policyPaths.map((path) => entry(path));
   assert.equal(assessPullRequest(contract, governance).mode, 'GOVERNANCE_ONLY');
+  assert.equal(
+    assessPullRequest(contract, [
+      entry('AGENTS.md'),
+      entry('.agents/skills/github-collaboration/SKILL.md'),
+      entry('.agents/skills/github-collaboration/references/governance-and-contributions.md'),
+      entry('.agents/skills/github-collaboration/references/quality-and-pull-requests.md'),
+      entry('.agents/skills/github-collaboration/references/worktree-lifecycle.md'),
+    ]).mode,
+    'GOVERNANCE_ONLY',
+  );
   assert.throws(
     () => assessPullRequest(contract, [...governance, entry('apps/runtime/src/product.ts')]),
     /governance-only/,
@@ -265,16 +275,16 @@ test('product edits must stay inside the declared rebuild surface', () => {
   assert.equal(
     assessPullRequest(
       contract,
-      ['AGENTS.md', 'ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
+      ['ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
     ).mode,
     'PRODUCT',
   );
   assert.throws(
-    () => assessPullRequest(contract, [entry('packages/creator-agent-snapshot/src/index.ts')]),
-    /outside the R1-R3 rebuild scope/,
+    () => assessPullRequest(contract, [entry('AGENTS.md'), entry('PROJECT.md')]),
+    /governance-only/,
   );
   assert.throws(
-    () => assessPullRequest(contract, [entry('infra/k8s/production.yaml')]),
+    () => assessPullRequest(contract, [entry('packages/creator-agent-snapshot/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
   );
 });
@@ -284,6 +294,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     '.github/workflows/ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
+    'docs/leshouying-test-acceptance.md',
     'scripts/check-production-artifacts.sh',
   ];
   const allowedKnowledgeAuthoringFiles = [
@@ -383,7 +394,8 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/authoring/src/platform/infra/object-store-v2.ts',
     'apps/web/src/pages/KnowledgeAgentPage.tsx',
     'docs/knowledge-agent-production-acceptance.md',
-    'docs/leshouying-test-acceptance.md',
+    'docs/leshouying-production-acceptance.md',
+    'docs/leshouying-test-acceptance-v2.md',
     'infra/Dockerfile.resend-mock',
     'infra/Dockerfile.web',
     'infra/docker-compose.yml',

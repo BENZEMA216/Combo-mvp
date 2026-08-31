@@ -42,6 +42,12 @@ Release ID 和 exact Package digest，作为 Registry、分享入口与 Receiver
 身份与内容；无状态校验无法阻止同一个 Release ID 被重新配到另一摘要，Registry 必须用一次写入和冲突
 比对实现不可变性。持久化、公开解析、下载授权和发布者认证属于后续 Registry 服务。
 
+显式 `agent-package-capability` 子路径定义 `combo.agent-package-capability/2`，作为旧 Capability 索引到
+Agent Package 产品线的单向迁移投影。它只嵌入一个 exact Release，不复制 Package 清单、指令、知识、
+工具、价格或运行状态。数字版本固定为 `2`，确保只认识 `CapabilityDefinition.version=1` 的旧 Runtime
+明确报格式过新，而不是在滚动发布期间静默丢弃新字段并按旧提示词执行。Registry 和 Session 仍必须分别
+保证 Release 不可重绑与首次运行前冻结；本合同不提供这两种持久化保证。
+
 显式 `agent-package-draft` 子路径定义 `combo.agent-package-creator-request/1` 与
 `combo.agent-package-draft/1`。前者只携带创作者的一句制作要求，不保存本机路径、任务标识或来源正文；
 受信调用方负责把它绑定到已经确认的当前 Project，终端验证入口暂时只绑定当前工作目录，Combo Plugin 的
@@ -150,6 +156,8 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   transcript，也不执行提取、编译、发布或推理。
 - `@cb/creator-agent-protocol/agent-package-release`：暴露不可变 Release ID 到 exact Package digest 的最小
   规范引用；它不保存或解析链接，不访问 Registry，也不复制 Agent 定义。
+- `@cb/creator-agent-protocol/agent-package-capability`：暴露旧 Capability 到 exact Release 的严格 V2
+  迁移投影；它不承载 Package 内容、知识绑定、价格、权益、Session 或执行结果。
 - `@cb/creator-agent-protocol/creator-authorization`：只暴露 path-free 授权卡 claims schema、固定 scope
   与脱敏错误分类；不暴露 mint、handle、consume、redemption transport 或 Project identity。
 - `@cb/creator-agent-protocol/desktop-current-conversation-receipt`：只暴露真实 Desktop current-task Draft

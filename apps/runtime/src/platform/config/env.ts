@@ -79,7 +79,7 @@ const EnvSchema = z
       .int()
       .positive()
       .max(Number.MAX_SAFE_INTEGER)
-      .default(100),
+      .default(1),
     // 从 Turn 中止到数据库、Kubernetes 与连接关闭共用同一个绝对截止时间。
     RUNTIME_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(15_000),
 
