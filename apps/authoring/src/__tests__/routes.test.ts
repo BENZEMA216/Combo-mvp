@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 21 endpoints (account 4 + task 8 + capability 4 + billing 5)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(21);
+  it('registers exactly 23 declared endpoints (including two gated Package Registry routes)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(23);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -50,7 +50,7 @@ describe('route registry self-check', () => {
     for (const endpoint of ALL_ENDPOINTS) {
       if (endpoint.method === 'GET' || exempt.has(endpoint.url)) continue;
       expect(
-        (endpoint.preHandlers ?? []).length,
+        (endpoint.onRequest ?? []).length + (endpoint.preHandlers ?? []).length,
         `${String(endpoint.method)} ${endpoint.url} 缺浏览器来源守卫`,
       ).toBeGreaterThanOrEqual(2);
     }
@@ -84,6 +84,25 @@ describe('route registry self-check', () => {
     expect(billing.find((endpoint) => endpoint.url === '/billing/recharge-orders')?.config).toEqual(
       { rateLimit: { max: 10, timeWindow: '1 minute' } },
     );
+  });
+
+  it('keeps the controlled Package Publisher owner-only, no-store, bounded, and rate-limited', () => {
+    const publisher = ALL_ENDPOINTS.filter((endpoint) =>
+      endpoint.url.startsWith('/agent-package-releases'),
+    );
+    expect(publisher).toHaveLength(2);
+    const mutation = publisher.find((endpoint) => endpoint.method === 'POST');
+    expect(mutation).toMatchObject({
+      url: '/agent-package-releases',
+      bodyLimit: 4 * 1_024 * 1_024,
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    });
+    expect(mutation?.onRequest).toHaveLength(4);
+    expect(mutation?.preHandlers).toHaveLength(1);
+    const read = publisher.find((endpoint) => endpoint.method === 'GET');
+    expect(read?.url).toBe('/agent-package-releases/:releaseId');
+    expect(read?.onRequest).toHaveLength(1);
+    expect(read?.preHandlers).toHaveLength(2);
   });
 
   it('keeps assistant endpoints independent from browser login', () => {
