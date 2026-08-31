@@ -13,6 +13,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -215,7 +216,7 @@ describe('Agent Package Creator source boundary', () => {
       ).toThrowError(expect.objectContaining({ code: 'PROJECT_CONTEXT_CHANGED' }));
     } finally {
       if (existsSync(sourceDirectory) && lstatSync(sourceDirectory).isSymbolicLink()) {
-        rmSync(sourceDirectory);
+        unlinkSync(sourceDirectory);
       }
       if (existsSync(movedDirectory)) renameSync(movedDirectory, sourceDirectory);
     }
@@ -249,7 +250,7 @@ describe('Agent Package Creator source boundary', () => {
       ).toThrowError(expect.objectContaining({ code: 'PROJECT_CONTEXT_CHANGED' }));
     } finally {
       if (existsSync(sourceDirectory) && lstatSync(sourceDirectory).isSymbolicLink()) {
-        rmSync(sourceDirectory);
+        unlinkSync(sourceDirectory);
       }
       if (existsSync(movedDirectory)) renameSync(movedDirectory, sourceDirectory);
     }
