@@ -16,6 +16,8 @@ import type { Bucket, ObjectStorePort } from '@cb/shared';
 import type { Env } from '../config/env.js';
 
 let client: S3Client | undefined;
+// 条件写命中 412 后的 exact-byte 回读使用独立连接池，避免错误响应占用主客户端连接时阻塞幂等校验。
+let immutableReadbackClient: S3Client | undefined;
 // 预签名专用客户端（端点 = S3_PUBLIC_ENDPOINT，浏览器可达）；仅用于 getSignedUrl 计算 URL，不发网络请求。
 //   与内网操作客户端分离：API/worker 实际 get/put/list 走 minio:9000，浏览器拿到的 presigned URL 走 localhost:9000。
 let presignClient: S3Client | undefined;
@@ -36,6 +38,18 @@ function getClient(env: Env): S3Client {
     });
   }
   return client;
+}
+
+function getImmutableReadbackClient(env: Env): S3Client {
+  immutableReadbackClient ??= new S3Client({
+    endpoint: env.S3_ENDPOINT,
+    region: env.S3_REGION,
+    forcePathStyle: true,
+    credentials: { accessKeyId: env.S3_ACCESS_KEY, secretAccessKey: env.S3_SECRET_KEY },
+    maxAttempts: 1,
+    requestHandler: { requestTimeout: 2_000, connectionTimeout: 2_000 },
+  });
+  return immutableReadbackClient;
 }
 
 /**
@@ -388,12 +402,16 @@ function snapshotBoundedBytes(
  */
 export function createImmutableObjectStore(
   sender: ImmutableObjectCommandSender,
+  readSender: ImmutableObjectCommandSender = sender,
 ): ImmutableObjectStore {
-  async function read(input: ImmutableObjectReadInput): Promise<Uint8Array> {
+  async function readWithSender(
+    commandSender: ImmutableObjectCommandSender,
+    input: ImmutableObjectReadInput,
+  ): Promise<Uint8Array> {
     validateMaxBytes(input.maxBytes);
     throwIfAborted(input.signal);
     try {
-      const rawResponse = await sender.send(
+      const rawResponse = await commandSender.send(
         new GetObjectCommand({ Bucket: input.bucket, Key: input.key }),
         input.signal ? { abortSignal: input.signal } : undefined,
       );
@@ -428,6 +446,10 @@ export function createImmutableObjectStore(
       if (isAbortFailure(error, input.signal)) throw new ImmutableObjectStoreError('aborted');
       throw new ImmutableObjectStoreError('unavailable');
     }
+  }
+
+  async function read(input: ImmutableObjectReadInput): Promise<Uint8Array> {
+    return readWithSender(readSender, input);
   }
 
   async function commit(
@@ -483,11 +505,19 @@ export function createImmutableObjectStore(
 /** 生产 S3/MinIO 客户端的惰性组装入口。 */
 export function createS3ImmutableObjectStore(env: Env): ImmutableObjectStore {
   const s3 = getClient(env);
-  return createImmutableObjectStore({
-    send(command, options) {
-      return s3.send(command, options);
+  const readbackS3 = getImmutableReadbackClient(env);
+  return createImmutableObjectStore(
+    {
+      send(command, options) {
+        return s3.send(command, options);
+      },
     },
-  });
+    {
+      send(command, options) {
+        return readbackS3.send(command, options);
+      },
+    },
+  );
 }
 
 /**
@@ -677,6 +707,8 @@ export async function pingObjectStore(env: Env, bucket: Bucket = 'combo-raw'): P
 export function closeObjectStore(): void {
   client?.destroy();
   client = undefined;
+  immutableReadbackClient?.destroy();
+  immutableReadbackClient = undefined;
   presignClient?.destroy();
   presignClient = undefined;
 }

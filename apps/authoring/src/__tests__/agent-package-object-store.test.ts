@@ -2,10 +2,30 @@ import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  closeObjectStore,
   createImmutableObjectStore,
+  createS3ImmutableObjectStore,
   ImmutableObjectStoreError,
   type ImmutableObjectCommandSender,
 } from '../platform/infra/object-store.js';
+
+const s3ClientHarness = vi.hoisted(() => ({
+  clients: [] as object[],
+  send: vi.fn<(client: object, command: unknown, options?: unknown) => Promise<unknown>>(),
+}));
+
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  S3Client: class {
+    constructor(_config: unknown) {
+      s3ClientHarness.clients.push(this);
+    }
+    send(command: unknown, options?: unknown): Promise<unknown> {
+      return s3ClientHarness.send(this, command, options);
+    }
+    destroy(): void {}
+  },
+}));
 
 const BUCKET = 'combo-artifacts' as const;
 const KEY = 'agent-packages/sha256/secret-package-key/agent.json';
@@ -115,6 +135,43 @@ describe('immutable Agent Package object storage', () => {
       expect(fake.send.mock.calls[1]?.[0]).toBeInstanceOf(GetObjectCommand);
     },
   );
+
+  it('isolates the exact-byte readback from the S3 client that received a 412', async () => {
+    closeObjectStore();
+    s3ClientHarness.clients.length = 0;
+    const bytes = new TextEncoder().encode('exact immutable AGENT.md bytes');
+    let conditionalPutClient: object | undefined;
+
+    s3ClientHarness.send.mockImplementation(async (client, command, options) => {
+      expect(options).toBeUndefined();
+      if (command instanceof PutObjectCommand) {
+        conditionalPutClient = client;
+        throw conditionalConflict('status');
+      }
+      expect(command).toBeInstanceOf(GetObjectCommand);
+      if (client === conditionalPutClient) {
+        throw Object.assign(new Error('poisoned post-412 connection must stay private'), {
+          name: 'TimeoutError',
+        });
+      }
+      return { ContentLength: bytes.byteLength, Body: bytes };
+    });
+
+    const store = createS3ImmutableObjectStore({
+      S3_ENDPOINT: 'http://127.0.0.1:9000',
+      S3_REGION: 'us-east-1',
+      S3_ACCESS_KEY: 'AKIA_TEST_CREDENTIAL',
+      S3_SECRET_KEY: 'private-test-secret',
+    } as Parameters<typeof createS3ImmutableObjectStore>[0]);
+
+    await expect(
+      store.commit({ bucket: BUCKET, key: KEY, bytes, maxBytes: bytes.byteLength }),
+    ).resolves.toEqual({ outcome: 'already_committed', size: bytes.byteLength });
+    await expect(
+      store.read({ bucket: BUCKET, key: KEY, maxBytes: bytes.byteLength }),
+    ).resolves.toEqual(bytes);
+    expect(new Set(s3ClientHarness.clients).size).toBe(2);
+  });
 
   it('rejects an existing object whose bytes differ', async () => {
     const fake = sender(async (command) => {
