@@ -374,6 +374,17 @@ describe('knowledge usage receipt contract', () => {
         }),
       ).success,
     ).toBe(false);
+    expect(
+      KnowledgeTurnResultSchema.safeParse(
+        answered({
+          runtime: {
+            environment: 'test',
+            sourceSha: '0'.repeat(40),
+            releaseId: `release-${'0'.repeat(40)}`,
+          },
+        }),
+      ).success,
+    ).toBe(false);
     expect(KnowledgeTurnResultSchema.safeParse({ ...answered(), storageKey: 'x' }).success).toBe(
       false,
     );
