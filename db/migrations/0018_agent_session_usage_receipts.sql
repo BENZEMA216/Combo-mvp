@@ -252,6 +252,7 @@ CREATE TABLE agent_usage_receipts (
   ),
   CONSTRAINT ck_agent_usage_receipt_runtime_sha CHECK (
     runtime_source_sha ~ '^[0-9a-f]{40}$'
+    AND runtime_source_sha <> repeat('0', 40)
   ),
   CONSTRAINT ck_agent_usage_receipt_outcome CHECK (
     (

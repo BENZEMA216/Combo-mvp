@@ -860,6 +860,16 @@ pgDescribe('Agent Package Session and usage receipts on PostgreSQL 16', () => {
       );
       await expectDatabaseError(
         runtime,
+        () =>
+          insertReceipt(runtime, fixture, 'failed', {
+            runtimeReleaseId: `release-${'0'.repeat(40)}`,
+            runtimeSourceSha: '0'.repeat(40),
+          }),
+        '23514',
+        'ck_agent_usage_receipt_runtime_sha',
+      );
+      await expectDatabaseError(
+        runtime,
         () => insertReceipt(runtime, fixture, 'failed', { validationCode: 'accepted' }),
         '23514',
         'ck_agent_usage_receipt_outcome',

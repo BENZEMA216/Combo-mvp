@@ -123,6 +123,7 @@ describe('0018 Agent Package Session and knowledge usage receipts migration', ()
     expect(receipts).toContain("runtime_release_id ~ '^release-[0-9a-f]{40}$'");
     expect(receipts).toContain("runtime_release_id = 'release-' || runtime_source_sha");
     expect(receipts).toContain("runtime_source_sha ~ '^[0-9a-f]{40}$'");
+    expect(receipts).toContain("runtime_source_sha <> repeat('0', 40)");
     expect(receipts).toContain('cardinality(citation_chunk_ids) BETWEEN 1 AND 32');
     expect(receipts).toContain(
       "validation_code IN ('not_run', 'rejected', 'unavailable', 'protocol_invalid')",
