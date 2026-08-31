@@ -2,7 +2,7 @@
 // 「忠实」指：守卫条件（owner/唯一约束/过滤）与真实 SQL 语义一致，命中/未命中行数可断言。
 import type { Bucket } from '@cb/shared';
 import type { Queryable, QueryResultLike, TxConn, TxPool } from '../platform/infra/db.js';
-import type { RuntimeObjectStore } from '../platform/infra/object-store.js';
+import { BoundedObjectReadError, type RuntimeObjectStore } from '../platform/infra/object-store.js';
 import type { TurnAgent, TurnAgentFactory, TurnAgentInput } from '../modules/agent/run-turn.js';
 import type { ArtifactAgentTool } from '../modules/artifact/tool.js';
 import {
@@ -17,6 +17,11 @@ let seq = 0;
 export function nextId(prefix: string): string {
   seq += 1;
   return `${prefix}-${String(seq).padStart(6, '0')}`;
+}
+
+function nextUuid(): string {
+  seq += 1;
+  return `00000000-0000-4000-8000-${seq.toString(16).padStart(12, '0')}`;
 }
 
 function nowIso(): string {
@@ -41,6 +46,13 @@ export interface SessionRowF {
   capability_id: string;
   owner_user_id: string;
   mode: 'consume' | 'studio';
+  product_kind: 'legacy_capability' | 'knowledge_agent_test';
+  capability_protocol: string | null;
+  release_id: string | null;
+  package_digest: string | null;
+  release_scope: string | null;
+  knowledge_resource_path: string | null;
+  knowledge_resource_digest: string | null;
   title: string | null;
   status: 'active' | 'closed';
   created_at: string;
@@ -101,6 +113,16 @@ export interface UsageChargeRowF {
   free_limit_snapshot: number;
   reserved_cents: bigint;
   settled_cents: bigint;
+  product_kind: 'legacy_capability' | 'knowledge_agent_test';
+  capability_protocol: string | null;
+  release_id: string | null;
+  package_digest: string | null;
+  release_scope: string | null;
+  knowledge_resource_path: string | null;
+  knowledge_resource_digest: string | null;
+  billing_policy_version: string | null;
+  validator_policy_version: string | null;
+  execution_outcome: 'answered' | 'insufficient_evidence' | 'failed' | 'interrupted' | null;
   created_at: string;
   updated_at: string;
   finished_at: string | null;
@@ -114,6 +136,53 @@ export interface WalletLedgerRowF {
   recharge_order_id: null;
   usage_charge_id: string;
   created_at: string;
+}
+
+export interface AgentUsageReceiptRowF {
+  id: string;
+  protocol: 'combo.agent-usage-receipt/1';
+  usage_charge_id: string;
+  owner_user_id: string;
+  usage_id: string;
+  capability_id: string;
+  session_id: string;
+  turn_id: string;
+  product_kind: 'knowledge_agent_test';
+  capability_protocol: string;
+  release_id: string;
+  package_digest: string;
+  release_scope: 'controlled_test';
+  knowledge_resource_path: string;
+  knowledge_resource_digest: string;
+  billing_policy_version: string;
+  validator_policy_version: string;
+  unit_price_cents: bigint;
+  free_limit_snapshot: number;
+  charge_source: UsageChargeRowF['charge_source'];
+  settled_cents: bigint;
+  execution_outcome: NonNullable<UsageChargeRowF['execution_outcome']>;
+  validation_code: string;
+  response_message_id: string | null;
+  response_digest: string | null;
+  citation_chunk_ids: string[];
+  execution_environment: 'test';
+  runtime_release_id: string;
+  runtime_source_sha: string;
+  created_at: string;
+}
+
+export interface AgentPackageRowF {
+  package_digest: string;
+  protocol: 'combo.agent-package/1';
+  owner_user_id: string;
+}
+
+export interface AgentPackageReleaseRowF {
+  release_id: string;
+  package_digest: string;
+  owner_user_id: string;
+  protocol: 'combo.agent-package-release/1';
+  release_scope: 'controlled_test';
 }
 
 export interface ArtifactRowF {
@@ -245,6 +314,9 @@ export class FakeDb implements Queryable, TxPool {
   billingFreeAllowances = new Map<string, BillingFreeAllowanceRowF>();
   usageCharges = new Map<string, UsageChargeRowF>();
   walletLedger = new Map<string, WalletLedgerRowF>();
+  agentUsageReceipts = new Map<string, AgentUsageReceiptRowF>();
+  agentPackages = new Map<string, AgentPackageRowF>();
+  agentPackageReleases = new Map<string, AgentPackageReleaseRowF>();
   /** 事务轨迹（断言 BEGIN/COMMIT/ROLLBACK 收口）。 */
   txLog: string[] = [];
   queries: string[] = [];
@@ -300,6 +372,25 @@ export class FakeDb implements Queryable, TxPool {
     };
     this.billingFreeAllowances.set(`${input.ownerUserId}:${input.capabilityId}`, row);
     return row;
+  }
+
+  seedAgentPackageRegistry(input: {
+    packageDigest: string;
+    releaseId: string;
+    ownerUserId: string;
+  }): void {
+    this.agentPackages.set(input.packageDigest, {
+      package_digest: input.packageDigest,
+      protocol: 'combo.agent-package/1',
+      owner_user_id: input.ownerUserId,
+    });
+    this.agentPackageReleases.set(input.releaseId, {
+      release_id: input.releaseId,
+      package_digest: input.packageDigest,
+      owner_user_id: input.ownerUserId,
+      protocol: 'combo.agent-package-release/1',
+      release_scope: 'controlled_test',
+    });
   }
 
   async connect(): Promise<TxConn> {
@@ -457,8 +548,9 @@ export class FakeDb implements Queryable, TxPool {
     }
     if (
       s.startsWith(
-        'SELECT id, owner_user_id, usage_id, capability_id, session_id, turn_id, request_fingerprint, charge_source, status, unit_price_cents, free_limit_snapshot, reserved_cents, settled_cents FROM usage_charges',
-      )
+        'SELECT id, owner_user_id, usage_id, capability_id, session_id, turn_id, request_fingerprint, charge_source, status, unit_price_cents, free_limit_snapshot, reserved_cents, settled_cents, product_kind',
+      ) &&
+      s.includes('FROM usage_charges')
     ) {
       const row = s.includes('WHERE turn_id = $1')
         ? [...this.usageCharges.values()].find((candidate) => candidate.turn_id === params[0])
@@ -468,9 +560,17 @@ export class FakeDb implements Queryable, TxPool {
           );
       return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
+    if (s.startsWith('SELECT product_kind FROM usage_charges WHERE turn_id = $1')) {
+      const row = [...this.usageCharges.values()].find(
+        (candidate) => candidate.turn_id === params[0],
+      );
+      return row
+        ? { rows: [{ product_kind: row.product_kind }] as R[], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
     if (
       s.startsWith(
-        "SELECT uc.turn_id, t.session_id, t.status AS turn_status FROM usage_charges uc JOIN turns t ON t.id = uc.turn_id WHERE uc.status = 'reserved'",
+        "SELECT uc.turn_id, t.session_id, t.status AS turn_status, uc.product_kind FROM usage_charges uc JOIN turns t ON t.id = uc.turn_id WHERE uc.status = 'reserved'",
       )
     ) {
       const rows = [...this.usageCharges.values()]
@@ -484,6 +584,7 @@ export class FakeDb implements Queryable, TxPool {
                   turn_id: charge.turn_id,
                   session_id: turn.session_id,
                   turn_status: turn.status,
+                  product_kind: charge.product_kind,
                 },
               ]
             : [];
@@ -492,6 +593,7 @@ export class FakeDb implements Queryable, TxPool {
       return { rows: rows as R[], rowCount: rows.length };
     }
     if (s.startsWith('INSERT INTO usage_charges')) {
+      const knowledge = s.includes("'knowledge_agent_test'");
       const [
         ownerUserId,
         usageId,
@@ -542,6 +644,16 @@ export class FakeDb implements Queryable, TxPool {
         free_limit_snapshot: freeLimitSnapshot,
         reserved_cents: BigInt(reservedRaw),
         settled_cents: 0n,
+        product_kind: knowledge ? 'knowledge_agent_test' : 'legacy_capability',
+        capability_protocol: knowledge ? String(params[10]) : null,
+        release_id: knowledge ? String(params[11]) : null,
+        package_digest: knowledge ? String(params[12]) : null,
+        release_scope: knowledge ? String(params[13]) : null,
+        knowledge_resource_path: knowledge ? String(params[14]) : null,
+        knowledge_resource_digest: knowledge ? String(params[15]) : null,
+        billing_policy_version: knowledge ? String(params[16]) : null,
+        validator_policy_version: knowledge ? String(params[17]) : null,
+        execution_outcome: null,
         created_at: now,
         updated_at: now,
         finished_at: null,
@@ -555,6 +667,7 @@ export class FakeDb implements Queryable, TxPool {
       if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
       row.status = 'completed';
       row.settled_cents = BigInt(settledRaw);
+      if (row.product_kind === 'knowledge_agent_test') row.execution_outcome = 'answered';
       row.finished_at = nowIso();
       row.updated_at = row.finished_at;
       return { rows: [], rowCount: 1 };
@@ -564,6 +677,9 @@ export class FakeDb implements Queryable, TxPool {
       if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
       row.status = 'released';
       row.settled_cents = 0n;
+      if (row.product_kind === 'knowledge_agent_test') {
+        row.execution_outcome = params[1] as UsageChargeRowF['execution_outcome'];
+      }
       row.finished_at = nowIso();
       row.updated_at = row.finished_at;
       return { rows: [], rowCount: 1 };
@@ -585,6 +701,85 @@ export class FakeDb implements Queryable, TxPool {
       };
       this.walletLedger.set(row.id, row);
       return { rows: [{ id: row.id }] as R[], rowCount: 1 };
+    }
+    if (s.startsWith('INSERT INTO agent_usage_receipts')) {
+      const chargeId = String(params[0]);
+      if (
+        [...this.agentUsageReceipts.values()].some(
+          (candidate) =>
+            candidate.usage_charge_id === chargeId ||
+            candidate.turn_id === params[5] ||
+            (candidate.owner_user_id === params[1] && candidate.usage_id === params[2]),
+        )
+      ) {
+        throw Object.assign(new Error('duplicate knowledge receipt'), { code: '23505' });
+      }
+      const row: AgentUsageReceiptRowF = {
+        id: nextUuid(),
+        protocol: 'combo.agent-usage-receipt/1',
+        usage_charge_id: chargeId,
+        owner_user_id: String(params[1]),
+        usage_id: String(params[2]),
+        capability_id: String(params[3]),
+        session_id: String(params[4]),
+        turn_id: String(params[5]),
+        product_kind: 'knowledge_agent_test',
+        capability_protocol: String(params[6]),
+        release_id: String(params[7]),
+        package_digest: String(params[8]),
+        release_scope: 'controlled_test',
+        knowledge_resource_path: String(params[10]),
+        knowledge_resource_digest: String(params[11]),
+        billing_policy_version: String(params[12]),
+        validator_policy_version: String(params[13]),
+        unit_price_cents: BigInt(String(params[14])),
+        free_limit_snapshot: Number(params[15]),
+        charge_source: params[16] as UsageChargeRowF['charge_source'],
+        settled_cents: BigInt(String(params[17])),
+        execution_outcome: params[18] as AgentUsageReceiptRowF['execution_outcome'],
+        validation_code: String(params[19]),
+        response_message_id: params[20] === null ? null : String(params[20]),
+        response_digest: params[21] === null ? null : String(params[21]),
+        citation_chunk_ids: [...(params[22] as string[])],
+        execution_environment: 'test',
+        runtime_release_id: String(params[23]),
+        runtime_source_sha: String(params[24]),
+        created_at: nowIso(),
+      };
+      this.agentUsageReceipts.set(row.id, row);
+      return { rows: [{ id: row.id }] as R[], rowCount: 1 };
+    }
+    if (s.includes('FROM agent_usage_receipts') && s.includes('WHERE session_id = $1')) {
+      const rows = [...this.agentUsageReceipts.values()]
+        .filter((candidate) => candidate.session_id === params[0])
+        .sort((left, right) =>
+          left.created_at === right.created_at
+            ? left.id.localeCompare(right.id)
+            : left.created_at.localeCompare(right.created_at),
+        );
+      return { rows: rows.map((row) => ({ ...row })) as R[], rowCount: rows.length };
+    }
+
+    // ---------- immutable Agent Package Registry ----------
+    if (s.includes('FROM agent_package_releases r') && s.includes('JOIN agent_packages p')) {
+      const release = this.agentPackageReleases.get(String(params[0]));
+      const agentPackage = release ? this.agentPackages.get(release.package_digest) : undefined;
+      if (!release || !agentPackage || release.package_digest !== params[1]) {
+        return { rows: [], rowCount: 0 };
+      }
+      return {
+        rows: [
+          {
+            release_id: release.release_id,
+            package_digest: release.package_digest,
+            owner_user_id: release.owner_user_id,
+            release_protocol: release.protocol,
+            release_scope: release.release_scope,
+            package_protocol: agentPackage.protocol,
+          },
+        ] as R[],
+        rowCount: 1,
+      };
     }
 
     // ---------- capabilities ----------
@@ -667,6 +862,9 @@ export class FakeDb implements Queryable, TxPool {
     if (s.startsWith('INSERT INTO sessions')) {
       const [capabilityId, ownerUserId] = params as [string, string];
       const mode: SessionRowF['mode'] = s.includes("'studio'") ? 'studio' : 'consume';
+      const knowledge = s.startsWith(
+        'INSERT INTO sessions (capability_id, owner_user_id, mode, product_kind, capability_protocol',
+      );
       if (mode === 'studio' && s.includes('ON CONFLICT')) {
         const existing = [...this.sessions.values()].find(
           (row) =>
@@ -683,6 +881,13 @@ export class FakeDb implements Queryable, TxPool {
         capability_id: capabilityId,
         owner_user_id: ownerUserId,
         mode,
+        product_kind: knowledge ? 'knowledge_agent_test' : 'legacy_capability',
+        capability_protocol: knowledge ? (params[3] as string) : null,
+        release_id: knowledge ? (params[4] as string) : null,
+        package_digest: knowledge ? (params[5] as string) : null,
+        release_scope: knowledge ? (params[6] as string) : null,
+        knowledge_resource_path: knowledge ? (params[7] as string) : null,
+        knowledge_resource_digest: knowledge ? (params[8] as string) : null,
         title: null,
         status: 'active',
         created_at: now,
@@ -738,6 +943,12 @@ export class FakeDb implements Queryable, TxPool {
       const session = this.sessions.get(params[0] as string);
       return session
         ? { rows: [{ id: session.id }] as R[], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
+    if (s === 'SELECT product_kind FROM sessions WHERE id = $1') {
+      const session = this.sessions.get(params[0] as string);
+      return session
+        ? { rows: [{ product_kind: session.product_kind }] as R[], rowCount: 1 }
         : { rows: [], rowCount: 0 };
     }
     if (s.includes('FROM sessions WHERE id = $1 AND owner_user_id = $2')) {
@@ -925,6 +1136,44 @@ export class FakeDb implements Queryable, TxPool {
         )[0];
       return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
+    if (
+      s.startsWith('SELECT t.id, t.session_id FROM turns t JOIN sessions s') &&
+      s.includes("s.product_kind = 'legacy_capability'")
+    ) {
+      const cutoff = (params[0] as Date).getTime();
+      const rows = [...this.turns.values()]
+        .filter((row) => {
+          const session = this.sessions.get(row.session_id);
+          return (
+            row.status === 'running' &&
+            new Date(row.created_at).getTime() < cutoff &&
+            session?.product_kind === 'legacy_capability'
+          );
+        })
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+        .map(({ id, session_id }) => ({ id, session_id }));
+      return { rows: rows as R[], rowCount: rows.length };
+    }
+    if (
+      s.startsWith('SELECT t.id, t.session_id FROM turns t JOIN usage_charges uc') &&
+      s.includes("uc.product_kind = 'knowledge_agent_test'")
+    ) {
+      const cutoff = (params[0] as Date).getTime();
+      const rows = [...this.turns.values()]
+        .filter((row) => {
+          const charge = [...this.usageCharges.values()].find(
+            (candidate) => candidate.turn_id === row.id,
+          );
+          return (
+            row.status === 'running' &&
+            new Date(row.created_at).getTime() < cutoff &&
+            charge?.product_kind === 'knowledge_agent_test'
+          );
+        })
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+        .map(({ id, session_id }) => ({ id, session_id }));
+      return { rows: rows as R[], rowCount: rows.length };
+    }
     if (s.startsWith('SELECT id, session_id FROM turns')) {
       const cutoff = (params[0] as Date).getTime();
       const rows = [...this.turns.values()]
@@ -945,7 +1194,7 @@ export class FakeDb implements Queryable, TxPool {
       );
       const idx = (indexes.length ? Math.max(...indexes) : 0) + 1;
       const row: MessageRowF = {
-        id: nextId('msg'),
+        id: nextUuid(),
         session_id: sessionId,
         turn_id: turnId,
         idx,
@@ -975,7 +1224,7 @@ export class FakeDb implements Queryable, TxPool {
         throw err;
       }
       const row: MessageRowF = {
-        id: nextId('msg'),
+        id: nextUuid(),
         session_id: sessionId,
         turn_id: turnId,
         idx,
@@ -1204,7 +1453,7 @@ export class FakeDb implements Queryable, TxPool {
   }
 }
 
-/** 假对象存储（内存 Map，实现 runtime 的三方法子集）。 */
+/** 假对象存储（内存 Map，实现 runtime 的最小对象面）。 */
 export class FakeObjectStore implements RuntimeObjectStore {
   objects = new Map<string, Uint8Array>();
 
@@ -1230,6 +1479,21 @@ export class FakeObjectStore implements RuntimeObjectStore {
     const v = this.objects.get(this.k(bucket, key));
     if (!v) throw new Error(`FakeObjectStore: missing ${bucket}/${key}`);
     return v;
+  }
+  async getObjectBounded(
+    bucket: Bucket,
+    key: string,
+    maxBytes: number,
+    opts?: { abortSignal?: AbortSignal },
+  ): Promise<Uint8Array> {
+    if (opts?.abortSignal?.aborted) throw new BoundedObjectReadError('aborted');
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new BoundedObjectReadError('invalid_limit');
+    }
+    const value = this.objects.get(this.k(bucket, key));
+    if (!value) throw new BoundedObjectReadError('unavailable');
+    if (value.byteLength > maxBytes) throw new BoundedObjectReadError('too_large');
+    return new Uint8Array(value);
   }
   /** 测试便捷：直接放一段文本对象。 */
   seedText(bucket: string, key: string, text: string): void {

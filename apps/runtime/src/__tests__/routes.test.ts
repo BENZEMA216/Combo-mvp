@@ -1,6 +1,25 @@
 // 路由注册自检 + session 端点 owner 守卫（非本人与不存在同样 404，不暴露存在性）。
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
+import type { SessionDetail } from '@cb/shared';
+import {
+  CREATOR_AGENT_PACKAGE_PROTOCOL,
+  createCreatorAgentPackageManifest,
+  digestCreatorAgentPackage,
+  digestCreatorAgentPackageFile,
+  serializeCreatorAgentPackageManifest,
+} from '@cb/creator-agent-protocol/agent-package';
+import {
+  createCreatorAgentPackageCapability,
+  serializeCreatorAgentPackageCapability,
+} from '@cb/creator-agent-protocol/agent-package-capability';
+import { createCreatorAgentPackageRelease } from '@cb/creator-agent-protocol/agent-package-release';
+import {
+  CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+  CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+  CREATOR_KNOWLEDGE_SKILL_PATH,
+  serializeCreatorKnowledgeBundle,
+} from '@cb/creator-agent-protocol/knowledge-bundle';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 import {
   archiveSessionHandler,
@@ -27,7 +46,19 @@ import {
   getOrCreateStudioSession,
 } from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
-import { createTurnRunner } from '../modules/agent/run-turn.js';
+import { createTurnRunner, type TurnRunner } from '../modules/agent/run-turn.js';
+import {
+  AGENT_PACKAGE_OBJECT_BUCKET,
+  agentPackageObjectKey,
+  knowledgeQuestionDigest,
+  resolveKnowledgeAgentPackage,
+} from '../modules/knowledge-agent/resolver.js';
+import {
+  knowledgeAgentTestGateFromEnv,
+  type Env,
+  type KnowledgeAgentTestGate,
+} from '../platform/config/env.js';
+import type { Queryable } from '../platform/infra/db.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
 import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
@@ -37,6 +68,7 @@ import {
   FakeSessionEventLog,
   makeFakeAgentFactory,
   silentLog,
+  waitFor,
 } from './fakes.js';
 
 const ME = 'user-me';
@@ -132,17 +164,21 @@ function makeReq(input: {
   query?: Record<string, string>;
   body?: unknown;
   sandbox?: SandboxBackend;
+  env?: Env;
+  turns?: TurnRunner;
 }): FastifyRequest {
-  const turns = createTurnRunner({
-    db: input.db,
-    objectStore: input.objectStore ?? new FakeObjectStore(),
-    bus: createSessionEventBus(),
-    eventLog: new FakeSessionEventLog(),
-    agentFactory: makeFakeAgentFactory().factory,
-    idleTimeoutMs: 60_000,
-    interrupts: createInterruptBus(),
-    log: silentLog,
-  });
+  const turns =
+    input.turns ??
+    createTurnRunner({
+      db: input.db,
+      objectStore: input.objectStore ?? new FakeObjectStore(),
+      bus: createSessionEventBus(),
+      eventLog: new FakeSessionEventLog(),
+      agentFactory: makeFakeAgentFactory().factory,
+      idleTimeoutMs: 60_000,
+      interrupts: createInterruptBus(),
+      log: silentLog,
+    });
   return {
     id: 'trace-test',
     auth: { userId: input.userId, account: 'creator-testerxx', roles: ['creator'] },
@@ -154,6 +190,7 @@ function makeReq(input: {
       infra: {
         db: input.db,
         objectStore: input.objectStore ?? new FakeObjectStore(),
+        ...(input.env ? { env: input.env } : {}),
         ...(input.sandbox ? { sandbox: input.sandbox } : {}),
       },
       turns,
@@ -1355,5 +1392,532 @@ describe('GET /runtime/sessions/:id 透出开场表单字段', () => {
     ).data.capability;
     expect(capability.inputs).toEqual([]);
     expect(capability.starterPrompts).toEqual([]);
+  });
+});
+
+describe('knowledge Agent handler closed loop', () => {
+  const creator = '00000000-0000-4000-8000-000000000101';
+  const consumer = '00000000-0000-4000-8000-000000000102';
+  const capabilityId = '00000000-0000-4000-8000-000000000103';
+  const usageId = '00000000-0000-4000-8000-000000000104';
+  const sourceSha = '7'.repeat(40);
+  const question = 'Combo 的免费额度是多少？';
+  const answer = '前三次成功回答免费。';
+  const chunkId = `chunk.knowledge.${'8'.repeat(32)}`;
+  const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+  it('creates a frozen Session, answers once, then projects only verified detail', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const capability = db.seedCapability({
+      id: capabilityId,
+      owner_user_id: creator,
+      published: true,
+      kind: 'knowledge',
+      name: '公开知识助手',
+      summary: '只回答固定公开资料',
+    });
+    const agentMarkdown = encode('# Knowledge Agent\nAnswer only from retrieved evidence.');
+    const skillMarkdown = encode('# Knowledge\nSearch before submitting an answer.');
+    const content = 'Combo 的前三次成功回答使用免费额度。';
+    const knowledge = {
+      protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+      chunks: [
+        {
+          id: chunkId,
+          source: {
+            sourceId: `source.knowledge.${'9'.repeat(32)}`,
+            displayLabel: '公开计费手册',
+          },
+          content,
+          contentDigest: digestCreatorAgentPackageFile(encode(content)),
+        },
+      ],
+    } as const;
+    const bundleBytes = encode(serializeCreatorKnowledgeBundle(knowledge));
+    const manifest = createCreatorAgentPackageManifest({
+      protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+      name: '公开知识助手',
+      description: '只回答固定公开资料',
+      instructions: 'AGENT.md',
+      skills: [CREATOR_KNOWLEDGE_SKILL_PATH],
+      files: [
+        {
+          path: 'AGENT.md',
+          byteLength: agentMarkdown.byteLength,
+          digest: digestCreatorAgentPackageFile(agentMarkdown),
+        },
+        {
+          path: CREATOR_KNOWLEDGE_SKILL_PATH,
+          byteLength: skillMarkdown.byteLength,
+          digest: digestCreatorAgentPackageFile(skillMarkdown),
+        },
+        {
+          path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+          byteLength: bundleBytes.byteLength,
+          digest: digestCreatorAgentPackageFile(bundleBytes),
+        },
+      ],
+    });
+    const packageDigest = digestCreatorAgentPackage(manifest);
+    const release = createCreatorAgentPackageRelease({
+      protocol: 'combo.agent-package-release/1',
+      releaseId: `release.agent-package.${'a'.repeat(32)}`,
+      packageDigest,
+    });
+    const projection = createCreatorAgentPackageCapability({
+      version: 2,
+      protocol: 'combo.agent-package-capability/2',
+      release,
+    });
+    const gate: KnowledgeAgentTestGate = {
+      protocol: 'combo.knowledge-agent-runtime-test-gate/1',
+      sourceSha,
+      publisherUserId: creator,
+      capabilityId,
+      releaseId: release.releaseId,
+      packageDigest,
+      validatorPolicyVersion: 'knowledge-agent-test-validator-v1',
+      cases: [
+        {
+          questionDigest: knowledgeQuestionDigest(question),
+          answer,
+          citationChunkIds: [chunkId],
+        },
+      ],
+    };
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: sourceSha,
+      COMBO_RELEASE_ID: `release-${sourceSha}`,
+      COMBO_BUILT_AT: '2026-08-30T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(gate),
+    } as Env;
+
+    store.seedText(
+      CAPABILITY_BUCKET,
+      capability.storage_key,
+      serializeCreatorAgentPackageCapability(projection),
+    );
+    db.seedAgentPackageRegistry({
+      packageDigest,
+      releaseId: release.releaseId,
+      ownerUserId: creator,
+    });
+    for (const [path, bytes] of [
+      ['agent.json', encode(serializeCreatorAgentPackageManifest(manifest))],
+      ['AGENT.md', agentMarkdown],
+      [CREATOR_KNOWLEDGE_SKILL_PATH, skillMarkdown],
+      [CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH, bundleBytes],
+    ] as const) {
+      await store.putObject(
+        AGENT_PACKAGE_OBJECT_BUCKET,
+        agentPackageObjectKey(packageDigest, path),
+        bytes,
+      );
+    }
+
+    const agent = makeFakeAgentFactory({
+      deltas: ['未验证候选文本'],
+      invokeNamedTools: [
+        { name: 'knowledge_search', params: { query: '免费额度' } },
+        {
+          name: 'submit_knowledge_answer',
+          params: { status: 'answered', answer, citationChunkIds: [chunkId] },
+        },
+      ],
+      finalMessages: [{ role: 'assistant', content: [{ type: 'text', text: '伪造 transcript' }] }],
+    });
+    const turns = createTurnRunner({
+      db,
+      objectStore: store,
+      bus: createSessionEventBus(),
+      eventLog: new FakeSessionEventLog(),
+      agentFactory: agent.factory,
+      idleTimeoutMs: 60_000,
+      interrupts: createInterruptBus(),
+      billingPolicy: { freeUses: 3, unitPriceCents: 1 },
+      runtimeSourceSha: sourceSha,
+      log: silentLog,
+    });
+
+    const created = await call(
+      createSessionHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        body: { capabilityId },
+      }),
+    );
+    expect(created.statusCode).toBe(201);
+    const sessionId = (created.body as { data: { id: string } }).data.id;
+    expect(db.sessions.get(sessionId)).toMatchObject({
+      product_kind: 'knowledge_agent_test',
+      release_id: release.releaseId,
+      package_digest: packageDigest,
+      knowledge_resource_path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+    });
+
+    const sent = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId },
+      }),
+    );
+    expect(sent.statusCode).toBe(202);
+    await waitFor(() => db.agentUsageReceipts.size === 1);
+
+    const readDetail = () =>
+      call(
+        getSessionDetailHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env,
+          turns,
+          userId: consumer,
+          params: { id: sessionId },
+        }),
+      );
+    const detail = await readDetail();
+    expect(detail.statusCode).toBe(200);
+    const data = (detail.body as { data: SessionDetail }).data;
+    expect(data.messages).toHaveLength(1);
+    expect(data.messages[0]).toMatchObject({ role: 'user' });
+    expect(JSON.stringify(data)).not.toContain('未验证候选文本');
+    expect(JSON.stringify(data)).not.toContain('伪造 transcript');
+    expect(data.artifacts).toEqual([]);
+    expect(data.agentBinding).toMatchObject({
+      productKind: 'knowledge_agent_test',
+      release,
+    });
+    expect(data.knowledgeResults).toEqual([
+      expect.objectContaining({
+        outcome: 'answered',
+        answer: expect.objectContaining({ text: answer }),
+        citations: [expect.objectContaining({ displayLabel: '公开计费手册' })],
+        billing: expect.objectContaining({ source: 'free', settledCents: '0' }),
+      }),
+    ]);
+    const receipt = [...db.agentUsageReceipts.values()][0]!;
+    const responseDigest = receipt.response_digest;
+    receipt.response_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.response_digest = responseDigest;
+    const citationChunkIds = receipt.citation_chunk_ids;
+    receipt.citation_chunk_ids = [`chunk.knowledge.${'0'.repeat(32)}`];
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.citation_chunk_ids = citationChunkIds;
+
+    for (const [index, retryUsageId] of [
+      '00000000-0000-4000-8000-000000000105',
+      '00000000-0000-4000-8000-000000000106',
+    ].entries()) {
+      const free = await call(
+        sendMessageHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env,
+          turns,
+          userId: consumer,
+          params: { id: sessionId },
+          body: { text: question, usageId: retryUsageId },
+        }),
+      );
+      expect(free.statusCode).toBe(202);
+      await waitFor(() => db.agentUsageReceipts.size === index + 2);
+    }
+    const rechargeUsageId = '00000000-0000-4000-8000-000000000107';
+    const recharge = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId: rechargeUsageId },
+      }),
+    );
+    expect(recharge).toMatchObject({
+      statusCode: 402,
+      body: {
+        rechargeRequired: true,
+        rechargeIntentId: rechargeUsageId,
+        balanceCents: '0',
+        requiredCents: '1',
+      },
+    });
+    expect(agent.calls).toHaveLength(3);
+    expect(db.agentUsageReceipts.size).toBe(3);
+    await turns.dispose();
+  });
+});
+
+const OWNER = '11111111-1111-4111-8111-111111111111';
+const CAPABILITY_ID = '22222222-2222-4222-8222-222222222222';
+const SOURCE_SHA = 'a'.repeat(40);
+
+function bytes(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function fixture() {
+  const agentMarkdown = bytes('# Knowledge Agent\nAnswer only from retrieved evidence.');
+  const skillMarkdown = bytes('# Knowledge\nSearch before submitting an answer.');
+  const content = 'Combo 的受控 Test 知识内容。';
+  const bundleText = serializeCreatorKnowledgeBundle({
+    protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+    chunks: [
+      {
+        id: `chunk.knowledge.${'1'.repeat(32)}`,
+        source: {
+          sourceId: `source.knowledge.${'2'.repeat(32)}`,
+          displayLabel: '公开测试资料',
+        },
+        content,
+        contentDigest: digestCreatorAgentPackageFile(bytes(content)),
+      },
+    ],
+  });
+  const bundleBytes = bytes(bundleText);
+  const manifest = createCreatorAgentPackageManifest({
+    protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+    name: '受控知识 Agent',
+    description: '只回答固定公开测试资料。',
+    instructions: 'AGENT.md',
+    skills: [CREATOR_KNOWLEDGE_SKILL_PATH],
+    files: [
+      {
+        path: 'AGENT.md',
+        byteLength: agentMarkdown.byteLength,
+        digest: digestCreatorAgentPackageFile(agentMarkdown),
+      },
+      {
+        path: CREATOR_KNOWLEDGE_SKILL_PATH,
+        byteLength: skillMarkdown.byteLength,
+        digest: digestCreatorAgentPackageFile(skillMarkdown),
+      },
+      {
+        path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+        byteLength: bundleBytes.byteLength,
+        digest: digestCreatorAgentPackageFile(bundleBytes),
+      },
+    ],
+  });
+  const packageDigest = digestCreatorAgentPackage(manifest);
+  const release = createCreatorAgentPackageRelease({
+    protocol: 'combo.agent-package-release/1',
+    releaseId: `release.agent-package.${'3'.repeat(32)}`,
+    packageDigest,
+  });
+  const projection = createCreatorAgentPackageCapability({
+    version: 2,
+    protocol: 'combo.agent-package-capability/2',
+    release,
+  });
+  const gate: KnowledgeAgentTestGate = {
+    protocol: 'combo.knowledge-agent-runtime-test-gate/1',
+    sourceSha: SOURCE_SHA,
+    publisherUserId: OWNER,
+    capabilityId: CAPABILITY_ID,
+    releaseId: release.releaseId,
+    packageDigest,
+    validatorPolicyVersion: 'knowledge-agent-test-validator-v1',
+    cases: [
+      {
+        questionDigest: `sha256:${'4'.repeat(64)}`,
+        answer: '受控答案。',
+        citationChunkIds: [`chunk.knowledge.${'1'.repeat(32)}`],
+      },
+    ],
+  };
+  return { agentMarkdown, skillMarkdown, bundleBytes, manifest, packageDigest, projection, gate };
+}
+
+function registryDb(
+  candidate = fixture(),
+  overrides: Record<string, string> = {},
+): Queryable & { query: ReturnType<typeof vi.fn> } {
+  return {
+    query: vi.fn(async () => ({
+      rows: [
+        {
+          release_id: candidate.projection.release.releaseId,
+          package_digest: candidate.packageDigest,
+          owner_user_id: OWNER,
+          release_protocol: 'combo.agent-package-release/1',
+          release_scope: 'controlled_test',
+          package_protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+          ...overrides,
+        },
+      ],
+      rowCount: 1,
+    })),
+  } as Queryable & { query: ReturnType<typeof vi.fn> };
+}
+
+async function seedPackage(store: FakeObjectStore, candidate = fixture()): Promise<void> {
+  const entries = [
+    ['agent.json', bytes(serializeCreatorAgentPackageManifest(candidate.manifest))],
+    ['AGENT.md', candidate.agentMarkdown],
+    [CREATOR_KNOWLEDGE_SKILL_PATH, candidate.skillMarkdown],
+    [CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH, candidate.bundleBytes],
+  ] as const;
+  for (const [path, body] of entries) {
+    await store.putObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      agentPackageObjectKey(candidate.packageDigest, path),
+      body,
+    );
+  }
+}
+
+function resolveInput(
+  candidate = fixture(),
+  store = new FakeObjectStore(),
+  db = registryDb(candidate),
+) {
+  return {
+    candidate,
+    store,
+    db,
+    input: {
+      db,
+      objectStore: store,
+      capability: {
+        id: CAPABILITY_ID,
+        name: '投影名称',
+        summary: '投影摘要',
+        kind: 'knowledge',
+        published: true,
+        ownerUserId: OWNER,
+      },
+      projection: candidate.projection,
+      gate: candidate.gate,
+    },
+  };
+}
+
+describe('exact knowledge Agent Package resolver', () => {
+  it('keeps a missing or mismatched Test gate closed before DB or object access', async () => {
+    const context = resolveInput();
+    for (const gate of [null, { ...context.candidate.gate, capabilityId: OWNER }]) {
+      await expect(resolveKnowledgeAgentPackage({ ...context.input, gate })).rejects.toMatchObject({
+        failure: 'closed',
+      });
+    }
+    expect(context.db.query).not.toHaveBeenCalled();
+    expect(context.store.objects.size).toBe(0);
+  });
+
+  it.each([
+    ['owner', { owner_user_id: '33333333-3333-4333-8333-333333333333' }],
+    ['release protocol', { release_protocol: 'legacy' }],
+    ['scope', { release_scope: 'production' }],
+    ['package protocol', { package_protocol: 'legacy' }],
+  ])('fails closed on Registry %s drift', async (_label, overrides) => {
+    const candidate = fixture();
+    const context = resolveInput(
+      candidate,
+      new FakeObjectStore(),
+      registryDb(candidate, overrides),
+    );
+    await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+      failure: 'invalid_registry',
+    });
+  });
+
+  it('rejects a manifest whose recomputed digest differs from the Registry selector', async () => {
+    const context = resolveInput();
+    await seedPackage(context.store, context.candidate);
+    const changed = createCreatorAgentPackageManifest({
+      ...context.candidate.manifest,
+      description: '另一份合法但 digest 不同的 Package。',
+    });
+    context.store.seedText(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      agentPackageObjectKey(context.candidate.packageDigest, 'agent.json'),
+      serializeCreatorAgentPackageManifest(changed),
+    );
+
+    await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+      failure: 'invalid_package',
+    });
+  });
+
+  it('rejects tampered file bytes and invalid UTF-8', async () => {
+    for (const replacement of [bytes('# Knowledge Agenx'), new Uint8Array([0xff])]) {
+      const context = resolveInput();
+      await seedPackage(context.store, context.candidate);
+      await context.store.putObject(
+        AGENT_PACKAGE_OBJECT_BUCKET,
+        agentPackageObjectKey(context.candidate.packageDigest, 'AGENT.md'),
+        replacement,
+      );
+      await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+        failure: 'invalid_package',
+      });
+    }
+  });
+
+  it('propagates an abort as a stable category without provider details', async () => {
+    const context = resolveInput();
+    await seedPackage(context.store, context.candidate);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      resolveKnowledgeAgentPackage({ ...context.input, signal: controller.signal }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+  });
+});
+
+describe('controlled knowledge Agent Test gate configuration', () => {
+  it('accepts only canonical exact-SHA Test material and fails closed elsewhere', () => {
+    const candidate = fixture();
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: SOURCE_SHA,
+      COMBO_RELEASE_ID: `release-${SOURCE_SHA}`,
+      COMBO_BUILT_AT: '2026-07-28T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(candidate.gate),
+    } as Env;
+    expect(knowledgeAgentTestGateFromEnv(env)).toEqual(candidate.gate);
+    const driftSha = 'f'.repeat(40);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_SOURCE_SHA: driftSha,
+        COMBO_RELEASE_ID: `release-${driftSha}`,
+      }),
+    ).toBeNull();
+    expect(() => knowledgeAgentTestGateFromEnv({ ...env, COMBO_ENVIRONMENT: 'preview' })).toThrow(
+      /COMBO_KNOWLEDGE_AGENT_TEST_GATE/u,
+    );
+    expect(() =>
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify({
+          ...candidate.gate,
+          privateMarker: 'must-not-appear',
+        }),
+      }),
+    ).toThrow(/COMBO_KNOWLEDGE_AGENT_TEST_GATE/u);
   });
 });
