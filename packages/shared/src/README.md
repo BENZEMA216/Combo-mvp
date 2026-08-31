@@ -8,9 +8,10 @@
 - `core/` 是地基层，定义通用 ID、成功响应包络、游标分页、无公开错误码的对外错误信封、任务进度模型、SSE（服务端事件推送）帧协议、健康检查契约、发布身份契约和 traceId 工具。
 - `constants/` 定义 API 路由前缀、健康探针路径和 SSE 端点路径模板。
 - `ports/` 声明基础设施接口（队列、事件流、分布式锁、对象存储、大模型网关），由各服务的 infra 代码提供实现。
-- `domains/` 按业务域定义数据传输对象与校验规则。认证域包含邮箱 challenge、邮箱 verification、当前用户、登出、成功包络、显式安全 Cookie 策略和站内回跳净化函数；其余文件覆盖任务、能力项、试用会话、Artifact 来源、active Turn 恢复信息与去敏规则。
+- `domains/` 按业务域定义数据传输对象与校验规则。认证域包含邮箱 challenge、邮箱 verification、当前用户、登出、成功包络、显式安全 Cookie 策略和站内回跳净化函数；其余文件覆盖任务、能力项、试用会话、Agent Package 冻结绑定、知识回答/引用/计费收据、Artifact 来源、active Turn 恢复信息与去敏规则。
 - `__tests__/auth.test.ts` 检查邮箱请求、六位验证码、回跳白名单、会话 Cookie、成功包络、安全错误和就绪依赖。
 - `__tests__/shared.test.ts` 检查通用错误、SSE、任务、能力项、试用与包络契约。
+- `__tests__/knowledge.test.ts` 检查知识 Agent 冻结绑定、四种终态、实际结算金额、引用和 Runtime 版本的严格收据投影。
 - `__tests__/redaction.test.ts` 检查去敏规则的覆盖范围与幂等性。
 - `__tests__/release.test.ts` 检查运行时发布身份和无缓存加载契约。
 

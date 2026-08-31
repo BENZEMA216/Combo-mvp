@@ -12,11 +12,19 @@
   Codex 原生技能入口及全部智能体包文件的路径、长度和原始字节 SHA-256 摘要，并定义创作端私有来源
   回执与 Package 内不披露文件名的 opaque provenance 绑定；它不包含项目、会话或 Worker 运行字段，也不
   进入旧版 `AgentVersion` 分派器。
+- `knowledge-bundle.ts`：显式 `./knowledge-bundle` 子路径的有界静态知识合同。它固定 Package 内唯一知识
+  Skill、三文件 Test profile 与 Bundle 路径，校验排序分片、opaque source ID、不可解引用显示标签和 exact
+  UTF-8 内容摘要；它不读取对象存储、不接受 Package 外选择器，也不声称回答已被证据支持。
 - `agent-package-draft.ts`：显式 `./agent-package-draft` 子路径的两套互斥合同。V1 继续绑定一句制作要求、
   当前 Project 来源、Creator bootstrap handoff、Package Draft 快照与 revision；V2 单独绑定当前对话制作
   要求、`current_conversation` 脱敏来源投影和独立 fingerprint domain。V2 不定义 Host snapshot wire，也不
   接受 task/thread/session/item ID、Project 路径、citation、消息数组或 raw transcript。两版都不把 Draft
   冒充可运行 Package，现有 Package builder 仍只认 V1。
+- `agent-package-release.ts`：显式 `./agent-package-release` 子路径的不可变 Release 引用，只把稳定 Release
+  ID 绑定到 exact Package digest，不保存分享链接、发布者资料、Package 内容或运行状态。
+- `agent-package-capability.ts`：显式 `./agent-package-capability` 子路径的严格 V2 迁移投影，只把旧
+  Capability 索引指向一个 exact Agent Package Release。它不复制 Package 行为、知识、工具、价格或运行
+  状态；只认识 V1 的旧 Runtime 会因 `version=2` fail closed。
 - `creator-authorization-contract.ts`：未来原生 Host 授权卡的 path-free claims、固定 Draft-only scope、
   最长五分钟语义和脱敏错误分类；它不实现 mint、handle、consume、IPC sealing 或私有 Project authority。
 - `creator-authorization.ts`：公开语义子路径，只显式导出上述 schema、常量、类型与固定错误。
