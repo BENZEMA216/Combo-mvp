@@ -14,7 +14,7 @@ import {
 
 export const DEFAULT_USAGE_BILLING_POLICY = {
   freeUses: 3,
-  unitPriceCents: 100,
+  unitPriceCents: 1,
   version: 'runtime-usage-v1',
 } as const;
 

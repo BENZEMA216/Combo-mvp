@@ -126,7 +126,10 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build shared first
+      - name: Build creator agent protocol first
+        run: pnpm -F @cb/creator-agent-protocol build
+
+      - name: Build shared
         run: pnpm -F @cb/shared build
 
       - name: Install database client

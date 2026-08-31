@@ -21,11 +21,26 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 注入它，并用 Codex 技能注册表激活包内技能。智能体包摘要是内容完整性标识，不是发布者签名或运行成功
 证明。
 
+显式 `knowledge-bundle` 子路径定义 `combo.knowledge-bundle/1`。知识内容只能作为 exact Package 清单内固定的
+`skills/knowledge/references/knowledge-bundle.json` 文件存在；运行时不得从 Capability、Release 或请求中
+接受另一条知识对象地址或独立摘要。受控 Test profile 只允许 `AGENT.md`、knowledge `SKILL.md` 和这一份
+Bundle 三个文件，避免额外 references 成为第二知识通道。Bundle 保存排序且有界的证据分片、opaque source
+ID、不可解引用的公开显示标签和每段 UTF-8 内容摘要，整个文件仍受 Package 的 2 MiB 单文件上限及清单
+摘要约束。该合同只绑定内容寻址字节与发布者提供的引用显示声明，不验证来源真实性，也不证明模型回答在
+语义上完整受证据支持；它不提供动态、私有或可变知识库。
+
 创作端可以生成一份含 Project 根摘要、覆盖统计与相对引用的私有来源回执。可分享 Package 不携带这份
 回执、来源文件名或覆盖摘要，只在清单绑定的 `provenance.json` 中保存回执摘要和可选制作要求摘要；
 因此 exact Package 仍绑定确定性的创作来源与意图，而消费者不能从 Package 直接读取创作者的来源清单。
 制作要求摘要只是不可逆的一致性绑定，不是保密或身份认证证明；随机 Draft ID、revision 和 fingerprint
 保留在私有创作状态中，不进入 Package 摘要。
+
+显式 `agent-package-release` 子路径定义 `combo.agent-package-release/1`。一条 Release 只保存不可变
+Release ID 和 exact Package digest，作为 Registry、分享入口与 Receiver 共同使用的最小公开引用。它不
+复制 Package 清单、行为文本或来源信息，也不保存发布者资料、URL、Project、Prompt、权限、会话或运行
+结果。Release ID 由 Registry 使用密码学安全随机数生成，是公开标识而不是授权凭据。Release 合同只绑定
+身份与内容；无状态校验无法阻止同一个 Release ID 被重新配到另一摘要，Registry 必须用一次写入和冲突
+比对实现不可变性。持久化、公开解析、下载授权和发布者认证属于后续 Registry 服务。
 
 显式 `agent-package-draft` 子路径定义 `combo.agent-package-creator-request/1` 与
 `combo.agent-package-draft/1`。前者只携带创作者的一句制作要求，不保存本机路径、任务标识或来源正文；
@@ -126,10 +141,15 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   覆盖、实际脱敏、用户确认、Git remote 可达或 OS 级 Project 隔离。
 - `@cb/creator-agent-protocol/agent-package`：暴露独立的智能体包清单、原始文件摘要、智能体包摘要与规范化
   解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
+- `@cb/creator-agent-protocol/knowledge-bundle`：暴露 exact Package 内固定知识资源路径、有界证据分片、
+  opaque source ID、不可解引用显示标签、内容摘要与规范化解析；它不接受独立 storage key，也不执行检索、
+  回答或语义支持性判断。
 - `@cb/creator-agent-protocol/agent-package-draft`：暴露一句制作要求、可修订 Package Draft、乐观 revision
   请求、Creator bootstrap handoff、Project V1 与 current-conversation V2 的 domain-separated draft
   fingerprint 和规范化解析；它不暴露 Host snapshot 或任务选择 API，不保存绝对 Project 路径或 raw
   transcript，也不执行提取、编译、发布或推理。
+- `@cb/creator-agent-protocol/agent-package-release`：暴露不可变 Release ID 到 exact Package digest 的最小
+  规范引用；它不保存或解析链接，不访问 Registry，也不复制 Agent 定义。
 - `@cb/creator-agent-protocol/creator-authorization`：只暴露 path-free 授权卡 claims schema、固定 scope
   与脱敏错误分类；不暴露 mint、handle、consume、redemption transport 或 Project identity。
 - `@cb/creator-agent-protocol/desktop-current-conversation-receipt`：只暴露真实 Desktop current-task Draft
