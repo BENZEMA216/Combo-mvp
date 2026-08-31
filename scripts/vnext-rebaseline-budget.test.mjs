@@ -322,7 +322,11 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/authoring/src/platform/config/README.md',
     'apps/authoring/src/platform/config/env.ts',
   ];
-  const allowedKnowledgeInfraFiles = ['infra/Dockerfile.api', 'infra/Dockerfile.runtime'];
+  const allowedKnowledgeInfraFiles = [
+    'infra/Dockerfile.api',
+    'infra/Dockerfile.runtime',
+    'infra/README.md',
+  ];
   const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
   const allowedProductPrefixes = [
     'apps/authoring/src/modules/agent-package-release/',
@@ -350,6 +354,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     );
   }
   assert.equal(assessPullRequest(contract, knowledgeAgentTestSlice).mode, 'PRODUCT');
+  assert.equal(assessPullRequest(contract, [entry('infra/README.md')]).mode, 'PRODUCT');
   assert.deepEqual(
     contract.allowedFiles.filter(
       (path) =>
@@ -398,6 +403,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'docs/leshouying-test-acceptance-v2.md',
     'infra/Dockerfile.resend-mock',
     'infra/Dockerfile.web',
+    'infra/README-extra.md',
     'infra/docker-compose.yml',
     'infra/docker-compose.dev-test.yml',
     'infra/k8s/runtime.yaml',
