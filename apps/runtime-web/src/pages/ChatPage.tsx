@@ -573,11 +573,13 @@ export function ChatPage() {
           </div>
         )}
       </div>
-      {stream.rechargeRequired && (
+      {stream.rechargeRequired && stream.activeRechargeIntentId && (
         <RechargeDialog
           requirement={stream.rechargeRequired}
+          activeRechargeIntentId={stream.activeRechargeIntentId}
           onClose={stream.clearRechargeRequired}
-          onCredited={stream.abandonRechargeUsage}
+          onActiveRechargeIntentChange={stream.setActiveRechargeIntent}
+          onCredited={stream.resumeAfterRecharge}
           onAbandon={stream.abandonRechargeUsage}
         />
       )}
