@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0017_agent_package_registry.sql');
+    expect(plan.head).toBe('0018_agent_session_usage_receipts.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -25,7 +25,7 @@ describe('migration runner contract', () => {
     expect(plan.pending).toEqual([]);
   });
 
-  it('plans immutable live 0016 before Registry 0017 when starting at the legacy 0015 prefix', () => {
+  it('plans live 0016, Registry 0017, and receipts 0018 when starting at the legacy 0015 prefix', () => {
     const oldHeadIndex = migrations.indexOf('0015_project_agent_shares.sql');
     const applied = migrations.slice(0, oldHeadIndex + 1);
     const plan = planMigrations(migrations, applied, migrationHead(migrations));
@@ -35,17 +35,31 @@ describe('migration runner contract', () => {
     expect(plan.pending).toEqual([
       '0016_project_history_agent_flow.sql',
       '0017_agent_package_registry.sql',
+      '0018_agent_session_usage_receipts.sql',
     ]);
   });
 
-  it('plans only Registry 0017 when upgrading the immutable live 0016 ledger prefix', () => {
+  it('plans Registry 0017 then receipts 0018 from the immutable live 0016 ledger prefix', () => {
     const liveHeadIndex = migrations.indexOf('0016_project_history_agent_flow.sql');
     const applied = migrations.slice(0, liveHeadIndex + 1);
     const plan = planMigrations(migrations, applied, migrationHead(migrations));
 
     expect(liveHeadIndex).toBeGreaterThan(0);
     expect(plan.applied).toEqual(applied);
-    expect(plan.pending).toEqual(['0017_agent_package_registry.sql']);
+    expect(plan.pending).toEqual([
+      '0017_agent_package_registry.sql',
+      '0018_agent_session_usage_receipts.sql',
+    ]);
+  });
+
+  it('plans only receipts 0018 when Registry 0017 is already applied', () => {
+    const registryHeadIndex = migrations.indexOf('0017_agent_package_registry.sql');
+    const applied = migrations.slice(0, registryHeadIndex + 1);
+    const plan = planMigrations(migrations, applied, migrationHead(migrations));
+
+    expect(registryHeadIndex).toBeGreaterThan(0);
+    expect(plan.applied).toEqual(applied);
+    expect(plan.pending).toEqual(['0018_agent_session_usage_receipts.sql']);
   });
 
   it('defaults MIGRATION_RUNS to one and accepts only the explicit Test values', () => {
@@ -77,7 +91,7 @@ describe('migration runner contract', () => {
 
   it('rejects a release whose expected migration head differs from source', () => {
     expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
-      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0017_agent_package_registry\.sql/,
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0018_agent_session_usage_receipts\.sql/,
     );
   });
 

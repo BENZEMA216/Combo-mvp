@@ -102,6 +102,7 @@ describe('migrations', () => {
         // The canonical Registry is the current Agent Package product model.
         'agent_packages',
         'agent_package_releases',
+        'agent_usage_receipts',
         // Test already applied 0012-0016. These tables remain a legacy compatibility
         // prefix and do not define the current Agent Package product model.
         'agent_projects',
@@ -203,12 +204,12 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps authentication, roles, billing, the Test prefix, and Registry in sequence', () => {
+  it('keeps authentication, roles, billing, the Test prefix, Registry, and receipts in sequence', () => {
     const list = files();
     const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
 
     expect(firstCurrentIndex).toBeGreaterThan(0);
-    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 11)).toEqual([
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 12)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -220,6 +221,7 @@ describe('migrations', () => {
       '0015_project_agent_shares.sql',
       '0016_project_history_agent_flow.sql',
       '0017_agent_package_registry.sql',
+      '0018_agent_session_usage_receipts.sql',
     ]);
   });
 
