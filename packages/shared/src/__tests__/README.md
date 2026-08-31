@@ -4,4 +4,5 @@
 
 - `auth.test.ts` 验证邮箱输入、验证码、返回地址、第一方认证请求与向前兼容响应、会话 Cookie、认证错误和健康依赖契约。authoring、runtime 与两个前端共同消费这些规则。
 - `shared.test.ts` 验证通用错误信封、任务、能力、试用会话和服务端事件流契约。各业务服务和前端通过共享包复用这些数据形状。
+- `knowledge.test.ts` 验证受控 Test 知识 Agent 的冻结绑定、四种终态、权威回答、引用顺序、实际结算金额和 Runtime 版本契约，并覆盖旧 Runtime 响应的滚动兼容。
 - `redaction.test.ts` 验证去敏规则、类别计数、批处理和规则集边界。authoring 的提取流程在写入能力内容前消费同一套去敏实现。
