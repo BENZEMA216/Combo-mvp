@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import {
   KnowledgeTurnResultSchema,
   type ArtifactView,
@@ -243,6 +243,15 @@ function LocationProbe() {
   return <output data-testid="location-probe">{`${location.pathname}${location.search}`}</output>;
 }
 
+function SessionSwitcher() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate('/session/22222222-2222-4222-8222-222222222222')}>
+      切换到会话 B
+    </button>
+  );
+}
+
 function pageElement(url: string) {
   return (
     <MemoryRouter initialEntries={[url]}>
@@ -253,6 +262,7 @@ function pageElement(url: string) {
             <>
               <ChatPage />
               <LocationProbe />
+              <SessionSwitcher />
             </>
           }
         />
@@ -263,6 +273,17 @@ function pageElement(url: string) {
 
 function renderPage(url: string): ReturnType<typeof render> {
   return render(pageElement(url));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -783,6 +804,65 @@ describe('ChatPage controlled knowledge experience', () => {
     );
     expect(page.container.querySelector('.rt-knowledge-alert')).toHaveTextContent('免费次数已用完');
     expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a late credited success clear the next session draft', async () => {
+    const resumed = deferred<unknown>();
+    mocks.resumeAfterRecharge.mockReturnValueOnce(resumed.promise);
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() => expect(mocks.resumeAfterRecharge).toHaveBeenCalledOnce());
+    mocks.rechargeRequired = null;
+    mocks.activeRechargeIntentId = null;
+    fireEvent.click(screen.getByRole('button', { name: '切换到会话 B' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location-probe')).toHaveTextContent(
+        '/session/22222222-2222-4222-8222-222222222222',
+      ),
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: '输入知识问题' }), {
+      target: { value: '会话 B 的草稿' },
+    });
+
+    await act(async () => {
+      resumed.resolve(undefined);
+      await resumed.promise;
+    });
+    expect(screen.getByRole('textbox', { name: '输入知识问题' })).toHaveValue('会话 B 的草稿');
+  });
+
+  it('does not let a late pending-retry success clear the next session draft', async () => {
+    const retried = deferred<unknown>();
+    mocks.pendingRetryAvailable = true;
+    mocks.retryPending.mockReturnValueOnce(retried.promise);
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    fireEvent.click(screen.getByRole('button', { name: '重试原问题' }));
+    await waitFor(() => expect(mocks.retryPending).toHaveBeenCalledOnce());
+    mocks.pendingRetryAvailable = false;
+    fireEvent.click(screen.getByRole('button', { name: '切换到会话 B' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location-probe')).toHaveTextContent(
+        '/session/22222222-2222-4222-8222-222222222222',
+      ),
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: '输入知识问题' }), {
+      target: { value: '会话 B 仍在编辑' },
+    });
+
+    await act(async () => {
+      retried.resolve(undefined);
+      await retried.promise;
+    });
+    expect(screen.getByRole('textbox', { name: '输入知识问题' })).toHaveValue('会话 B 仍在编辑');
   });
 
   it('shows a fixed reconnect action without exposing a stream-provided error string', () => {

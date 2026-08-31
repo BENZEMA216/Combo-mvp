@@ -121,6 +121,12 @@ export function ChatPage() {
   const [trialStartError, setTrialStartError] = useState<string | null>(null);
   const [retryResolutionVersion, setRetryResolutionVersion] = useState(0);
   const rechargeBackgroundRef = useRef<HTMLDivElement>(null);
+  const sessionGenerationRef = useRef<{ sessionId: string | undefined }>({ sessionId });
+  if (sessionGenerationRef.current.sessionId !== sessionId) {
+    // Replace the token on every route generation, including A -> B -> A. A late recovery from
+    // an older mount must never remount an input source that now belongs to another generation.
+    sessionGenerationRef.current = { sessionId };
+  }
 
   // 普通试用和 Studio 都记住严格校验后的 returnTo，保证反复修改后能继续定价发布。
   const queryReturnTo = safeRuntimeReturnTo(searchParams.get('returnTo'));
@@ -228,7 +234,9 @@ export function ChatPage() {
   );
 
   const retryPendingUsage = useCallback(async (): Promise<void> => {
+    const requestedGeneration = sessionGenerationRef.current;
     await stream.retryPending();
+    if (sessionGenerationRef.current !== requestedGeneration) return;
     // 统一恢复入口持有并重放的是完整原请求。成功确认后重挂载原输入源，
     // 避免表单、对话草稿或 Miniapp 再把相同内容以新 usageId 发送一次。
     setRetryResolutionVersion((version) => version + 1);
@@ -238,7 +246,9 @@ export function ChatPage() {
 
   const resumeAfterRecharge = useCallback(
     async (creditedIntentId: string): Promise<unknown> => {
+      const requestedGeneration = sessionGenerationRef.current;
       const accepted = await stream.resumeAfterRecharge(creditedIntentId);
+      if (sessionGenerationRef.current !== requestedGeneration) return accepted;
       // Recharge resume bypasses the mounted input source's own onSend success path. Only after
       // the same usageId is authoritatively accepted may we clear its draft/error by remounting.
       setRetryResolutionVersion((version) => version + 1);

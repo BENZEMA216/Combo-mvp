@@ -547,9 +547,11 @@ export function useSessionStream(
         if (requestIsCurrent) setRechargeGate(recharge);
       }
       // A credited resume owns the original persisted usage until authoritative acceptance.
-      // Even a deterministic 4xx must not make the still-mounted draft mint a new usageId.
+      // Its later reload/close retry keeps that provenance too, so even a deterministic 4xx
+      // must not make the still-mounted draft mint a new usageId.
       const mustPreservePendingUsage =
         resume !== undefined ||
+        previousUsage?.reason === 'recharge_required' ||
         recharge !== null ||
         !(err instanceof ApiError) ||
         err.status === 0 ||

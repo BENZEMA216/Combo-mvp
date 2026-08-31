@@ -527,40 +527,60 @@ describe('runtime session generation fencing', () => {
     expect(result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
   });
 
-  it('preserves the credited usage and intent after a deterministic 4xx until retry succeeds', async () => {
+  it('preserves credited provenance across close, reload, and repeated deterministic 4xx', async () => {
     vi.stubGlobal('EventSource', MockEventSource);
     recognizeRechargeForExpectedUsage();
     sendSessionMessageMock
       .mockRejectedValueOnce(new ApiError('first recharge', 402))
       .mockRejectedValueOnce(new ApiError('credited state is not ready', 422))
+      .mockRejectedValueOnce(new ApiError('credited state is still not ready', 422))
       .mockResolvedValueOnce(gatewayResponse(TURN_A));
-    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
-      wrapper: testWrapper(testQueryClient()),
+    const queryClient = testQueryClient();
+    const first = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
     });
 
     await act(async () => {
-      await expect(result.current.send('retry credited usage')).rejects.toThrow('免费次数已用完');
+      await expect(first.result.current.send('retry credited usage')).rejects.toThrow(
+        '免费次数已用完',
+      );
     });
     const usageId = sendSessionMessageMock.mock.calls[0]?.[2];
-    act(() => result.current.setActiveRechargeIntent(REPLACEMENT_INTENT));
+    act(() => first.result.current.setActiveRechargeIntent(REPLACEMENT_INTENT));
 
     await act(async () => {
-      await expect(result.current.resumeAfterRecharge(REPLACEMENT_INTENT)).rejects.toThrow(
+      await expect(first.result.current.resumeAfterRecharge(REPLACEMENT_INTENT)).rejects.toThrow(
         'credited state is not ready',
       );
     });
-    expect(result.current.rechargeRequired).not.toBeNull();
-    expect(result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    expect(first.result.current.rechargeRequired).not.toBeNull();
+    expect(first.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    act(() => first.result.current.clearRechargeRequired());
+    first.unmount();
+
+    const second = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+    await vi.waitFor(() => expect(second.result.current.pendingRetryAvailable).toBe(true));
+    expect(second.result.current.rechargeRequired).toBeNull();
+    expect(second.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    await act(async () => {
+      await expect(second.result.current.retryPending()).rejects.toThrow(
+        'credited state is still not ready',
+      );
+    });
     expect(
       JSON.parse(window.sessionStorage.getItem(`combo:pending-usage:v2:${SESSION_A}`) ?? '{}'),
     ).toMatchObject({ usageId, activeRechargeIntentId: REPLACEMENT_INTENT });
 
     await act(async () => {
-      await result.current.resumeAfterRecharge(REPLACEMENT_INTENT);
+      await second.result.current.retryPending();
     });
     expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(usageId);
     expect(sendSessionMessageMock.mock.calls[2]?.[2]).toBe(usageId);
+    expect(sendSessionMessageMock.mock.calls[3]?.[2]).toBe(usageId);
     expect(window.sessionStorage.length).toBe(0);
+    second.unmount();
   });
 
   it.each([
