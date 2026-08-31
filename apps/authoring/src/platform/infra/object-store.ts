@@ -80,6 +80,8 @@ const IMMUTABLE_OBJECT_ERROR_MESSAGES: Readonly<Record<ImmutableObjectStoreFailu
   unavailable: 'immutable object storage is unavailable',
 };
 
+const IMMUTABLE_OBJECT_STORE_ERROR_BRAND = new WeakSet<object>();
+
 /**
  * 不可变对象原语的稳定失败分类。错误文案不包含 bucket、key、SDK 响应或凭据。
  */
@@ -87,7 +89,14 @@ export class ImmutableObjectStoreError extends Error {
   constructor(readonly failure: ImmutableObjectStoreFailure) {
     super(IMMUTABLE_OBJECT_ERROR_MESSAGES[failure]);
     this.name = 'ImmutableObjectStoreError';
+    IMMUTABLE_OBJECT_STORE_ERROR_BRAND.add(this);
   }
+}
+
+function isImmutableObjectStoreError(error: unknown): error is ImmutableObjectStoreError {
+  return (
+    typeof error === 'object' && error !== null && IMMUTABLE_OBJECT_STORE_ERROR_BRAND.has(error)
+  );
 }
 
 export interface ImmutableObjectCommandSender {
@@ -127,22 +136,30 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 function isAbortFailure(error: unknown, signal: AbortSignal | undefined): boolean {
-  if (signal?.aborted) return true;
-  if (typeof error !== 'object' || error === null) return false;
-  const name = (error as { name?: unknown }).name;
-  return name === 'AbortError';
+  try {
+    if (signal?.aborted) return true;
+    if (typeof error !== 'object' || error === null) return false;
+    const name = (error as { name?: unknown }).name;
+    return name === 'AbortError';
+  } catch {
+    return false;
+  }
 }
 
 function isObjectAlreadyCommitted(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const candidate = error as {
-    name?: unknown;
-    Code?: unknown;
-    $metadata?: { httpStatusCode?: unknown };
-  };
-  const status = candidate.$metadata?.httpStatusCode;
-  if (status !== undefined) return status === 412;
-  return candidate.name === 'PreconditionFailed' || candidate.Code === 'PreconditionFailed';
+  try {
+    if (typeof error !== 'object' || error === null) return false;
+    const candidate = error as {
+      name?: unknown;
+      Code?: unknown;
+      $metadata?: { httpStatusCode?: unknown };
+    };
+    const status = candidate.$metadata?.httpStatusCode;
+    if (status !== undefined) return status === 412;
+    return candidate.name === 'PreconditionFailed' || candidate.Code === 'PreconditionFailed';
+  } catch {
+    return false;
+  }
 }
 
 function normalizeBodyChunk(value: unknown): Uint8Array | null {
@@ -295,7 +312,12 @@ async function readBodyBounded(
   maxBytes: number,
   signal: AbortSignal | undefined,
 ): Promise<Uint8Array> {
-  throwIfAborted(signal);
+  try {
+    throwIfAborted(signal);
+  } catch (error) {
+    cancelUnreadBody(body);
+    throw error;
+  }
   const direct = normalizeBodyChunk(body);
   if (direct) {
     return snapshotBoundedBytes(direct, maxBytes, 'invalid_response');
@@ -356,7 +378,7 @@ function snapshotBoundedBytes(
     }
     return snapshot;
   } catch (error) {
-    if (error instanceof ImmutableObjectStoreError) throw error;
+    if (isImmutableObjectStoreError(error)) throw error;
     throw new ImmutableObjectStoreError(invalidFailure);
   }
 }
@@ -402,7 +424,7 @@ export function createImmutableObjectStore(
       }
       return bytes;
     } catch (error) {
-      if (error instanceof ImmutableObjectStoreError) throw error;
+      if (isImmutableObjectStoreError(error)) throw error;
       if (isAbortFailure(error, input.signal)) throw new ImmutableObjectStoreError('aborted');
       throw new ImmutableObjectStoreError('unavailable');
     }
@@ -417,7 +439,7 @@ export function createImmutableObjectStore(
     try {
       exactBytes = snapshotBoundedBytes(input.bytes, input.maxBytes, 'invalid_input');
     } catch (error) {
-      if (error instanceof ImmutableObjectStoreError) throw error;
+      if (isImmutableObjectStoreError(error)) throw error;
       throw new ImmutableObjectStoreError('invalid_input');
     }
     try {
@@ -444,7 +466,7 @@ export function createImmutableObjectStore(
     try {
       existing = await read(input);
     } catch (error) {
-      if (error instanceof ImmutableObjectStoreError && error.failure === 'too_large') {
+      if (isImmutableObjectStoreError(error) && error.failure === 'too_large') {
         throw new ImmutableObjectStoreError('conflict');
       }
       throw error;

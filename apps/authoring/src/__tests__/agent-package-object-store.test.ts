@@ -385,6 +385,60 @@ describe('immutable Agent Package object storage', () => {
     expect(returned).toBe(true);
   });
 
+  it('destroys a Node response body when the SDK resolves after abort', async () => {
+    const controller = new AbortController();
+    let readCount = 0;
+    const body = new Readable({
+      read() {
+        readCount += 1;
+        this.push(new Uint8Array([1]));
+        this.push(null);
+      },
+    });
+    const fake = sender(async (_command, options) => {
+      expect(options?.abortSignal).toBe(controller.signal);
+      controller.abort();
+      return { ContentLength: 1, Body: body };
+    });
+    const store = createImmutableObjectStore(fake);
+
+    await expect(
+      store.read({ bucket: BUCKET, key: KEY, maxBytes: 1, signal: controller.signal }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+    expect(body.destroyed).toBe(true);
+    expect(readCount).toBe(0);
+  });
+
+  it('cancels a Web response body when the SDK resolves after abort', async () => {
+    const controller = new AbortController();
+    let pullCount = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(streamController) {
+          pullCount += 1;
+          streamController.enqueue(new Uint8Array([1]));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const fake = sender(async (_command, options) => {
+      expect(options?.abortSignal).toBe(controller.signal);
+      controller.abort();
+      return { ContentLength: 1, Body: body };
+    });
+    const store = createImmutableObjectStore(fake);
+
+    await expect(
+      store.read({ bucket: BUCKET, key: KEY, maxBytes: 1, signal: controller.signal }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+    expect(cancelled).toBe(true);
+    expect(pullCount).toBe(0);
+  });
+
   it('rejects oversized commit bytes before copying or calling PUT/GET', async () => {
     const bytes = new Uint8Array([1, 2]);
     Object.defineProperty(bytes, Symbol.iterator, {
@@ -402,6 +456,41 @@ describe('immutable Agent Package object storage', () => {
     ).rejects.toMatchObject({ failure: 'too_large' });
     expect(fake.send).not.toHaveBeenCalled();
   });
+
+  it.each(['name', 'Code', '$metadata', 'httpStatusCode'] as const)(
+    'redacts a hostile SDK %s accessor and fails closed without a speculative GET',
+    async (accessor) => {
+      const failure: Record<string, unknown> = {};
+      const throwSensitiveFailure = () => {
+        throw new Error(`${KEY} AKIA_TEST_CREDENTIAL hostile accessor`);
+      };
+      if (accessor === 'httpStatusCode') {
+        const metadata = {};
+        Object.defineProperty(metadata, 'httpStatusCode', { get: throwSensitiveFailure });
+        failure.$metadata = metadata;
+      } else {
+        Object.defineProperty(failure, accessor, { get: throwSensitiveFailure });
+      }
+      const fake = sender(async (command) => {
+        expect(command).toBeInstanceOf(PutObjectCommand);
+        throw failure;
+      });
+      const store = createImmutableObjectStore(fake);
+
+      try {
+        await store.commit({
+          bucket: BUCKET,
+          key: KEY,
+          bytes: new Uint8Array([1]),
+          maxBytes: 1,
+        });
+        expect.fail('hostile SDK accessors must fail closed');
+      } catch (error) {
+        expectSafeFailure(error, 'unavailable');
+      }
+      expect(fake.send).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     [
