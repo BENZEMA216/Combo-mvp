@@ -19,8 +19,16 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn(),
   pendingRetryAvailable: false,
   retryPending: vi.fn(),
-  rechargeRequired: null,
+  rechargeRequired: null as {
+    rechargeRequired: true;
+    rechargeIntentId: string;
+    balanceCents: string;
+    requiredCents: string;
+  } | null,
+  activeRechargeIntentId: null as string | null,
   clearRechargeRequired: vi.fn(),
+  resumeAfterRecharge: vi.fn(),
+  setActiveRechargeIntent: vi.fn(),
   abandonRechargeUsage: vi.fn(),
   createTrial: vi.fn(),
   createTrialPending: false,
@@ -56,13 +64,40 @@ vi.mock('../api/useSessionStream.js', () => ({
       pendingRetryAvailable: mocks.pendingRetryAvailable,
       retryPending: mocks.retryPending,
       rechargeRequired: mocks.rechargeRequired,
+      activeRechargeIntentId: mocks.activeRechargeIntentId,
       clearRechargeRequired: mocks.clearRechargeRequired,
+      resumeAfterRecharge: mocks.resumeAfterRecharge,
+      setActiveRechargeIntent: mocks.setActiveRechargeIntent,
       abandonRechargeUsage: mocks.abandonRechargeUsage,
       send: mocks.send,
       interrupt: vi.fn(),
       selectArtifact: vi.fn(),
     };
   },
+}));
+
+vi.mock('../components/RechargeDialog.js', () => ({
+  RechargeDialog: ({
+    activeRechargeIntentId,
+    onActiveRechargeIntentChange,
+    onCredited,
+  }: {
+    activeRechargeIntentId: string;
+    onActiveRechargeIntentChange: (rechargeIntentId: string) => void;
+    onCredited: (creditedIntentId: string) => Promise<unknown>;
+  }) => (
+    <div data-testid="recharge-dialog" data-active-intent={activeRechargeIntentId}>
+      <button type="button" onClick={() => void onCredited(activeRechargeIntentId)}>
+        模拟到账
+      </button>
+      <button
+        type="button"
+        onClick={() => onActiveRechargeIntentChange('99999999-9999-4999-8999-999999999999')}
+      >
+        模拟替换订单
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../components/SessionSidebar.js', () => ({
@@ -159,6 +194,9 @@ beforeEach(() => {
   mocks.createTrialPending = false;
   mocks.pendingRetryAvailable = false;
   mocks.retryPending.mockResolvedValue(undefined);
+  mocks.rechargeRequired = null;
+  mocks.activeRechargeIntentId = null;
+  mocks.resumeAfterRecharge.mockResolvedValue(undefined);
 });
 
 describe('ChatPage studio experience', () => {
@@ -574,6 +612,34 @@ describe('ChatPage consume intake regression', () => {
       status: 'completed',
       createdAt: '2026-07-23T01:01:00.000Z',
     });
+  });
+
+  it('binds credited and replacement actions to the persisted active intent, not abandon', async () => {
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: '77777777-7777-4777-8777-777777777777',
+      balanceCents: '25',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = '88888888-8888-4888-8888-888888888888';
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTestId('recharge-dialog')).toHaveAttribute(
+      'data-active-intent',
+      '88888888-8888-4888-8888-888888888888',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() =>
+      expect(mocks.resumeAfterRecharge).toHaveBeenCalledWith(
+        '88888888-8888-4888-8888-888888888888',
+      ),
+    );
+    expect(mocks.abandonRechargeUsage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟替换订单' }));
+    expect(mocks.setActiveRechargeIntent).toHaveBeenCalledWith(
+      '99999999-9999-4999-8999-999999999999',
+    );
   });
 
   it('offers a safe retry entry even before the first consumer conversation exists', async () => {

@@ -1,10 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode, useEffect, useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RechargeOrderView } from '../api/billing.js';
-import { RechargeDialog } from './RechargeDialog.js';
+import {
+  RechargeDialog as RuntimeRechargeDialog,
+  type RechargeDialogProps,
+} from './RechargeDialog.js';
 
 const mocks = vi.hoisted(() => ({
   createOrder: vi.fn(),
+  recoverByIntent: vi.fn(),
   recoveredOrder: null as RechargeOrderView | null,
   recoveryPending: false,
   recoveryError: false,
@@ -27,12 +32,15 @@ vi.mock('../api/billing.js', () => ({
     error: null,
     reset: mocks.resetCreateOrder,
   }),
-  useRechargeOrderByIntent: () => ({
-    data: mocks.recoveredOrder,
-    isPending: mocks.recoveryPending,
-    isError: mocks.recoveryError,
-    error: null,
-  }),
+  useRechargeOrderByIntent: (rechargeIntentId: string) => {
+    mocks.recoverByIntent(rechargeIntentId);
+    return {
+      data: mocks.recoveredOrder,
+      isPending: mocks.recoveryPending,
+      isError: mocks.recoveryError,
+      error: null,
+    };
+  },
   useRechargeOrder: () => ({
     data: mocks.polledOrder,
     isError: false,
@@ -49,6 +57,41 @@ const requirement = {
   requiredCents: '100',
 } as const;
 
+type TestRechargeDialogProps = Omit<
+  RechargeDialogProps,
+  'activeRechargeIntentId' | 'onActiveRechargeIntentChange' | 'onCredited'
+> & {
+  activeRechargeIntentId?: string;
+  onActiveRechargeIntentChange?: (rechargeIntentId: string) => void;
+  onCredited?: (creditedIntentId: string) => unknown;
+};
+
+/** Existing cases get a controlled V2 intent; focused tests can still observe/override transitions. */
+function RechargeDialog({
+  activeRechargeIntentId: requestedIntentId,
+  onActiveRechargeIntentChange,
+  onCredited = vi.fn(),
+  ...props
+}: TestRechargeDialogProps) {
+  const [activeIntentId, setActiveIntentId] = useState(
+    requestedIntentId ?? props.requirement.rechargeIntentId,
+  );
+  useEffect(() => {
+    setActiveIntentId(requestedIntentId ?? props.requirement.rechargeIntentId);
+  }, [props.requirement.rechargeIntentId, requestedIntentId]);
+  return (
+    <RuntimeRechargeDialog
+      {...props}
+      activeRechargeIntentId={activeIntentId}
+      onActiveRechargeIntentChange={(nextIntentId) => {
+        onActiveRechargeIntentChange?.(nextIntentId);
+        setActiveIntentId(nextIntentId);
+      }}
+      onCredited={(creditedIntentId) => Promise.resolve(onCredited(creditedIntentId))}
+    />
+  );
+}
+
 function enterAmount(value: string): void {
   fireEvent.change(screen.getByPlaceholderText('如 1 或 0.01'), { target: { value } });
 }
@@ -61,6 +104,8 @@ beforeEach(() => {
   mocks.recoveryPending = false;
   mocks.recoveryError = false;
   mocks.createOrder.mockReset();
+  mocks.recoverByIntent.mockReset();
+  mocks.recoverByIntent.mockReturnValue({});
   mocks.refetchOrder.mockReset();
   mocks.refetchOrder.mockImplementation(async () => ({
     data: mocks.polledOrder ?? mocks.recoveredOrder,
@@ -99,6 +144,57 @@ describe('RechargeDialog', () => {
     enterAmount('3');
     expect(createButton()).toBeEnabled();
     expect(mocks.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('requires only the authoritative balance deficit and accepts the exact cent boundary', async () => {
+    const deficitRequirement = {
+      ...requirement,
+      balanceCents: '25',
+      requiredCents: '100',
+    };
+    mocks.createOrder.mockResolvedValue({
+      id: '23232323-2323-4232-8232-232323232323',
+      rechargeIntentId: requirement.rechargeIntentId,
+      amountCents: '75',
+      channel: 'qr',
+      status: 'pending',
+    } satisfies RechargeOrderView);
+    render(
+      <RechargeDialog requirement={deficitRequirement} onClose={vi.fn()} onCredited={vi.fn()} />,
+    );
+
+    expect(screen.getByText(/至少充值 ¥0\.75/u)).toBeInTheDocument();
+    enterAmount('0.74');
+    expect(createButton()).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('本次至少需要充值 ¥0.75');
+    enterAmount('0.75');
+    expect(createButton()).toBeEnabled();
+    fireEvent.click(createButton());
+
+    await waitFor(() =>
+      expect(mocks.createOrder).toHaveBeenCalledWith({
+        rechargeIntentId: requirement.rechargeIntentId,
+        amountCents: 75,
+        channel: 'qr',
+        payType: 'alipay',
+      }),
+    );
+  });
+
+  it('recovers the persisted replacement intent instead of the original task usageId', async () => {
+    render(
+      <RechargeDialog
+        requirement={requirement}
+        activeRechargeIntentId="77777777-7777-4777-8777-777777777777"
+        onClose={vi.fn()}
+        onCredited={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(mocks.recoverByIntent).toHaveBeenCalledWith('77777777-7777-4777-8777-777777777777'),
+    );
+    expect(mocks.recoverByIntent).not.toHaveBeenCalledWith(requirement.rechargeIntentId);
   });
 
   it('fills the amount from a quick amount button', async () => {
@@ -292,6 +388,102 @@ describe('RechargeDialog', () => {
     expect(mocks.refreshWallet).toHaveBeenCalledTimes(1);
   });
 
+  it('does not accept a credited order returned for a different active intent', async () => {
+    mocks.recoveredOrder = {
+      id: '45454545-4545-4454-8454-454545454545',
+      rechargeIntentId: requirement.rechargeIntentId,
+      amountCents: '100',
+      channel: 'qr',
+      status: 'credited',
+    };
+    const onCredited = vi.fn();
+
+    render(
+      <RechargeDialog
+        requirement={requirement}
+        activeRechargeIntentId="77777777-7777-4777-8777-777777777777"
+        onClose={vi.fn()}
+        onCredited={onCredited}
+      />,
+    );
+
+    expect(
+      await screen.findByText('充值订单与当前恢复任务不匹配，请刷新页面后重试。'),
+    ).toBeInTheDocument();
+    expect(onCredited).not.toHaveBeenCalled();
+    expect(mocks.refreshWallet).not.toHaveBeenCalled();
+  });
+
+  it('reports one exact credited intent under React StrictMode', async () => {
+    mocks.recoveredOrder = {
+      id: '46464646-4646-4464-8464-464646464646',
+      rechargeIntentId: requirement.rechargeIntentId,
+      amountCents: '100',
+      channel: 'qr',
+      status: 'credited',
+    };
+    const onCredited = vi.fn(async () => undefined);
+
+    render(
+      <StrictMode>
+        <RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={onCredited} />
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(onCredited).toHaveBeenCalledTimes(1));
+    expect(onCredited).toHaveBeenCalledWith(requirement.rechargeIntentId);
+  });
+
+  it('keeps the credited order visible and retries the exact original task after a resume error', async () => {
+    mocks.recoveredOrder = {
+      id: '47474747-4747-4474-8474-474747474747',
+      rechargeIntentId: requirement.rechargeIntentId,
+      amountCents: '100',
+      channel: 'qr',
+      status: 'credited',
+    };
+    const onCredited = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('原任务仍在确认，请重试。'))
+      .mockResolvedValueOnce(undefined);
+    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={onCredited} />);
+
+    expect(await screen.findByText('原任务仍在确认，请重试。')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试原任务' }));
+    await waitFor(() => expect(onCredited).toHaveBeenCalledTimes(2));
+    expect(onCredited).toHaveBeenNthCalledWith(1, requirement.rechargeIntentId);
+    expect(onCredited).toHaveBeenNthCalledWith(2, requirement.rechargeIntentId);
+  });
+
+  it('changes a credited intent only after the user explicitly asks for another recharge', async () => {
+    mocks.recoveredOrder = {
+      id: '49494949-4949-4494-8494-494949494949',
+      rechargeIntentId: requirement.rechargeIntentId,
+      amountCents: '100',
+      channel: 'qr',
+      status: 'credited',
+    };
+    const onIntentChange = vi.fn<(rechargeIntentId: string) => void>();
+    render(
+      <RechargeDialog
+        requirement={requirement}
+        onClose={vi.fn()}
+        onActiveRechargeIntentChange={onIntentChange}
+        onCredited={vi.fn().mockRejectedValue(new Error('余额仍不足。'))}
+      />,
+    );
+
+    const replace = await screen.findByRole('button', {
+      name: '余额仍不足？新建一笔充值',
+    });
+    expect(onIntentChange).not.toHaveBeenCalled();
+    fireEvent.click(replace);
+
+    await waitFor(() => expect(onIntentChange).toHaveBeenCalledOnce());
+    expect(onIntentChange.mock.calls[0]?.[0]).not.toBe(requirement.rechargeIntentId);
+    expect(mocks.resetCreateOrder).toHaveBeenCalledOnce();
+  });
+
   it('removes an expired payment action when the internal order stops returning it', async () => {
     const pending = {
       id: '48484848-4848-4484-8484-484848484848',
@@ -427,5 +619,34 @@ describe('RechargeDialog', () => {
     );
     expect(secondIntent).not.toBe(firstIntent);
     expect(mocks.resetCreateOrder).toHaveBeenCalledOnce();
+  });
+
+  it('does not switch a terminal order when persisting its replacement intent fails', async () => {
+    mocks.recoveredOrder = {
+      id: '67676767-6767-4676-8676-676767676767',
+      rechargeIntentId: requirement.rechargeIntentId,
+      amountCents: '300',
+      channel: 'qr',
+      status: 'failed',
+    };
+    const onIntentChange = vi.fn<(rechargeIntentId: string) => void>(() => {
+      throw new Error('无法保存充值恢复状态，请检查浏览器存储设置后重试。');
+    });
+    render(
+      <RechargeDialog
+        requirement={requirement}
+        onClose={vi.fn()}
+        onActiveRechargeIntentChange={onIntentChange}
+        onCredited={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '新建一笔充值' }));
+    await waitFor(() => expect(onIntentChange).toHaveBeenCalledOnce());
+    expect(onIntentChange.mock.calls[0]?.[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(mocks.resetCreateOrder).not.toHaveBeenCalled();
+    expect(mocks.recoverByIntent).not.toHaveBeenCalledWith(onIntentChange.mock.calls[0]?.[0]);
   });
 });
