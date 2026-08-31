@@ -37,6 +37,7 @@
     "docs/leshouying-test-acceptance.md",
     "infra/Dockerfile.api",
     "infra/Dockerfile.runtime",
+    "infra/README.md",
     "infra/k8s/README.md",
     "infra/k8s/api.yaml",
     "pnpm-lock.yaml",
