@@ -211,6 +211,13 @@ describe('controlled Test Agent Package release service', () => {
       releaseId: expect.stringMatching(/^release\.agent-package\.[0-9a-f]{32}$/u),
       packageDigest: exact.packageDigest,
     });
+    expect(result.stored.release.releaseId).not.toBe(
+      `release.agent-package.${agentPackageReleaseRequestFingerprint({
+        ownerUserId: OWNER,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        packageDigest: exact.packageDigest,
+      }).slice(0, 32)}`,
+    );
     expect(JSON.stringify(result.stored.release)).not.toMatch(
       /owner|storage|latest|price|knowledge|idempotency|request/iu,
     );

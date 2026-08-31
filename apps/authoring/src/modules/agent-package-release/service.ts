@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import {
   CREATOR_AGENT_PACKAGE_FILENAME,
@@ -425,7 +425,7 @@ export async function publishControlledTestAgentPackage(
   });
   const release = createCreatorAgentPackageRelease({
     protocol: CREATOR_AGENT_PACKAGE_RELEASE_PROTOCOL,
-    releaseId: `release.agent-package.${requestFingerprint.slice(0, 32)}`,
+    releaseId: `release.agent-package.${randomBytes(16).toString('hex')}`,
     packageDigest: prepared.packageDigest,
   });
   try {
