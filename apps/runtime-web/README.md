@@ -19,6 +19,9 @@
 - `src/api/runtime.ts` 与 `src/api/useSessionStream.ts` 管理发送、SSE 和使用幂等。
 - `src/api/billing.ts` 提供钱包、创建充值和内部订单轮询。
 - `src/components/RechargeDialog.tsx` 提供手动金额输入和快捷金额，并只渲染后端允许的扫码支付动作。
+- `src/sessionExperience.ts` 根据持久化会话模式和明确的 Agent 绑定选择 Studio、知识问答或普通消费体验。
+- `src/components/KnowledgeConversation.tsx` 只从权威知识结果渲染回答、引用和使用收据，并忽略助手消息、工具消息和流式候选文本。
+- `src/pages/ChatPage.tsx` 为知识会话提供全高对话界面，不挂载输入表单或产物画布。
 
 ## 验证
 
