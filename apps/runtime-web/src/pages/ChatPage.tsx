@@ -3,7 +3,7 @@
 //   - 第一轮生成中且还没有任何产物时显示诚实的页面骨架；
 //   - 有产物后画布渲染产物（多产物顶部 chips 切换），左侧对话负责反复微调；
 //   - 恢复：GET /runtime/sessions/:id（详情真源）；实时：/stream SSE（useSessionStream）。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ArtifactView, SessionDetail } from '@cb/shared';
 import { useArtifactContent, useCreateSession, useSession } from '../api/runtime.js';
@@ -122,11 +122,13 @@ export function ChatPage() {
   const [retryResolutionVersion, setRetryResolutionVersion] = useState(0);
   const rechargeBackgroundRef = useRef<HTMLDivElement>(null);
   const sessionGenerationRef = useRef<{ sessionId: string | undefined }>({ sessionId });
-  if (sessionGenerationRef.current.sessionId !== sessionId) {
-    // Replace the token on every route generation, including A -> B -> A. A late recovery from
-    // an older mount must never remount an input source that now belongs to another generation.
-    sessionGenerationRef.current = { sessionId };
-  }
+  useLayoutEffect(() => {
+    if (sessionGenerationRef.current.sessionId !== sessionId) {
+      // Replace the token on every committed route generation, including A -> B -> A. A late
+      // recovery from an older mount must never remount another generation's input source.
+      sessionGenerationRef.current = { sessionId };
+    }
+  }, [sessionId]);
 
   // 普通试用和 Studio 都记住严格校验后的 returnTo，保证反复修改后能继续定价发布。
   const queryReturnTo = safeRuntimeReturnTo(searchParams.get('returnTo'));
