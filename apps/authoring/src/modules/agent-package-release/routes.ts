@@ -183,13 +183,14 @@ export const AGENT_PACKAGE_RELEASE_ENDPOINTS: EndpointDecl[] = [
   {
     method: 'POST',
     url: AGENT_PACKAGE_RELEASE_COLLECTION_PATH,
-    onRequest: [noStore()],
-    preHandlers: [
+    // Authenticate and conceal the owner-only route before Fastify parses an attacker body.
+    onRequest: [
+      noStore(),
       requireTrustedMutationOrigin(),
       requireAuth(),
       requireControlledPublisher(),
-      requireJson(),
     ],
+    preHandlers: [requireJson()],
     bodyLimit: AGENT_PACKAGE_RELEASE_BODY_LIMIT,
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     handler: createReleaseHandler(),

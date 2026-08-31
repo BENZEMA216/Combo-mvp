@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AUTH_SESSION_COOKIE_PRODUCTION_NAME } from '@cb/shared';
 
 const SOURCE_SHA = 'a'.repeat(40);
 const OWNER = '11111111-1111-4111-8111-111111111111';
+const OTHER_OWNER = '22222222-2222-4222-8222-222222222222';
 const PACKAGE_DIGEST = `sha256:${'d'.repeat(64)}`;
+const SESSION = `s1.${Buffer.alloc(32, 7).toString('base64url')}`;
 const GATE = {
   protocol: 'combo.agent-package-publisher-test-gate/1',
   sourceSha: SOURCE_SHA,
@@ -118,7 +121,7 @@ describe('controlled Test Agent Package Publisher environment gate', () => {
     expect(loadEnv).toThrowError(/只能用于 Test API/u);
   });
 
-  it('registers the HTTP boundary only for an active gate and redacts parser failures', async () => {
+  it('conceals the active owner-only route before parsing attacker bodies', async () => {
     stub(COMMON);
     const { loadEnv } = await freshConfig();
     const { buildApp } = await import('../bootstrap/app.js');
@@ -127,16 +130,53 @@ describe('controlled Test Agent Package Publisher environment gate', () => {
     });
     try {
       const privateMarker = 'publisher-body-must-not-appear';
-      const malformed = await activeApp.inject({
+      const query = vi.spyOn(activeApp.infra.db, 'query');
+      const sessionRow = (userId: string) => ({
+        rows: [
+          {
+            session_id: '33333333-3333-4333-8333-333333333333',
+            user_id: userId,
+            account: 'creator-publisher-test',
+            roles: ['creator'],
+            disabled_at: null,
+          },
+        ],
+        rowCount: 1,
+        command: 'SELECT',
+        oid: 0,
+        fields: [],
+      });
+      query.mockImplementationOnce((async () => sessionRow(OTHER_OWNER)) as never);
+      const concealed = await activeApp.inject({
         method: 'POST',
         url: '/api/v1/agent-package-releases',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          origin: COMMON.PUBLIC_APP_ORIGINS,
+          cookie: `${AUTH_SESSION_COOKIE_PRODUCTION_NAME}=${SESSION}`,
+        },
         payload: `{"private":"${privateMarker}"`,
       });
-      expect(malformed.statusCode).toBe(400);
-      expect(malformed.headers['cache-control']).toBe('no-store');
-      expect(malformed.body).not.toContain(privateMarker);
-      expect(malformed.body).not.toContain('FST_ERR');
+      expect(concealed.statusCode).toBe(404);
+      expect(concealed.headers['cache-control']).toBe('no-store');
+      expect(concealed.body).not.toContain(privateMarker);
+      expect(concealed.body).not.toContain('FST_ERR');
+
+      query.mockImplementationOnce((async () => sessionRow(OWNER)) as never);
+      const publisherMalformed = await activeApp.inject({
+        method: 'POST',
+        url: '/api/v1/agent-package-releases',
+        headers: {
+          'content-type': 'application/json',
+          origin: COMMON.PUBLIC_APP_ORIGINS,
+          cookie: `${AUTH_SESSION_COOKIE_PRODUCTION_NAME}=${SESSION}`,
+        },
+        payload: `{"private":"${privateMarker}"`,
+      });
+      expect(publisherMalformed.statusCode).toBe(400);
+      expect(publisherMalformed.headers['cache-control']).toBe('no-store');
+      expect(publisherMalformed.body).not.toContain(privateMarker);
+      expect(publisherMalformed.body).not.toContain('FST_ERR');
     } finally {
       await activeApp.close();
     }

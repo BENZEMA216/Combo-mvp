@@ -11,4 +11,4 @@
 
 路由由 `bootstrap/routes.ts` 在受控 gate 生效时挂到 `/api/v1`。模块使用 `@cb/creator-agent-protocol` 校验唯一 Agent Package 与 Release 合同，使用 `platform/infra/object-store.ts` 的有界不可覆盖字节原语，并通过 `combo_api` 数据库角色访问 canonical Registry。
 
-数据库结构来自迁移 `0016_agent_package_registry.sql`，该迁移是部署前置依赖，不由本模块复制或回退创建。模块不读取旧 `agent_releases`，不维护 latest 指针，不接受客户端 owner、对象键、Package digest、Release ID、价格或知识选择器，也不修改 Runtime、支付或 Web。
+数据库结构来自迁移 `0017_agent_package_registry.sql`，该迁移是部署前置依赖，不由本模块复制或回退创建。模块不读取旧 `agent_releases`，不维护 latest 指针，不接受客户端 owner、对象键、Package digest、Release ID、价格或知识选择器，也不修改 Runtime、支付或 Web。

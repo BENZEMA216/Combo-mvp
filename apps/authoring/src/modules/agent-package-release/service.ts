@@ -156,7 +156,7 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
-/** PostgreSQL 0016 Registry 仓储；部署前必须先合入并应用该迁移。 */
+/** PostgreSQL 0017 Registry 仓储；部署前必须先合入并应用该迁移。 */
 export class PgAgentPackageReleaseRepository implements AgentPackageReleaseRepository {
   constructor(
     private readonly pool: TxPool,

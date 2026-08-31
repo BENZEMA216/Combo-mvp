@@ -50,7 +50,7 @@ describe('route registry self-check', () => {
     for (const endpoint of ALL_ENDPOINTS) {
       if (endpoint.method === 'GET' || exempt.has(endpoint.url)) continue;
       expect(
-        (endpoint.preHandlers ?? []).length,
+        (endpoint.onRequest ?? []).length + (endpoint.preHandlers ?? []).length,
         `${String(endpoint.method)} ${endpoint.url} 缺浏览器来源守卫`,
       ).toBeGreaterThanOrEqual(2);
     }
@@ -91,20 +91,18 @@ describe('route registry self-check', () => {
       endpoint.url.startsWith('/agent-package-releases'),
     );
     expect(publisher).toHaveLength(2);
-    for (const endpoint of publisher) {
-      expect(endpoint.onRequest).toHaveLength(1);
-      expect(endpoint.preHandlers?.length).toBeGreaterThanOrEqual(2);
-    }
     const mutation = publisher.find((endpoint) => endpoint.method === 'POST');
     expect(mutation).toMatchObject({
       url: '/agent-package-releases',
       bodyLimit: 4 * 1_024 * 1_024,
       config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     });
-    expect(mutation?.preHandlers).toHaveLength(4);
-    expect(publisher.find((endpoint) => endpoint.method === 'GET')?.url).toBe(
-      '/agent-package-releases/:releaseId',
-    );
+    expect(mutation?.onRequest).toHaveLength(4);
+    expect(mutation?.preHandlers).toHaveLength(1);
+    const read = publisher.find((endpoint) => endpoint.method === 'GET');
+    expect(read?.url).toBe('/agent-package-releases/:releaseId');
+    expect(read?.onRequest).toHaveLength(1);
+    expect(read?.preHandlers).toHaveLength(2);
   });
 
   it('keeps assistant endpoints independent from browser login', () => {
