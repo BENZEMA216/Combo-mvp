@@ -40,6 +40,10 @@
       "types": "./dist/agent-package-draft.d.ts",
       "default": "./dist/agent-package-draft.js"
     },
+    "./agent-package-release": {
+      "types": "./dist/agent-package-release.d.ts",
+      "default": "./dist/agent-package-release.js"
+    },
     "./creator-authorization": {
       "types": "./dist/creator-authorization.d.ts",
       "default": "./dist/creator-authorization.js"

@@ -36,6 +36,10 @@ V2 测试拒绝调用方 task/thread/session/item ID、Project 字段、消息�
 Test profile 和 Bundle 在 exact Package 内的固定清单路径。测试不读取真实 Package 或对象存储，不执行
 检索、模型回答、引用支持性验证、计费或 Test 部署。
 
+`agent-package-release-contract.test.ts` 锁定 `combo.agent-package-release/1` 的 exact Release ID、Package
+digest、规范 JSON、深冻结、严格字段，以及属性读取器、代理对象和旧版 AgentVersion 混用的拒绝。它不
+证明 Registry 已持久化 Package、分享入口已解析或 Receiver 已加载 Release。
+
 `desktop-current-conversation-receipt.test.ts` 锁定真实 UAT 收据的 exact candidate/version、脱敏 task binding、
 egress candidate/projection/final Draft fingerprint、事件 hash chain、Host 单权威端到端观测和绑定
 protocol/algorithm/issuer/key ID 的 Ed25519 signature message。测试使用临时 Test key，

@@ -7,7 +7,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const contractPath = 'scripts/vnext-rebaseline-budget.v1.json';
 export const policyPaths = Object.freeze([
+  '.agents/skills/github-collaboration/SKILL.md',
+  '.agents/skills/github-collaboration/references/governance-and-contributions.md',
+  '.agents/skills/github-collaboration/references/quality-and-pull-requests.md',
+  '.agents/skills/github-collaboration/references/worktree-lifecycle.md',
   '.github/workflows/pr-ci.yml',
+  'AGENTS.md',
   'package.json',
   contractPath,
   'scripts/vnext-rebaseline-budget.mjs',
