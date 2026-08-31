@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   } | null,
   errorMessage: null as string | null,
   streamingText: null as string | null,
+  streamConnectionFailed: false,
+  retryStreamConnection: vi.fn(),
   artifact: null as ArtifactView | null,
   artifactContent: '<!doctype html><html><body><button>运行</button></body></html>',
   send: vi.fn(),
@@ -64,6 +66,8 @@ vi.mock('../api/useSessionStream.js', () => ({
       artifacts: Object.fromEntries(artifactList.map((item) => [item.id, item])),
       artifactList,
       streamingText: mocks.streamingText,
+      streamConnectionFailed: mocks.streamConnectionFailed,
+      retryStreamConnection: mocks.retryStreamConnection,
       running: mocks.running || restoredTurn !== null,
       activeRunId: mocks.activeRunId ?? restoredTurn?.id ?? null,
       terminalRun: mocks.terminalRun,
@@ -94,7 +98,10 @@ vi.mock('../components/RechargeDialog.js', () => ({
     onCredited: (creditedIntentId: string) => Promise<unknown>;
   }) => (
     <div data-testid="recharge-dialog" data-active-intent={activeRechargeIntentId}>
-      <button type="button" onClick={() => void onCredited(activeRechargeIntentId)}>
+      <button
+        type="button"
+        onClick={() => void onCredited(activeRechargeIntentId).catch(() => undefined)}
+      >
         模拟到账
       </button>
       <button
@@ -236,8 +243,8 @@ function LocationProbe() {
   return <output data-testid="location-probe">{`${location.pathname}${location.search}`}</output>;
 }
 
-function renderPage(url: string): ReturnType<typeof render> {
-  return render(
+function pageElement(url: string) {
+  return (
     <MemoryRouter initialEntries={[url]}>
       <Routes>
         <Route
@@ -250,8 +257,12 @@ function renderPage(url: string): ReturnType<typeof render> {
           }
         />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderPage(url: string): ReturnType<typeof render> {
+  return render(pageElement(url));
 }
 
 beforeEach(() => {
@@ -280,6 +291,7 @@ beforeEach(() => {
   mocks.activeRechargeIntentId = null;
   mocks.resumeAfterRecharge.mockResolvedValue(undefined);
   mocks.streamingText = null;
+  mocks.streamConnectionFailed = false;
 });
 
 describe('ChatPage studio experience', () => {
@@ -715,6 +727,84 @@ describe('ChatPage controlled knowledge experience', () => {
       ),
     );
     expect(mocks.abandonRechargeUsage).not.toHaveBeenCalled();
+  });
+
+  it('clears a 402 draft only after the same credited usage resumes successfully', async () => {
+    mocks.send.mockRejectedValueOnce(new Error('免费次数已用完，充值后可继续使用。'));
+    const url = '/session/11111111-1111-4111-8111-111111111111';
+    const page = renderPage(url);
+
+    const textbox = screen.getByRole('textbox', { name: '输入知识问题' });
+    fireEvent.change(textbox, { target: { value: '必须只结算一次的问题' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('免费次数已用完'));
+    expect(textbox).toHaveValue('必须只结算一次的问题');
+
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    page.rerender(pageElement(url));
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() => expect(mocks.resumeAfterRecharge).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(page.container.querySelector('textarea[aria-label="输入知识问题"]')).toHaveValue(''),
+    );
+    expect(page.container.querySelector('.rt-knowledge-alert')).not.toBeInTheDocument();
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the 402 draft when credited resume remains uncertain', async () => {
+    mocks.send.mockRejectedValueOnce(new Error('免费次数已用完，充值后可继续使用。'));
+    mocks.resumeAfterRecharge.mockRejectedValueOnce(new Error('原 usageId 仍在确认。'));
+    const url = '/session/11111111-1111-4111-8111-111111111111';
+    const page = renderPage(url);
+
+    const textbox = screen.getByRole('textbox', { name: '输入知识问题' });
+    fireEvent.change(textbox, { target: { value: '失败后仍要保留的问题' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('免费次数已用完'));
+
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    page.rerender(pageElement(url));
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() => expect(mocks.resumeAfterRecharge).toHaveBeenCalledOnce());
+    expect(page.container.querySelector('textarea[aria-label="输入知识问题"]')).toHaveValue(
+      '失败后仍要保留的问题',
+    );
+    expect(page.container.querySelector('.rt-knowledge-alert')).toHaveTextContent('免费次数已用完');
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a fixed reconnect action without exposing a stream-provided error string', () => {
+    mocks.streamConnectionFailed = true;
+    mocks.errorMessage = 'FORGED_SSE_ERROR';
+    const user: MessageView = {
+      id: '77777777-7777-4777-8777-777777777777',
+      seq: 1,
+      turnId: '55555555-5555-4555-8555-555555555555',
+      role: 'user',
+      content: [{ type: 'text', text: '等待权威结果的问题' }],
+      status: 'completed',
+      createdAt: '2026-08-30T01:00:00.000Z',
+    };
+    mocks.detail = knowledgeSessionDetail([user]);
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('实时连接已中断');
+    expect(screen.queryByText('FORGED_SSE_ERROR')).not.toBeInTheDocument();
+    expect(screen.queryByText('正在确认权威结果')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
+    expect(mocks.retryStreamConnection).toHaveBeenCalledOnce();
   });
 });
 

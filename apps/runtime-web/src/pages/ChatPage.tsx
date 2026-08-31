@@ -236,6 +236,19 @@ export function ChatPage() {
     setInspectionEnabled(false);
   }, [stream.retryPending]);
 
+  const resumeAfterRecharge = useCallback(
+    async (creditedIntentId: string): Promise<unknown> => {
+      const accepted = await stream.resumeAfterRecharge(creditedIntentId);
+      // Recharge resume bypasses the mounted input source's own onSend success path. Only after
+      // the same usageId is authoritatively accepted may we clear its draft/error by remounting.
+      setRetryResolutionVersion((version) => version + 1);
+      setSelectedElement(null);
+      setInspectionEnabled(false);
+      return accepted;
+    },
+    [stream.resumeAfterRecharge],
+  );
+
   const runDesignOperation = useCallback(
     async (operation: StudioDesignOperation): Promise<void> => {
       if (!studioMode || stream.running || operationInFlightRef.current) return;
@@ -403,6 +416,8 @@ export function ChatPage() {
                     contractError={detail.knowledgeResults === undefined}
                     pendingRetryAvailable={stream.pendingRetryAvailable && !stream.rechargeRequired}
                     onRetryPending={retryPendingUsage}
+                    streamConnectionFailed={stream.streamConnectionFailed}
+                    onRetryStreamConnection={stream.retryStreamConnection}
                     onSend={sendConversationMessage}
                     onInterrupt={stream.interrupt}
                   />
@@ -604,7 +619,7 @@ export function ChatPage() {
           activeRechargeIntentId={stream.activeRechargeIntentId}
           onClose={stream.clearRechargeRequired}
           onActiveRechargeIntentChange={stream.setActiveRechargeIntent}
-          onCredited={stream.resumeAfterRecharge}
+          onCredited={resumeAfterRecharge}
           onAbandon={stream.abandonRechargeUsage}
         />
       )}

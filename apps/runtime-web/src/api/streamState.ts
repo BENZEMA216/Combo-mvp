@@ -73,6 +73,7 @@ export type StreamUiAction =
   /** Knowledge UI never exposes model candidate text before an immutable result exists. */
   | { kind: 'discard-candidate-text' }
   | { kind: 'error'; message: string }
+  | { kind: 'clear-error' }
   | { kind: 'reset' };
 
 /** data: 帧原文 → 事件对象；非 JSON / 无 type → null（忽略该帧）。 */
@@ -431,6 +432,8 @@ export function streamUiReducer(state: StreamUiState, action: StreamUiAction): S
         activeRunId: null,
         errorMessage: action.message,
       };
+    case 'clear-error':
+      return state.errorMessage === null ? state : { ...state, errorMessage: null };
     case 'reset':
       return initialStreamUiState;
   }

@@ -190,6 +190,28 @@ describe('runtime session EventSource fixed-session behavior', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', SESSION_A] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
   });
+
+  it('exposes a safe closed-stream flag and reconnects with an authoritative detail refetch', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    const queryClient = testQueryClient();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const detail = knowledgeSessionDetail(SESSION_A);
+    const { result } = renderHook(() => useSessionStream(SESSION_A, detail), {
+      wrapper: testWrapper(queryClient),
+    });
+    const firstSource = MockEventSource.instances[0]!;
+
+    act(() => firstSource.failClosed());
+    expect(result.current.streamConnectionFailed).toBe(true);
+    expect(result.current.errorMessage).toBe('事件流连接不上，请刷新页面重试。');
+
+    act(() => result.current.retryStreamConnection());
+    expect(result.current.streamConnectionFailed).toBe(false);
+    expect(result.current.errorMessage).toBeNull();
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(2));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', SESSION_A] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+  });
 });
 
 describe('runtime session generation fencing', () => {

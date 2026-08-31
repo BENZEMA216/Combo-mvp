@@ -17,6 +17,8 @@ export interface KnowledgeConversationProps {
   contractError?: boolean;
   pendingRetryAvailable?: boolean;
   onRetryPending?: () => Promise<unknown>;
+  streamConnectionFailed?: boolean;
+  onRetryStreamConnection?: () => void;
   onSend: (text: string) => Promise<unknown>;
   onInterrupt: () => void;
 }
@@ -117,6 +119,8 @@ export function KnowledgeConversation({
   contractError = false,
   pendingRetryAvailable = false,
   onRetryPending,
+  streamConnectionFailed = false,
+  onRetryStreamConnection,
   onSend,
   onInterrupt,
 }: KnowledgeConversationProps) {
@@ -201,7 +205,11 @@ export function KnowledgeConversation({
 
   return (
     <section className="rt-knowledge-conversation" aria-label="知识问答">
-      <KnowledgeThread entries={entries} isRunning={isRunning} />
+      <KnowledgeThread
+        entries={entries}
+        isRunning={isRunning}
+        streamConnectionFailed={streamConnectionFailed}
+      />
 
       {contractError && (
         <div className="rt-knowledge-alert" role="alert">
@@ -218,6 +226,19 @@ export function KnowledgeConversation({
             onClick={() => void retryPending()}
           >
             重试原问题
+          </button>
+        </div>
+      )}
+      {streamConnectionFailed && (
+        <div className="rt-knowledge-alert" role="alert">
+          实时连接已中断。权威结果不会从候选文本恢复，请重新连接并刷新结果。
+          <button
+            type="button"
+            className="rt-toolbar-pill"
+            disabled={!onRetryStreamConnection}
+            onClick={onRetryStreamConnection}
+          >
+            重新连接
           </button>
         </div>
       )}
@@ -283,9 +304,11 @@ export function KnowledgeConversation({
 function KnowledgeThread({
   entries,
   isRunning,
+  streamConnectionFailed,
 }: {
   entries: KnowledgeConversationEntry[];
   isRunning: boolean;
+  streamConnectionFailed: boolean;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const unresolvedCount = entries.filter((entry) => entry.user && !entry.result).length;
@@ -320,7 +343,7 @@ function KnowledgeThread({
           正在检索并校验已发布知识…
         </div>
       )}
-      {!isRunning && unresolvedCount > 0 && (
+      {!isRunning && unresolvedCount > 0 && !streamConnectionFailed && (
         <div className="rt-knowledge-pending" role="status">
           正在确认权威结果；候选回答不会显示。
         </div>

@@ -270,6 +270,24 @@ describe('KnowledgeConversation authoritative projection', () => {
     await waitFor(() => expect(onRetryPending).toHaveBeenCalledOnce());
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it('shows only a fixed stream failure and offers an explicit authoritative reconnect', () => {
+    const onRetryStreamConnection = vi.fn();
+    render(
+      <KnowledgeConversation
+        {...props({
+          messages: [userMessage()],
+          streamConnectionFailed: true,
+          onRetryStreamConnection,
+        })}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('实时连接已中断');
+    expect(screen.queryByText('正在确认权威结果')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
+    expect(onRetryStreamConnection).toHaveBeenCalledOnce();
+  });
 });
 
 describe('formatKnowledgeCents', () => {

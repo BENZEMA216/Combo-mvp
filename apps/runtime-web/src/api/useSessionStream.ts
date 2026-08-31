@@ -49,6 +49,10 @@ export interface SessionStream extends StreamUiState {
   setActiveRechargeIntent: (rechargeIntentId: string) => void;
   /** 只清理由 402 确认“未创建 Turn”的原任务；网络未知请求不能放弃。 */
   abandonRechargeUsage: () => void;
+  /** EventSource 明确永久关闭；UI 只消费这个布尔值，不展示流内错误文本。 */
+  streamConnectionFailed: boolean;
+  /** 重新建立固定 Session 的 EventSource，并回拉权威详情。 */
+  retryStreamConnection: () => void;
 }
 
 interface SessionEventSubscription {
@@ -291,6 +295,8 @@ export function useSessionStream(
   const [rechargeRequired, setRechargeRequired] = useState<RechargeRequired | null>(null);
   const [activeRechargeIntentId, setActiveRechargeIntentId] = useState<string | null>(null);
   const [pendingRetryAvailable, setPendingRetryAvailable] = useState(false);
+  const [streamConnectionFailed, setStreamConnectionFailed] = useState(false);
+  const [streamSubscriptionVersion, setStreamSubscriptionVersion] = useState(0);
   const activeSessionIdRef = useRef(sessionId);
   const sendInFlightRef = useRef<{ sessionId: string; token: symbol } | null>(null);
   const pendingUsageRef = useRef<PendingUsageV2 | null>(null);
@@ -328,6 +334,7 @@ export function useSessionStream(
 
   useEffect(() => {
     dispatch({ kind: 'reset' });
+    setStreamConnectionFailed(false);
     setRechargeRequired(null);
     rechargeRequiredRef.current = null;
     const storedPending = sessionId ? readStoredPendingUsage(sessionId) : null;
@@ -338,6 +345,9 @@ export function useSessionStream(
         : null,
     );
     setPendingRetryAvailable(storedPending !== null);
+  }, [sessionId]);
+
+  useEffect(() => {
     if (!sessionId) return;
     const subscribedSessionId = sessionId;
     const sessionIsCurrent = (): boolean => activeSessionIdRef.current === subscribedSessionId;
@@ -358,10 +368,11 @@ export function useSessionStream(
       onFatal: () => {
         if (!sessionIsCurrent()) return;
         reportClientEvent('sse_error', { message: 'session stream closed', url });
+        setStreamConnectionFailed(true);
         dispatch({ kind: 'error', message: '事件流连接不上，请刷新页面重试。' });
       },
     });
-  }, [sessionId, qc]);
+  }, [sessionId, qc, streamSubscriptionVersion]);
 
   useEffect(() => {
     if (knowledgeSession) dispatch({ kind: 'discard-candidate-text' });
@@ -673,6 +684,15 @@ export function useSessionStream(
       setPendingRetryAvailable(false);
       setRechargeGate(null);
       setActiveRechargeIntentId(null);
+    },
+    streamConnectionFailed,
+    retryStreamConnection: () => {
+      if (!sessionId || !streamConnectionFailed) return;
+      setStreamConnectionFailed(false);
+      dispatch({ kind: 'clear-error' });
+      setStreamSubscriptionVersion((version) => version + 1);
+      void qc.invalidateQueries({ queryKey: ['session', sessionId] });
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
     },
   };
 }
