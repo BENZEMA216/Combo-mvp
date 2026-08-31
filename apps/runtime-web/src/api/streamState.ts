@@ -70,7 +70,10 @@ export type StreamUiAction =
   | { kind: 'turn-accepted'; runId: string }
   /** 同一 usageId 的 202 重放不会启动新轮；撤销本次乐观 submitting 状态。 */
   | { kind: 'turn-replayed'; runId: string }
+  /** Knowledge UI never exposes model candidate text before an immutable result exists. */
+  | { kind: 'discard-candidate-text' }
   | { kind: 'error'; message: string }
+  | { kind: 'clear-error' }
   | { kind: 'reset' };
 
 /** data: 帧原文 → 事件对象；非 JSON / 无 type → null（忽略该帧）。 */
@@ -88,6 +91,15 @@ export function parseStreamEvent(raw: string): StreamEvent | null {
 /** 终态事件：hook 据此回拉一次会话详情对齐真源。 */
 export function isTerminalEvent(event: StreamEvent): boolean {
   return event.type === EventType.RUN_FINISHED || event.type === EventType.RUN_ERROR;
+}
+
+/** Assistant text frames are candidates, not an authoritative Knowledge result. */
+export function isCandidateTextEvent(event: StreamEvent): boolean {
+  return (
+    event.type === EventType.TEXT_MESSAGE_START ||
+    event.type === EventType.TEXT_MESSAGE_CONTENT ||
+    event.type === EventType.TEXT_MESSAGE_END
+  );
 }
 
 /** JSON Pointer 段解码（产物 id 是 UUID，通常无需转义；按规范兜住 ~0/~1）。 */
@@ -410,6 +422,8 @@ export function streamUiReducer(state: StreamUiState, action: StreamUiAction): S
         streamingText: null,
         errorMessage: null,
       };
+    case 'discard-candidate-text':
+      return state.streamingText === null ? state : { ...state, streamingText: null };
     case 'error':
       return {
         ...state,
@@ -418,6 +432,8 @@ export function streamUiReducer(state: StreamUiState, action: StreamUiAction): S
         activeRunId: null,
         errorMessage: action.message,
       };
+    case 'clear-error':
+      return state.errorMessage === null ? state : { ...state, errorMessage: null };
     case 'reset':
       return initialStreamUiState;
   }

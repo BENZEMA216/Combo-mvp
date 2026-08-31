@@ -326,6 +326,8 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'infra/Dockerfile.api',
     'infra/Dockerfile.runtime',
     'infra/README.md',
+    'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+    'infra/k8s/runtime.yaml',
   ];
   const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
   const allowedProductPrefixes = [
@@ -347,6 +349,8 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   for (const productPath of [
     'apps/authoring/src/platform/infra/object-store.ts',
     'apps/runtime/src/product.ts',
+    'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+    'infra/k8s/runtime.yaml',
   ]) {
     assert.throws(
       () => assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml'), entry(productPath)]),
@@ -406,7 +410,6 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'infra/README-extra.md',
     'infra/docker-compose.yml',
     'infra/docker-compose.dev-test.yml',
-    'infra/k8s/runtime.yaml',
     'infra-other/Dockerfile.runtime',
     'scripts/deploy-env.sh',
   ]) {
@@ -420,6 +423,49 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     () => assessPullRequest(contract, [entry('apps/runtime-web-other/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
   );
+});
+
+test('the Knowledge Runtime manifest scope opens only the two synchronized Runtime files', () => {
+  const runtimeManifests = [
+    'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+    'infra/k8s/runtime.yaml',
+  ];
+  assert.equal(
+    assessPullRequest(
+      contract,
+      runtimeManifests.map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
+  );
+  for (const runtimeManifest of runtimeManifests) {
+    assert.equal(contract.allowedFiles.includes(runtimeManifest), true);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => runtimeManifest.startsWith(prefix)),
+      false,
+    );
+  }
+
+  for (const path of [
+    'infra/k8s/runtime-v2.yaml',
+    'infra/k8s/production.yaml',
+    'infra/k8s/other/runtime.yaml',
+    'infra/k8s-other/runtime.yaml',
+    'infra/k8s/overlays/sandbox-tools/runtime-base-v2.yaml',
+    'infra/k8s/overlays/sandbox-tools/production.yaml',
+    'infra/k8s/overlays/other/runtime-base.yaml',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+
+  for (const runtimeManifest of runtimeManifests) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(contractPath), entry(runtimeManifest)]),
+      /governance-only/,
+    );
+  }
 });
 
 test('Agent Package Release scope opens only its named Authoring module and exact wiring files', () => {
@@ -506,7 +552,11 @@ test('Agent Package Publisher Test scope opens only exact config and render wiri
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/k8s/')),
-    allowedPublisherInfraFiles,
+    [
+      ...allowedPublisherInfraFiles,
+      'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+      'infra/k8s/runtime.yaml',
+    ].sort(),
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('scripts/render-env')),
@@ -542,7 +592,10 @@ test('Agent Package Publisher Test scope opens only exact config and render wiri
     'apps/authoring/src/bootstrap/app.ts',
     'apps/authoring/src/platform/infra/index.ts',
     'infra/k8s/worker.yaml',
-    'infra/k8s/runtime.yaml',
+    'infra/k8s/runtime-v2.yaml',
+    'infra/k8s/production.yaml',
+    'infra/k8s/other/runtime.yaml',
+    'infra/k8s/overlays/sandbox-tools/runtime-base-v2.yaml',
     'infra/docker-compose.yml',
     'scripts/render-env.mjs',
     'scripts/deploy-env.sh',

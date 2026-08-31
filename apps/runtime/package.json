@@ -2,7 +2,7 @@
   "name": "@cb/runtime",
   "version": "0.0.0",
   "private": true,
-  "description": "试用端 Runtime：按 CapabilityDefinition 运行会话、Turn、Artifact 和计费，提供有界对象读取能力，绝不 import authoring 源码。",
+  "description": "试用端 Runtime：按 CapabilityDefinition 运行会话、Turn、Artifact 和计费，通过 Shared 与 Creator Agent Protocol 使用跨服务运行合同并提供有界对象读取能力，绝不 import authoring 源码。",
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
