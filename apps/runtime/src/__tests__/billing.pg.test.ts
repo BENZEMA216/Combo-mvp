@@ -75,6 +75,7 @@ interface SeededKnowledgeChain extends SeededBillingChain {
   answer: string;
   chunkId: string;
 }
+type KnowledgeStateRow = Record<string, string | number | null>;
 
 const RUNTIME_SOURCE_SHA = 'd'.repeat(40);
 
@@ -330,6 +331,15 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       });
     return { agent, runner, start, usageId };
   }
+
+  const waitForKnowledgeReceipt = (sessionId: string) =>
+    waitFor(async () => {
+      const result = await db.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM agent_usage_receipts WHERE session_id = $1`,
+        [sessionId],
+      );
+      return result.rows[0]?.count === '1';
+    }, 5_000);
 
   async function reserveFreeUsage(chain: SeededBillingChain, text: string) {
     const billing = createUsageBillingService({ freeUses: 1, unitPriceCents: 100 });
@@ -933,7 +943,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     expect(ledger.rows[0]).toEqual({ debit_count: '1', debit_total: '-100' });
   });
 
-  it('settles an accepted knowledge answer against the real free allowance', async () => {
+  it('resumes the original knowledge usageId after real PostgreSQL 402 and settles once', async () => {
     const chain = await seedKnowledgeChain();
     const context = knowledgeRunner(
       chain,
@@ -950,76 +960,15 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
           },
         ],
       },
-      { freeUses: 1, unitPriceCents: 100 },
+      { freeUses: 0, unitPriceCents: 101 },
     );
-    try {
-      await context.start();
-      await waitFor(async () => {
-        const result = await db.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM agent_usage_receipts WHERE session_id = $1`,
-          [chain.session.id],
-        );
-        return result.rows[0]?.count === '1';
-      }, 5_000);
-      const state = await db.query<{
-        charge_source: string;
-        charge_status: string;
-        execution_outcome: string;
-        settled_cents: string;
-        free_used_count: number;
-        free_reserved_count: number;
-        assistant_count: string;
-        debit_count: string;
-      }>(
-        `SELECT uc.charge_source,
-                uc.status::text AS charge_status,
-                uc.execution_outcome::text,
-                uc.settled_cents::text,
-                fa.free_used_count,
-                fa.free_reserved_count,
-                (SELECT count(*)::text FROM messages
-                  WHERE turn_id = uc.turn_id AND role = 'assistant') AS assistant_count,
-                (SELECT count(*)::text FROM wallet_ledger
-                  WHERE owner_user_id = $2 AND entry_type = 'usage_debit') AS debit_count
-           FROM usage_charges uc
-           JOIN billing_free_allowances fa
-             ON fa.owner_user_id = uc.owner_user_id
-            AND fa.capability_id = uc.capability_id
-          WHERE uc.session_id = $1`,
-        [chain.session.id, chain.consumerUserId],
-      );
-      expect(state.rows[0]).toEqual({
-        charge_source: 'free',
-        charge_status: 'completed',
-        execution_outcome: 'answered',
-        settled_cents: '0',
-        free_used_count: 1,
-        free_reserved_count: 0,
-        assistant_count: '1',
-        debit_count: '0',
-      });
-    } finally {
-      await context.runner.dispose(AbortSignal.timeout(5_000));
-    }
-  });
-
-  it('returns real PostgreSQL 402 admission without creating a Turn or reservation', async () => {
-    const chain = await seedKnowledgeChain();
-    const context = knowledgeRunner(chain, {}, { freeUses: 0, unitPriceCents: 101 });
     try {
       await expect(context.start()).resolves.toEqual({
         status: 'recharge_required',
         balanceCents: 100n,
         requiredCents: 101n,
       });
-      const state = await db.query<{
-        turn_count: string;
-        message_count: string;
-        charge_count: string;
-        receipt_count: string;
-        balance_cents: string;
-        reserved_cents: string;
-      }>(
+      const state = await db.query<KnowledgeStateRow>(
         `SELECT
            (SELECT count(*)::text FROM turns WHERE session_id = $1) AS turn_count,
            (SELECT count(*)::text FROM messages WHERE session_id = $1) AS message_count,
@@ -1040,36 +989,47 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         reserved_cents: '0',
       });
       expect(context.agent.calls).toHaveLength(0);
-    } finally {
-      await context.runner.dispose(AbortSignal.timeout(5_000));
-    }
-  });
 
-  it('settles one accepted knowledge answer exactly once through combo_runtime', async () => {
-    const chain = await seedKnowledgeChain();
-    const context = knowledgeRunner(
-      chain,
-      {
-        deltas: ['candidate text must stay private'],
-        invokeNamedTools: [
-          { name: 'knowledge_search', params: { query: '免费额度' } },
-          {
-            name: 'submit_knowledge_answer',
-            params: {
-              status: 'answered',
-              answer: chain.answer,
-              citationChunkIds: [chain.chunkId],
-            },
-          },
-        ],
-      },
-      { freeUses: 0, unitPriceCents: 100 },
-    );
-    try {
+      const suffix = randomUUID().replaceAll('-', '');
+      await withTransaction(db, async (transaction) => {
+        const recharge = await transaction.query<{ id: string }>(
+          `INSERT INTO recharge_orders (
+             order_no, owner_user_id, client_idempotency_key, package_id, amount_cents,
+             payment_method, gateway_environment, institution_no, merchant_no,
+             pay_trace_no, pay_time, payment_status, credit_status,
+             platform_trade_no, paid_at, credited_at
+           ) VALUES (
+             $1, $2, $3, 'manual', 1, 'qr', 'test', 'INST0001', 'MCH_TEST_001',
+             $4, '20260728120000', 'succeeded', 'credited', $5, now(), now()
+           ) RETURNING id`,
+          [
+            `CBR-RUNTIME-RETRY-${suffix}`,
+            chain.consumerUserId,
+            `runtime-retry-credit-${suffix}`,
+            `TRACE-RUNTIME-RETRY-${suffix}`,
+            `TRADE-RUNTIME-RETRY-${suffix}`,
+          ],
+        );
+        const rechargeOrderId = recharge.rows[0]?.id;
+        if (!rechargeOrderId) throw new Error('retry recharge seed returned no row');
+        await transaction.query(
+          `UPDATE billing_accounts
+              SET balance_cents = balance_cents + 1, updated_at = now()
+            WHERE owner_user_id = $1`,
+          [chain.consumerUserId],
+        );
+        await transaction.query(
+          `INSERT INTO wallet_ledger (
+             owner_user_id, entry_type, amount_cents, recharge_order_id, usage_charge_id
+           ) VALUES ($1, 'recharge_credit', 1, $2, NULL)`,
+          [chain.consumerUserId, rechargeOrderId],
+        );
+      });
+
       const opened = await Promise.all([context.start(), context.start()]);
       expect(opened.map((result) => result.status).sort()).toEqual(['replayed', 'started']);
       await waitFor(async () => {
-        const receipt = await db.query<{ count: string }>(
+        const receipt = await runtimeDb.query<{ count: string }>(
           `SELECT count(*)::text AS count
              FROM agent_usage_receipts
             WHERE owner_user_id = $1 AND usage_id = $2`,
@@ -1077,25 +1037,15 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         );
         return receipt.rows[0]?.count === '1';
       }, 5_000);
+      const replay = await context.start();
+      expect(replay.status).toBe('replayed');
+      const accepted = opened.find((result) => result.status === 'started');
+      if (accepted?.status === 'started' && replay.status === 'replayed') {
+        expect(replay.userMessage.id).toBe(accepted.userMessage.id);
+        expect(replay.userMessage.turnId).toBe(accepted.userMessage.turnId);
+      }
 
-      const snapshot = await db.query<{
-        turn_count: string;
-        charge_count: string;
-        receipt_count: string;
-        assistant_count: string;
-        debit_count: string;
-        debit_total: string;
-        turn_status: string;
-        charge_status: string;
-        execution_outcome: string;
-        validation_code: string;
-        settled_cents: string;
-        balance_cents: string;
-        reserved_cents: string;
-        session_package_digest: string;
-        charge_package_digest: string;
-        receipt_package_digest: string;
-      }>(
+      const settled = await runtimeDb.query<KnowledgeStateRow>(
         `SELECT
            (SELECT count(*)::text FROM turns WHERE session_id = $1) AS turn_count,
            count(DISTINCT uc.id)::text AS charge_count,
@@ -1125,25 +1075,24 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         GROUP BY s.id`,
         [chain.session.id, chain.consumerUserId],
       );
-      expect(snapshot.rows[0]).toEqual({
+      expect(settled.rows[0]).toEqual({
         turn_count: '1',
         charge_count: '1',
         receipt_count: '1',
         assistant_count: '1',
         debit_count: '1',
-        debit_total: '-100',
+        debit_total: '-101',
         turn_status: 'completed',
         charge_status: 'completed',
         execution_outcome: 'answered',
         validation_code: 'accepted',
-        settled_cents: '100',
+        settled_cents: '101',
         balance_cents: '0',
         reserved_cents: '0',
         session_package_digest: chain.binding.release.packageDigest,
         charge_package_digest: chain.binding.release.packageDigest,
         receipt_package_digest: chain.binding.release.packageDigest,
       });
-      await expect(context.start()).resolves.toMatchObject({ status: 'replayed' });
       expect(context.agent.calls).toHaveLength(1);
     } finally {
       await context.runner.dispose(AbortSignal.timeout(5_000));
@@ -1152,7 +1101,30 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
 
   it.each([
     {
+      label: 'accepted free answer',
+      free: true,
+      script: (chain: SeededKnowledgeChain) => ({
+        deltas: ['candidate text must stay private'],
+        invokeNamedTools: [
+          { name: 'knowledge_search', params: { query: '免费额度' } },
+          {
+            name: 'submit_knowledge_answer',
+            params: {
+              status: 'answered',
+              answer: chain.answer,
+              citationChunkIds: [chain.chunkId],
+            },
+          },
+        ],
+      }),
+      outcome: 'answered',
+      validation: 'accepted',
+      turnStatus: 'completed',
+      assistantCount: '1',
+    },
+    {
       label: 'insufficient evidence',
+      free: false,
       script: (_chain: SeededKnowledgeChain) => ({
         invokeNamedTools: [
           { name: 'knowledge_search', params: { query: '不存在的问题' } },
@@ -1166,6 +1138,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     },
     {
       label: 'rejected candidate',
+      free: false,
       script: (chain: SeededKnowledgeChain) => ({
         invokeNamedTools: [
           { name: 'knowledge_search', params: { query: '免费额度' } },
@@ -1184,35 +1157,35 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       turnStatus: 'failed',
       assistantCount: '0',
     },
-  ])('releases wallet for $label and records an immutable receipt', async (candidate) => {
+    {
+      label: 'missing submission',
+      free: false,
+      script: (_chain: SeededKnowledgeChain) => ({
+        invokeNamedTools: [{ name: 'knowledge_search', params: { query: '免费额度' } }],
+      }),
+      outcome: 'failed',
+      validation: 'protocol_invalid',
+      turnStatus: 'failed',
+      assistantCount: '0',
+    },
+  ])('settles $label and records an immutable receipt', async (candidate) => {
     const chain = await seedKnowledgeChain();
     const context = knowledgeRunner(chain, candidate.script(chain), {
-      freeUses: 0,
+      freeUses: candidate.free ? 1 : 0,
       unitPriceCents: 100,
     });
     try {
       await context.start();
-      await waitFor(async () => {
-        const result = await db.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM agent_usage_receipts WHERE session_id = $1`,
-          [chain.session.id],
-        );
-        return result.rows[0]?.count === '1';
-      }, 5_000);
-      const state = await db.query<{
-        turn_status: string;
-        charge_status: string;
-        execution_outcome: string;
-        validation_code: string;
-        assistant_count: string;
-        debit_count: string;
-        balance_cents: string;
-        reserved_cents: string;
-      }>(
-        `SELECT t.status::text AS turn_status,
+      await waitForKnowledgeReceipt(chain.session.id);
+      const state = await db.query<KnowledgeStateRow>(
+        `SELECT uc.charge_source,
+                t.status::text AS turn_status,
                 uc.status::text AS charge_status,
                 uc.execution_outcome::text,
                 r.validation_code,
+                uc.settled_cents::text,
+                fa.free_used_count,
+                fa.free_reserved_count,
                 (SELECT count(*)::text FROM messages
                   WHERE turn_id = t.id AND role = 'assistant') AS assistant_count,
                 (SELECT count(*)::text FROM wallet_ledger
@@ -1223,14 +1196,21 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
            JOIN usage_charges uc ON uc.turn_id = t.id
            JOIN agent_usage_receipts r ON r.usage_charge_id = uc.id
            JOIN billing_accounts ba ON ba.owner_user_id = uc.owner_user_id
+           LEFT JOIN billing_free_allowances fa
+             ON fa.owner_user_id = uc.owner_user_id
+            AND fa.capability_id = uc.capability_id
           WHERE t.session_id = $1`,
         [chain.session.id, chain.consumerUserId],
       );
       expect(state.rows[0]).toEqual({
+        charge_source: candidate.free ? 'free' : 'wallet',
         turn_status: candidate.turnStatus,
-        charge_status: 'released',
+        charge_status: candidate.free ? 'completed' : 'released',
         execution_outcome: candidate.outcome,
         validation_code: candidate.validation,
+        settled_cents: '0',
+        free_used_count: candidate.free ? 1 : 0,
+        free_reserved_count: 0,
         assistant_count: candidate.assistantCount,
         debit_count: '0',
         balance_cents: '100',
@@ -1267,26 +1247,10 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       await owner.start();
       await waitFor(() => owner.agent.calls.length === 1);
       await expect(peer.interrupt(chain.session.id)).resolves.toBe(true);
-      await waitFor(async () => {
-        const result = await db.query<{ count: string }>(
-          `SELECT count(*)::text AS count FROM agent_usage_receipts WHERE session_id = $1`,
-          [chain.session.id],
-        );
-        return result.rows[0]?.count === '1';
-      }, 5_000);
+      await waitForKnowledgeReceipt(chain.session.id);
       await owner.runner.dispose(AbortSignal.timeout(5_000));
 
-      const state = await db.query<{
-        turn_status: string;
-        charge_status: string;
-        outcome: string;
-        validation_code: string;
-        receipt_count: string;
-        assistant_count: string;
-        debit_count: string;
-        balance_cents: string;
-        reserved_cents: string;
-      }>(
+      const state = await db.query<KnowledgeStateRow>(
         `SELECT t.status::text AS turn_status,
                 uc.status::text AS charge_status,
                 uc.execution_outcome::text AS outcome,

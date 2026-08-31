@@ -1,6 +1,7 @@
 // 路由注册自检 + session 端点 owner 守卫（非本人与不存在同样 404，不暴露存在性）。
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
+import type { SessionDetail } from '@cb/shared';
 import {
   CREATOR_AGENT_PACKAGE_PROTOCOL,
   createCreatorAgentPackageManifest,
@@ -42,7 +43,6 @@ import {
   archiveSession as archiveSessionRow,
   appendTurnMessage,
   createSession,
-  getMessages,
   getOrCreateStudioSession,
 } from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
@@ -50,13 +50,15 @@ import { createTurnRunner, type TurnRunner } from '../modules/agent/run-turn.js'
 import {
   AGENT_PACKAGE_OBJECT_BUCKET,
   agentPackageObjectKey,
+  knowledgeQuestionDigest,
+  resolveKnowledgeAgentPackage,
 } from '../modules/knowledge-agent/resolver.js';
 import {
-  projectKnowledgeResults,
-  readKnowledgeUsageReceipts,
-} from '../modules/knowledge-agent/repo.js';
-import { knowledgeQuestionDigest } from '../modules/knowledge-agent/resolver.js';
-import type { Env, KnowledgeAgentTestGate } from '../platform/config/env.js';
+  knowledgeAgentTestGateFromEnv,
+  type Env,
+  type KnowledgeAgentTestGate,
+} from '../platform/config/env.js';
+import type { Queryable } from '../platform/infra/db.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
 import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
@@ -1575,56 +1577,22 @@ describe('knowledge Agent handler closed loop', () => {
     );
     expect(sent.statusCode).toBe(202);
     await waitFor(() => db.agentUsageReceipts.size === 1);
-    const session = db.sessions.get(sessionId);
-    if (!session || session.product_kind !== 'knowledge_agent_test') {
-      throw new Error('missing frozen knowledge Session');
-    }
-    projectKnowledgeResults({
-      binding: {
-        productKind: 'knowledge_agent_test',
-        capability: { id: capabilityId, protocol: 'combo.agent-package-capability/2' },
-        release,
-        releaseScope: 'controlled_test',
-        knowledge: {
-          protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
-          resourcePath: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
-          resourceDigest: manifest.files[2]!.digest,
-        },
-      },
-      receipts: await readKnowledgeUsageReceipts(db, sessionId),
-      messages: await getMessages(db, sessionId),
-      knowledge,
-    });
 
-    const detailWarnings: unknown[] = [];
-    const detailRequest = makeReq({
-      db,
-      objectStore: store,
-      env,
-      turns,
-      userId: consumer,
-      params: { id: sessionId },
-    });
-    detailRequest.log.warn = (...args: unknown[]) => {
-      detailWarnings.push(args);
-    };
-    const detail = await call(getSessionDetailHandler(), detailRequest);
-    expect(detail.statusCode, JSON.stringify(detailWarnings)).toBe(200);
-    const data = (
-      detail.body as {
-        data: {
-          messages: Array<{ role: string; content: unknown }>;
-          artifacts: unknown[];
-          agentBinding: unknown;
-          knowledgeResults: Array<{
-            outcome: string;
-            answer: { text: string } | null;
-            citations: Array<{ displayLabel: string }>;
-            billing: { source: string; settledCents: string };
-          }>;
-        };
-      }
-    ).data;
+    const readDetail = () =>
+      call(
+        getSessionDetailHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env,
+          turns,
+          userId: consumer,
+          params: { id: sessionId },
+        }),
+      );
+    const detail = await readDetail();
+    expect(detail.statusCode).toBe(200);
+    const data = (detail.body as { data: SessionDetail }).data;
     expect(data.messages).toHaveLength(1);
     expect(data.messages[0]).toMatchObject({ role: 'user' });
     expect(JSON.stringify(data)).not.toContain('未验证候选文本');
@@ -1642,6 +1610,15 @@ describe('knowledge Agent handler closed loop', () => {
         billing: expect.objectContaining({ source: 'free', settledCents: '0' }),
       }),
     ]);
+    const receipt = [...db.agentUsageReceipts.values()][0]!;
+    const responseDigest = receipt.response_digest;
+    receipt.response_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.response_digest = responseDigest;
+    const citationChunkIds = receipt.citation_chunk_ids;
+    receipt.citation_chunk_ids = [`chunk.knowledge.${'0'.repeat(32)}`];
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.citation_chunk_ids = citationChunkIds;
 
     for (const [index, retryUsageId] of [
       '00000000-0000-4000-8000-000000000105',
@@ -1687,5 +1664,260 @@ describe('knowledge Agent handler closed loop', () => {
     expect(agent.calls).toHaveLength(3);
     expect(db.agentUsageReceipts.size).toBe(3);
     await turns.dispose();
+  });
+});
+
+const OWNER = '11111111-1111-4111-8111-111111111111';
+const CAPABILITY_ID = '22222222-2222-4222-8222-222222222222';
+const SOURCE_SHA = 'a'.repeat(40);
+
+function bytes(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function fixture() {
+  const agentMarkdown = bytes('# Knowledge Agent\nAnswer only from retrieved evidence.');
+  const skillMarkdown = bytes('# Knowledge\nSearch before submitting an answer.');
+  const content = 'Combo 的受控 Test 知识内容。';
+  const bundleText = serializeCreatorKnowledgeBundle({
+    protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+    chunks: [
+      {
+        id: `chunk.knowledge.${'1'.repeat(32)}`,
+        source: {
+          sourceId: `source.knowledge.${'2'.repeat(32)}`,
+          displayLabel: '公开测试资料',
+        },
+        content,
+        contentDigest: digestCreatorAgentPackageFile(bytes(content)),
+      },
+    ],
+  });
+  const bundleBytes = bytes(bundleText);
+  const manifest = createCreatorAgentPackageManifest({
+    protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+    name: '受控知识 Agent',
+    description: '只回答固定公开测试资料。',
+    instructions: 'AGENT.md',
+    skills: [CREATOR_KNOWLEDGE_SKILL_PATH],
+    files: [
+      {
+        path: 'AGENT.md',
+        byteLength: agentMarkdown.byteLength,
+        digest: digestCreatorAgentPackageFile(agentMarkdown),
+      },
+      {
+        path: CREATOR_KNOWLEDGE_SKILL_PATH,
+        byteLength: skillMarkdown.byteLength,
+        digest: digestCreatorAgentPackageFile(skillMarkdown),
+      },
+      {
+        path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+        byteLength: bundleBytes.byteLength,
+        digest: digestCreatorAgentPackageFile(bundleBytes),
+      },
+    ],
+  });
+  const packageDigest = digestCreatorAgentPackage(manifest);
+  const release = createCreatorAgentPackageRelease({
+    protocol: 'combo.agent-package-release/1',
+    releaseId: `release.agent-package.${'3'.repeat(32)}`,
+    packageDigest,
+  });
+  const projection = createCreatorAgentPackageCapability({
+    version: 2,
+    protocol: 'combo.agent-package-capability/2',
+    release,
+  });
+  const gate: KnowledgeAgentTestGate = {
+    protocol: 'combo.knowledge-agent-runtime-test-gate/1',
+    sourceSha: SOURCE_SHA,
+    publisherUserId: OWNER,
+    capabilityId: CAPABILITY_ID,
+    releaseId: release.releaseId,
+    packageDigest,
+    validatorPolicyVersion: 'knowledge-agent-test-validator-v1',
+    cases: [
+      {
+        questionDigest: `sha256:${'4'.repeat(64)}`,
+        answer: '受控答案。',
+        citationChunkIds: [`chunk.knowledge.${'1'.repeat(32)}`],
+      },
+    ],
+  };
+  return { agentMarkdown, skillMarkdown, bundleBytes, manifest, packageDigest, projection, gate };
+}
+
+function registryDb(
+  candidate = fixture(),
+  overrides: Record<string, string> = {},
+): Queryable & { query: ReturnType<typeof vi.fn> } {
+  return {
+    query: vi.fn(async () => ({
+      rows: [
+        {
+          release_id: candidate.projection.release.releaseId,
+          package_digest: candidate.packageDigest,
+          owner_user_id: OWNER,
+          release_protocol: 'combo.agent-package-release/1',
+          release_scope: 'controlled_test',
+          package_protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+          ...overrides,
+        },
+      ],
+      rowCount: 1,
+    })),
+  } as Queryable & { query: ReturnType<typeof vi.fn> };
+}
+
+async function seedPackage(store: FakeObjectStore, candidate = fixture()): Promise<void> {
+  const entries = [
+    ['agent.json', bytes(serializeCreatorAgentPackageManifest(candidate.manifest))],
+    ['AGENT.md', candidate.agentMarkdown],
+    [CREATOR_KNOWLEDGE_SKILL_PATH, candidate.skillMarkdown],
+    [CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH, candidate.bundleBytes],
+  ] as const;
+  for (const [path, body] of entries) {
+    await store.putObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      agentPackageObjectKey(candidate.packageDigest, path),
+      body,
+    );
+  }
+}
+
+function resolveInput(
+  candidate = fixture(),
+  store = new FakeObjectStore(),
+  db = registryDb(candidate),
+) {
+  return {
+    candidate,
+    store,
+    db,
+    input: {
+      db,
+      objectStore: store,
+      capability: {
+        id: CAPABILITY_ID,
+        name: '投影名称',
+        summary: '投影摘要',
+        kind: 'knowledge',
+        published: true,
+        ownerUserId: OWNER,
+      },
+      projection: candidate.projection,
+      gate: candidate.gate,
+    },
+  };
+}
+
+describe('exact knowledge Agent Package resolver', () => {
+  it('keeps a missing or mismatched Test gate closed before DB or object access', async () => {
+    const context = resolveInput();
+    for (const gate of [null, { ...context.candidate.gate, capabilityId: OWNER }]) {
+      await expect(resolveKnowledgeAgentPackage({ ...context.input, gate })).rejects.toMatchObject({
+        failure: 'closed',
+      });
+    }
+    expect(context.db.query).not.toHaveBeenCalled();
+    expect(context.store.objects.size).toBe(0);
+  });
+
+  it.each([
+    ['owner', { owner_user_id: '33333333-3333-4333-8333-333333333333' }],
+    ['release protocol', { release_protocol: 'legacy' }],
+    ['scope', { release_scope: 'production' }],
+    ['package protocol', { package_protocol: 'legacy' }],
+  ])('fails closed on Registry %s drift', async (_label, overrides) => {
+    const candidate = fixture();
+    const context = resolveInput(
+      candidate,
+      new FakeObjectStore(),
+      registryDb(candidate, overrides),
+    );
+    await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+      failure: 'invalid_registry',
+    });
+  });
+
+  it('rejects a manifest whose recomputed digest differs from the Registry selector', async () => {
+    const context = resolveInput();
+    await seedPackage(context.store, context.candidate);
+    const changed = createCreatorAgentPackageManifest({
+      ...context.candidate.manifest,
+      description: '另一份合法但 digest 不同的 Package。',
+    });
+    context.store.seedText(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      agentPackageObjectKey(context.candidate.packageDigest, 'agent.json'),
+      serializeCreatorAgentPackageManifest(changed),
+    );
+
+    await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+      failure: 'invalid_package',
+    });
+  });
+
+  it('rejects tampered file bytes and invalid UTF-8', async () => {
+    for (const replacement of [bytes('# Knowledge Agenx'), new Uint8Array([0xff])]) {
+      const context = resolveInput();
+      await seedPackage(context.store, context.candidate);
+      await context.store.putObject(
+        AGENT_PACKAGE_OBJECT_BUCKET,
+        agentPackageObjectKey(context.candidate.packageDigest, 'AGENT.md'),
+        replacement,
+      );
+      await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+        failure: 'invalid_package',
+      });
+    }
+  });
+
+  it('propagates an abort as a stable category without provider details', async () => {
+    const context = resolveInput();
+    await seedPackage(context.store, context.candidate);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      resolveKnowledgeAgentPackage({ ...context.input, signal: controller.signal }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+  });
+});
+
+describe('controlled knowledge Agent Test gate configuration', () => {
+  it('accepts only canonical exact-SHA Test material and fails closed elsewhere', () => {
+    const candidate = fixture();
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: SOURCE_SHA,
+      COMBO_RELEASE_ID: `release-${SOURCE_SHA}`,
+      COMBO_BUILT_AT: '2026-07-28T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(candidate.gate),
+    } as Env;
+    expect(knowledgeAgentTestGateFromEnv(env)).toEqual(candidate.gate);
+    const driftSha = 'f'.repeat(40);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_SOURCE_SHA: driftSha,
+        COMBO_RELEASE_ID: `release-${driftSha}`,
+      }),
+    ).toBeNull();
+    expect(() => knowledgeAgentTestGateFromEnv({ ...env, COMBO_ENVIRONMENT: 'preview' })).toThrow(
+      /COMBO_KNOWLEDGE_AGENT_TEST_GATE/u,
+    );
+    expect(() =>
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify({
+          ...candidate.gate,
+          privateMarker: 'must-not-appear',
+        }),
+      }),
+    ).toThrow(/COMBO_KNOWLEDGE_AGENT_TEST_GATE/u);
   });
 });

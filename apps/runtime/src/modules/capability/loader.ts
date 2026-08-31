@@ -138,7 +138,7 @@ export async function loadCapability(
         definition: parseCreatorAgentPackageCapability(text),
       };
     } catch {
-      return { kind: 'invalid_definition' };
+      return { kind: 'unsupported_version' };
     }
   }
 

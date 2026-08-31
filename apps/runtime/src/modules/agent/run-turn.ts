@@ -38,7 +38,7 @@ import {
   type KnowledgeAgentTool,
   type ResolvedKnowledgeAgent,
 } from '../knowledge-agent/resolver.js';
-import { finishKnowledgeTurn, sweepExpiredKnowledgeTurns } from '../knowledge-agent/repo.js';
+import { finishKnowledgeTurn, sweepExpiredKnowledgeTurns } from '../knowledge-agent/resolver.js';
 import { createTurnEmitter, type TurnEmitter, type TurnLogger } from './turn-emitter.js';
 import {
   createTurn,
@@ -797,16 +797,12 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     const unsubscribeText = agent.subscribeTextDelta(() => armIdleWatchdog());
     const unsubscribeActivity = agent.subscribeActivity?.(armIdleWatchdog);
     armIdleWatchdog();
-    let promptSettled = false;
     const prompt = Promise.resolve()
       .then(() => agent.prompt(args.text))
       .then<PromptOutcome, PromptOutcome>(
         () => ({ status: 'completed' }),
         (error: unknown) => ({ status: 'failed', error }),
-      )
-      .finally(() => {
-        promptSettled = true;
-      });
+      );
     let promptOutcome: PromptOutcome;
     try {
       promptOutcome = await Promise.race([prompt, abortOutcome]);
@@ -829,7 +825,6 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       clearTimeout(graceTimer);
       // Knowledge tools only mutate turn-local memory and are fenced by turnSignal. A late SDK
       // completion cannot reach DB/SSE, so terminalization does not depend on sandbox cleanup.
-      void promptSettled;
       if (idleTimedOut) {
         await finish({
           outcome: 'failed',
@@ -1706,8 +1701,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         local.controller.abort();
         if (!local.knowledgeRuntimeSourceSha) {
           await stopSandboxCommands(sessionId, 'local-interrupt', { localExecution: true });
+          return true;
         }
-        return true;
       }
       const productKind = await readTurnProductKind(runId, sessionId);
       if (productKind === 'knowledge_agent_test') {
@@ -1716,6 +1711,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           sessionId,
           runId,
           lastError,
+          knowledgeRuntimeSourceSha:
+            local?.runId === runId ? local.knowledgeRuntimeSourceSha : undefined,
           beforeFinish: async () => {
             // The only knowledge tools are read-only Bundle search/submission state. Publishing
             // the exact runId aborts a live owner; no sandbox cleanup is necessary.
@@ -1839,58 +1836,58 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           );
           firstPhase.push(cleanup);
         }
-        await waitUntilSignal(Promise.allSettled(firstPhase), shutdownSignal);
-
-        if (!shutdownSignal.aborted) {
-          // StartingTurn.settled is resolved only after startTurn has either
-          // installed its final completion Promise or fenced Pi from starting.
-          await waitUntilSignal(
-            Promise.allSettled([...shutdownRuns.values()].map(({ running }) => running.completion)),
-            shutdownSignal,
-          );
-        }
-
-        if (!shutdownSignal.aborted) {
-          const terminalFallbacks = [...shutdownRuns.values()].map(
-            async ({ sessionId, running }) => {
-              if (cleanupStates.get(running.runId) !== 'safe') {
-                deps.log.error(
-                  { sessionId, runId: running.runId },
-                  'shutdown kept Turn running because sandbox cleanup was unconfirmed',
-                );
-                return;
-              }
-              const remaining = remainingMilliseconds(deadline);
-              if (remaining <= 0 || shutdownSignal.aborted) return;
-              const lastError = {
-                code: 'TURN_SHUTDOWN',
-                message: 'Runtime 正在关闭，本轮已终止，请重试。',
-              };
-              const won = await finishInterruptedRun({
-                sessionId,
-                runId: running.runId,
-                lastError,
-                knowledgeRuntimeSourceSha: running.knowledgeRuntimeSourceSha,
-                transaction: { signal: shutdownSignal, timeoutMs: remaining },
-              }).catch((err) => {
-                deps.log.error({ err, runId: running.runId }, 'shutdown terminal fallback failed');
-                return false;
-              });
-              if (won) {
-                await appendCommittedTerminal(
-                  terminalTurn(running.runId, sessionId, 'interrupted', lastError),
-                  shutdownSignal,
-                ).catch((err) => {
-                  deps.log.error(
-                    { err, runId: running.runId },
-                    'shutdown terminal event append failed',
-                  );
-                });
-              }
-            },
-          );
-          await waitUntilSignal(Promise.allSettled(terminalFallbacks), shutdownSignal);
-        }
+        const firstPhaseDone = Promise.allSettled(firstPhase);
+        const openingByRunId = new Map(
+          startsAtShutdown.map((start) => [start.running.runId, start.settled]),
+        );
+        const terminalFallbacks = [...shutdownRuns.values()].map(async ({ sessionId, running }) => {
+          if (running.knowledgeRuntimeSourceSha) {
+            // Wait only for this Turn's admission outcome; unrelated legacy cleanup and
+            // sweeps must not consume its terminal transaction window.
+            await waitUntilSignal(
+              openingByRunId.get(running.runId) ?? Promise.resolve(),
+              shutdownSignal,
+            );
+          } else {
+            await waitUntilSignal(firstPhaseDone, shutdownSignal);
+            await waitUntilSignal(running.completion, shutdownSignal);
+          }
+          if (cleanupStates.get(running.runId) !== 'safe') {
+            deps.log.error(
+              { sessionId, runId: running.runId },
+              'shutdown kept Turn running because sandbox cleanup was unconfirmed',
+            );
+            return;
+          }
+          const remaining = remainingMilliseconds(deadline);
+          if (remaining <= 0 || shutdownSignal.aborted) return;
+          const lastError = {
+            code: 'TURN_SHUTDOWN',
+            message: 'Runtime 正在关闭，本轮已终止，请重试。',
+          };
+          const won = await finishInterruptedRun({
+            sessionId,
+            runId: running.runId,
+            lastError,
+            knowledgeRuntimeSourceSha: running.knowledgeRuntimeSourceSha,
+            transaction: { signal: shutdownSignal, timeoutMs: remaining },
+          }).catch((err) => {
+            deps.log.error({ err, runId: running.runId }, 'shutdown terminal fallback failed');
+            return false;
+          });
+          if (won) {
+            await appendCommittedTerminal(
+              terminalTurn(running.runId, sessionId, 'interrupted', lastError),
+              shutdownSignal,
+            ).catch((err) => {
+              deps.log.error(
+                { err, runId: running.runId },
+                'shutdown terminal event append failed',
+              );
+            });
+          }
+        });
+        await waitUntilSignal(Promise.allSettled(terminalFallbacks), shutdownSignal);
         shutdownSignal.removeEventListener('abort', abortOpeningTransactions);
         active.clear();
       })();

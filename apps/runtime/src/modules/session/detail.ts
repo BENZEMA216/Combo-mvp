@@ -4,7 +4,10 @@ import { listArtifacts, readCapabilityUiArtifact, type StoredArtifact } from '..
 import { readCapabilitySummary, type CapabilitySummary } from '../capability/loader.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import { getMessages, getSession, type MessageRecord, type SessionRow } from './repo.js';
-import { readKnowledgeUsageReceipts, type KnowledgeReceiptDbRow } from '../knowledge-agent/repo.js';
+import {
+  readKnowledgeUsageReceipts,
+  type KnowledgeReceiptDbRow,
+} from '../knowledge-agent/resolver.js';
 
 export interface SessionDetailDbSnapshot {
   session: SessionRow;

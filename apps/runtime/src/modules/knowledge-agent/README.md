@@ -13,7 +13,7 @@
 
 - `resolver.ts` 提供确定性 `knowledge_search` 和单次 `submit_knowledge_answer`，并使用平台拥有的 controlled-Test oracle 验证问题、答案和引用。引用只能指向本 Turn 已暴露的 chunk，且必须去重、升序；Package 和模型不能配置“已回答”判定。
 - 模型文本和 transcript 都是候选材料，不写 Message、Redis 或 SSE。只有平台验证后的最终 Message 可见。
-- `repo.ts` 按 Session → Turn → charge → response Message 的锁序，在一个事务内写终态、结算或释放、权威 Message 和不可变 receipt。`answered` 才扣费；`insufficient_evidence`、`failed` 和 `interrupted` 都释放预留。
+- `resolver.ts` 还按 Session → Turn → charge → response Message 的锁序，在一个事务内写终态、结算或释放、权威 Message 和不可变 receipt。`answered` 才扣费；`insufficient_evidence`、`failed` 和 `interrupted` 都释放预留。
 - 详情投影会重算 response digest，并从冻结 Bundle 解析 citation label。Message 或 citation 不一致时不返回伪造结果。
 
 跨副本中断、进程关闭和超时清扫都复用同一知识终态事务。通用 legacy reconciler 不会从 completed Turn 推测知识收费结果。

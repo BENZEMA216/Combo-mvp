@@ -44,7 +44,7 @@ import {
   KnowledgeAgentResolutionError,
   resolveKnowledgeAgentPackage,
 } from '../knowledge-agent/resolver.js';
-import { projectKnowledgeResults } from '../knowledge-agent/repo.js';
+import { projectKnowledgeResults } from '../knowledge-agent/resolver.js';
 
 /** owner-scoped 取会话，失败即回信封；成功返回行。 */
 async function requireOwnedSession(
