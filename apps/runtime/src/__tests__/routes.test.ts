@@ -1003,7 +1003,7 @@ describe('session 端点 owner 守卫', () => {
       rechargeRequired: true,
       rechargeIntentId: USAGE_ID,
       balanceCents: '0',
-      requiredCents: '100',
+      requiredCents: '1',
     });
     expect(db.turns.size).toBe(0);
     expect(db.messages).toHaveLength(0);
