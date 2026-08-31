@@ -40,6 +40,10 @@ Test profile 和 Bundle 在 exact Package 内的固定清单路径。测试不�
 digest、规范 JSON、深冻结、严格字段，以及属性读取器、代理对象和旧版 AgentVersion 混用的拒绝。它不
 证明 Registry 已持久化 Package、分享入口已解析或 Receiver 已加载 Release。
 
+`agent-package-capability-contract.test.ts` 锁定 `combo.agent-package-capability/2` 只携带一个 exact
+Release、没有复制行为/知识/工具/价格，且 hostile getter/Proxy、V1 和非规范 JSON 都 fail closed。它只
+证明迁移合同；不证明 Registry、Runtime 滚动升级、Session 冻结或知识问答已经实现。
+
 `desktop-current-conversation-receipt.test.ts` 锁定真实 UAT 收据的 exact candidate/version、脱敏 task binding、
 egress candidate/projection/final Draft fingerprint、事件 hash chain、Host 单权威端到端观测和绑定
 protocol/algorithm/issuer/key ID 的 Ed25519 signature message。测试使用临时 Test key，
