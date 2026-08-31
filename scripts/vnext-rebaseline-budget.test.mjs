@@ -294,6 +294,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     '.github/workflows/ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
+    'docs/leshouying-test-acceptance.md',
     'scripts/check-production-artifacts.sh',
   ];
   const allowedKnowledgeAuthoringFiles = [
@@ -381,7 +382,8 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/authoring/src/platform/infra/object-store-v2.ts',
     'apps/web/src/pages/KnowledgeAgentPage.tsx',
     'docs/knowledge-agent-production-acceptance.md',
-    'docs/leshouying-test-acceptance.md',
+    'docs/leshouying-production-acceptance.md',
+    'docs/leshouying-test-acceptance-v2.md',
     'infra/Dockerfile.resend-mock',
     'infra/Dockerfile.web',
     'infra/docker-compose.yml',
