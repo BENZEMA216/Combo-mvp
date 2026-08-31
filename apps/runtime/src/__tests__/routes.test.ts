@@ -42,6 +42,8 @@ import {
 const ME = 'user-me';
 const OTHER = 'user-other';
 const USAGE_ID = '11111111-1111-4111-8111-111111111111';
+const PACKAGE_DIGEST = `sha256:${'a'.repeat(64)}`;
+const RELEASE_ID = `release.agent-package.${'1'.repeat(32)}`;
 let directArtifactTurnSequence = 0;
 
 async function createDirectArtifactTool(input: {
@@ -186,6 +188,25 @@ function seedRunnableDefinition(store: FakeObjectStore, cap: ReturnType<FakeDb['
       instructions: '执行任务',
       inputs: [],
       starterPrompts: [],
+    }),
+  );
+}
+
+function seedUnsupportedV2Definition(
+  store: FakeObjectStore,
+  cap: ReturnType<FakeDb['seedCapability']>,
+) {
+  store.seedText(
+    CAPABILITY_BUCKET,
+    cap.storage_key,
+    JSON.stringify({
+      version: 2,
+      protocol: 'combo.agent-package-capability/2',
+      release: {
+        protocol: 'combo.agent-package-release/1',
+        releaseId: RELEASE_ID,
+        packageDigest: PACKAGE_DIGEST,
+      },
     }),
   );
 }
@@ -390,6 +411,29 @@ describe('POST /runtime/studio/sessions', () => {
 });
 
 describe('POST /runtime/sessions capability UI 快照', () => {
+  it('strict Agent Package Capability v2 在建会话前拒绝，不留任何 Session 或 Artifact', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: ME });
+    seedUnsupportedV2Definition(store, cap);
+
+    const reply = await call(
+      createSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+
+    expect(reply.statusCode).toBe(409);
+    expect(reply.body).toMatchObject({
+      error: {
+        userMessage: '这个能力的格式比当前试用服务更新，暂时无法试用，请等待服务升级。',
+        retriable: false,
+        action: 'change_input',
+      },
+    });
+    expect(db.sessions.size).toBe(0);
+    expect(db.artifacts.size).toBe(0);
+  });
+
   it('有当前 UI 时新 consume 自动复制；无当前 UI 时仍正常创建空会话', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
@@ -833,6 +877,37 @@ describe('session 端点 owner 守卫', () => {
     expect(db.messages).toHaveLength(0);
   });
 
+  it('POST /runtime/sessions/:id/messages：strict Agent Package Capability v2 在 Turn 入场前拒绝', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    seedUnsupportedV2Definition(store, cap);
+    const session = await createSession(db, { capabilityId: cap.id, ownerUserId: ME });
+
+    const reply = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        userId: ME,
+        params: { id: session.id },
+        body: { text: '不应执行', usageId: USAGE_ID },
+      }),
+    );
+
+    expect(reply.statusCode).toBe(409);
+    expect(reply.body).toMatchObject({
+      error: {
+        userMessage: '这个能力的格式比当前试用服务更新，暂时无法试用，请等待服务升级。',
+        retriable: false,
+        action: 'change_input',
+      },
+    });
+    expect(db.turns.size).toBe(0);
+    expect(db.messages).toHaveLength(0);
+    expect(db.usageCharges.size).toBe(0);
+  });
+
   it('POST /runtime/sessions/:id/messages：202 user 消息同步透出 turnId', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
@@ -928,7 +1003,7 @@ describe('session 端点 owner 守卫', () => {
       rechargeRequired: true,
       rechargeIntentId: USAGE_ID,
       balanceCents: '0',
-      requiredCents: '100',
+      requiredCents: '1',
     });
     expect(db.turns.size).toBe(0);
     expect(db.messages).toHaveLength(0);
