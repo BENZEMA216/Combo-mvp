@@ -40,6 +40,18 @@ async function privilege(
   return result.rows[0]?.allowed === true;
 }
 
+async function functionPrivilege(
+  client: Client,
+  functionSignature: string,
+  privilegeName: string,
+): Promise<boolean> {
+  const result = await client.query<{ allowed: boolean }>(
+    `SELECT has_function_privilege(current_user, $1, $2) AS allowed`,
+    [functionSignature, privilegeName],
+  );
+  return result.rows[0]?.allowed === true;
+}
+
 pgDescribe('application database roles on PostgreSQL', () => {
   const clients = new Map<ApplicationRole, Client>();
   const owner = new Client({ connectionString: databaseUrl });
@@ -88,6 +100,73 @@ pgDescribe('application database roles on PostgreSQL', () => {
     expect(await privilege(runtime, 'has_table_privilege', 'public.auth_sessions', 'INSERT')).toBe(
       false,
     );
+  });
+
+  it('keeps the deployed Project-history compatibility tables at the API-only boundary', async () => {
+    const api = clients.get('combo_api')!;
+    const worker = clients.get('combo_worker')!;
+    const runtime = clients.get('combo_runtime')!;
+    const tablePrivileges = new Map<string, readonly string[]>([
+      ['project_history_agent_drafts', ['SELECT', 'INSERT']],
+      ['project_history_agent_confirmations', ['SELECT']],
+      ['project_history_agent_shares', ['SELECT', 'INSERT']],
+    ]);
+
+    for (const [table, allowedActions] of tablePrivileges) {
+      for (const action of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+        expect(
+          await privilege(api, 'has_table_privilege', `public.${table}`, action),
+          `${table} API ${action}`,
+        ).toBe(allowedActions.includes(action));
+        expect(
+          await privilege(worker, 'has_table_privilege', `public.${table}`, action),
+          `${table} worker ${action}`,
+        ).toBe(false);
+        expect(
+          await privilege(runtime, 'has_table_privilege', `public.${table}`, action),
+          `${table} Runtime ${action}`,
+        ).toBe(false);
+      }
+    }
+
+    for (const column of ['consumed_at', 'consumed_share_token']) {
+      expect(
+        await privilege(
+          api,
+          'has_column_privilege',
+          'public.project_history_agent_confirmations',
+          'UPDATE',
+          column,
+        ),
+        `project_history_agent_confirmations.${column} API UPDATE`,
+      ).toBe(true);
+    }
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.project_history_agent_confirmations',
+        'UPDATE',
+        'draft_fingerprint',
+      ),
+    ).toBe(false);
+
+    for (const signature of [
+      'public.issue_project_history_agent_confirmation(uuid,text,bigint,text,text)',
+      'public.cleanup_retired_project_history_confirmations(integer)',
+    ]) {
+      expect(await functionPrivilege(api, signature, 'EXECUTE'), `${signature} API EXECUTE`).toBe(
+        true,
+      );
+      expect(
+        await functionPrivilege(worker, signature, 'EXECUTE'),
+        `${signature} worker EXECUTE`,
+      ).toBe(false);
+      expect(
+        await functionPrivilege(runtime, signature, 'EXECUTE'),
+        `${signature} Runtime EXECUTE`,
+      ).toBe(false);
+    }
   });
 
   it('gives Runtime its Session model and only the current UI Capability update', async () => {
