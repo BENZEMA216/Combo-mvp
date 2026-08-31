@@ -83,7 +83,7 @@ Node.js `v24.18.0`：
 
 以下步骤只能在源码门禁通过、获得后续部署授权并完成专用测试配置后执行：
 
-1. 在物理隔离的 Test 数据库应用迁移至 `0011_recharge_qr_only.sql`，用专用应用角色运行 PG 测试。
+1. 先核对已部署 Test 的 `0012`–`0016` 不可变兼容前缀与候选源码字节完全一致，再把物理隔离的 Test 数据库连续迁移到候选 head（本兼容切片为 `0016_project_history_agent_flow.sql`），并用专用应用角色运行 PG 测试。
 2. 仅给 Authoring API 注入乐收赢 Test 配置；确认 worker 和 Runtime 环境中不存在 `LESHOUYING_INSTITUTION_KEY`。
 3. 使用测试用户 A 创建并分享 Agent；测试用户 B 为该 Agent 创建两个会话，并在其中一个会话连续成功使用三次。
 4. 核对三次均没有充值订单、钱包 debit，免费 `used_count=3` 且 `reserved_count=0`。
