@@ -40,6 +40,8 @@
     "infra/README.md",
     "infra/k8s/README.md",
     "infra/k8s/api.yaml",
+    "infra/k8s/overlays/sandbox-tools/runtime-base.yaml",
+    "infra/k8s/runtime.yaml",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "scripts/check-production-artifacts.sh",
