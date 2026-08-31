@@ -546,13 +546,16 @@ export function useSessionStream(
         }
         if (requestIsCurrent) setRechargeGate(recharge);
       }
-      const outcomeMayHaveCommitted =
+      // A credited resume owns the original persisted usage until authoritative acceptance.
+      // Even a deterministic 4xx must not make the still-mounted draft mint a new usageId.
+      const mustPreservePendingUsage =
+        resume !== undefined ||
         recharge !== null ||
         !(err instanceof ApiError) ||
         err.status === 0 ||
         err.status === 409 ||
         err.status >= 500;
-      if (outcomeMayHaveCommitted) {
+      if (mustPreservePendingUsage) {
         if (requestIsCurrent) setPendingRetryAvailable(true);
       } else {
         clearStoredPendingUsage(requestSessionId, usageId);

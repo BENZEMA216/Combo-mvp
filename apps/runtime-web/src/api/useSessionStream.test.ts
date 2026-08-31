@@ -71,12 +71,16 @@ beforeEach(() => {
 });
 
 function recognizeRechargeForExpectedUsage(): void {
-  readRechargeRequiredMock.mockImplementation((_error, usageId) => ({
-    rechargeRequired: true,
-    rechargeIntentId: usageId,
-    balanceCents: '25',
-    requiredCents: '100',
-  }));
+  readRechargeRequiredMock.mockImplementation((error, usageId) =>
+    error instanceof ApiError && error.status === 402
+      ? {
+          rechargeRequired: true,
+          rechargeIntentId: usageId,
+          balanceCents: '25',
+          requiredCents: '100',
+        }
+      : null,
+  );
 }
 
 describe('runtime session EventSource fixed-session behavior', () => {
@@ -521,6 +525,42 @@ describe('runtime session generation fencing', () => {
 
     expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(usageId);
     expect(result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+  });
+
+  it('preserves the credited usage and intent after a deterministic 4xx until retry succeeds', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('first recharge', 402))
+      .mockRejectedValueOnce(new ApiError('credited state is not ready', 422))
+      .mockResolvedValueOnce(gatewayResponse(TURN_A));
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('retry credited usage')).rejects.toThrow('免费次数已用完');
+    });
+    const usageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    act(() => result.current.setActiveRechargeIntent(REPLACEMENT_INTENT));
+
+    await act(async () => {
+      await expect(result.current.resumeAfterRecharge(REPLACEMENT_INTENT)).rejects.toThrow(
+        'credited state is not ready',
+      );
+    });
+    expect(result.current.rechargeRequired).not.toBeNull();
+    expect(result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    expect(
+      JSON.parse(window.sessionStorage.getItem(`combo:pending-usage:v2:${SESSION_A}`) ?? '{}'),
+    ).toMatchObject({ usageId, activeRechargeIntentId: REPLACEMENT_INTENT });
+
+    await act(async () => {
+      await result.current.resumeAfterRecharge(REPLACEMENT_INTENT);
+    });
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(usageId);
+    expect(sendSessionMessageMock.mock.calls[2]?.[2]).toBe(usageId);
+    expect(window.sessionStorage.length).toBe(0);
   });
 
   it.each([
