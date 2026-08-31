@@ -32,6 +32,10 @@
       "types": "./dist/agent-package.d.ts",
       "default": "./dist/agent-package.js"
     },
+    "./knowledge-bundle": {
+      "types": "./dist/knowledge-bundle.d.ts",
+      "default": "./dist/knowledge-bundle.js"
+    },
     "./agent-package-draft": {
       "types": "./dist/agent-package-draft.d.ts",
       "default": "./dist/agent-package-draft.js"
