@@ -390,6 +390,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
     'infra/k8s/runtime.yaml',
   ];
+  const allowedBrowserEvidenceInfraFiles = ['infra/Dockerfile.web'];
   const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
   const allowedProductPrefixes = [
     'apps/authoring/src/modules/agent-package-release/',
@@ -449,7 +450,18 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
+    [
+      ...allowedBrowserEvidenceInfraFiles,
+      ...allowedKnowledgeInfraFiles,
+      ...allowedPublisherInfraFiles,
+    ].sort(),
+  );
+  assert.equal(
+    assessPullRequest(
+      contract,
+      allowedBrowserEvidenceInfraFiles.map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
@@ -475,7 +487,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'docs/leshouying-production-acceptance.md',
     'docs/leshouying-test-acceptance-v2.md',
     'infra/Dockerfile.resend-mock',
-    'infra/Dockerfile.web',
+    'infra/Dockerfile.web.bak',
     'infra/README-extra.md',
     'infra/docker-compose.yml',
     'infra/docker-compose.dev-test.yml',
