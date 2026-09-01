@@ -245,6 +245,7 @@ function passingPlaywrightReport() {
         '--tsconfig',
         'tsconfig.e2e.json',
         '--browser=chromium',
+        '--reporter=json',
       ],
       rootDir: testDirectory,
       failOnFlakyTests: true,

@@ -13,6 +13,7 @@ const expectedPlaywrightCommandTail = Object.freeze([
   '--tsconfig',
   'tsconfig.e2e.json',
   '--browser=chromium',
+  '--reporter=json',
 ]);
 
 function invariant(condition, message) {
