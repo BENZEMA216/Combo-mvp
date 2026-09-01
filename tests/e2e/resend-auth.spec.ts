@@ -113,7 +113,8 @@ async function latestCode(email: string): Promise<string> {
   }
 }
 
-test('邮箱验证码登录在两个服务间共享不透明会话并可注销', async ({ page, context }) => {
+test('邮箱验证码登录在两个服务间共享不透明会话并可注销', async ({ page, context, browserName }) => {
+  expect(browserName).toBe('chromium');
   const email = `browser-${randomUUID().replaceAll('-', '')}@example.test`;
   rememberSentinel(email);
 
