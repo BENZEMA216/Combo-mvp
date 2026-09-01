@@ -4,6 +4,11 @@ import { AppShell } from './shell/AppShell.js';
 import { AuthGate } from './shell/AuthGate.js';
 import { ChatPage } from './pages/ChatPage.js';
 import { CapabilityDeepLink } from './pages/CapabilityDeepLink.js';
+import {
+  HOSTED_KNOWLEDGE_AGENT_PATH,
+  HostedKnowledgeAgentAnonymous,
+  HostedKnowledgeAgentPage,
+} from './pages/HostedKnowledgeAgentPage.js';
 import { ReleaseIdentityBadge } from './shell/releaseIdentity.js';
 
 export const CLOSED_MARKET_TARGET = '/capabilities';
@@ -33,6 +38,17 @@ export function App() {
         {/* 市集暂未开放：在登录探针之前直接回创作端，不读取任何试用端数据。 */}
         <Route index element={<ClosedMarketRedirect />} />
         <Route path="market" element={<ClosedMarketRedirect />} />
+        <Route
+          path="agent/combo-knowledge"
+          element={
+            <AuthGate
+              returnTo={HOSTED_KNOWLEDGE_AGENT_PATH}
+              anonymous={<HostedKnowledgeAgentAnonymous />}
+            >
+              <HostedKnowledgeAgentPage />
+            </AuthGate>
+          }
+        />
         <Route
           element={
             <AuthGate>

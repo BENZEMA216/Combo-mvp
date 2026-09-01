@@ -6,6 +6,7 @@ import {
   type ArtifactView,
   type KnowledgeTurnResult,
   type MessageView,
+  type PendingUsageRecoveryView,
   type SessionDetail,
 } from '@cb/shared';
 import { ChatPage } from './ChatPage.js';
@@ -35,10 +36,13 @@ const mocks = vi.hoisted(() => ({
     requiredCents: string;
   } | null,
   activeRechargeIntentId: null as string | null,
+  pendingRecovery: null as PendingUsageRecoveryView | null,
+  recoveryDialogOpen: false,
   clearRechargeRequired: vi.fn(),
   resumeAfterRecharge: vi.fn(),
   setActiveRechargeIntent: vi.fn(),
   abandonRechargeUsage: vi.fn(),
+  refreshPendingRecovery: vi.fn(),
   createTrial: vi.fn(),
   createTrialPending: false,
 }));
@@ -76,10 +80,13 @@ vi.mock('../api/useSessionStream.js', () => ({
       retryPending: mocks.retryPending,
       rechargeRequired: mocks.rechargeRequired,
       activeRechargeIntentId: mocks.activeRechargeIntentId,
+      pendingRecovery: mocks.pendingRecovery,
+      recoveryDialogOpen: mocks.recoveryDialogOpen,
       clearRechargeRequired: mocks.clearRechargeRequired,
       resumeAfterRecharge: mocks.resumeAfterRecharge,
       setActiveRechargeIntent: mocks.setActiveRechargeIntent,
       abandonRechargeUsage: mocks.abandonRechargeUsage,
+      refreshPendingRecovery: mocks.refreshPendingRecovery,
       send: mocks.send,
       interrupt: vi.fn(),
       selectArtifact: vi.fn(),
@@ -109,6 +116,27 @@ vi.mock('../components/RechargeDialog.js', () => ({
         onClick={() => onActiveRechargeIntentChange('99999999-9999-4999-8999-999999999999')}
       >
         模拟替换订单
+      </button>
+    </div>
+  ),
+  RecoveryRechargeDialog: ({
+    recovery,
+    onCredited,
+    onAbandon,
+  }: {
+    recovery: PendingUsageRecoveryView;
+    onCredited: (creditedIntentId: string) => Promise<unknown>;
+    onAbandon: () => Promise<void>;
+  }) => (
+    <div data-testid="recovery-recharge-dialog" data-recovery-usage={recovery.usageId}>
+      <button
+        type="button"
+        onClick={() => void onCredited(recovery.activeRechargeIntentId).catch(() => undefined)}
+      >
+        模拟恢复到账
+      </button>
+      <button type="button" onClick={() => void onAbandon().catch(() => undefined)}>
+        模拟服务端放弃
       </button>
     </div>
   ),
@@ -161,6 +189,29 @@ function sessionDetail(mode?: 'consume' | 'studio'): SessionDetail {
     artifacts: [],
     activeTurn: null,
   } as SessionDetail;
+}
+
+function pendingRecoveryView(): PendingUsageRecoveryView {
+  return {
+    usageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    capabilityId: '22222222-2222-4222-8222-222222222222',
+    requestText: '服务端保存的问题',
+    requestFingerprint: 'a'.repeat(64),
+    binding: knowledgeSessionDetail().agentBinding as PendingUsageRecoveryView['binding'],
+    billing: {
+      currency: 'CNY',
+      policyVersion: 'runtime-usage-v1',
+      validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
+      unitPriceCents: '100',
+      freeLimitSnapshot: 3,
+    },
+    status: 'active',
+    activeRechargeIntentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    expiresAt: '2026-09-03T00:00:00.000Z',
+    createdAt: '2026-09-02T00:00:00.000Z',
+    updatedAt: '2026-09-02T00:01:00.000Z',
+  };
 }
 
 function knowledgeResult(): KnowledgeTurnResult {
@@ -310,7 +361,11 @@ beforeEach(() => {
   mocks.retryPending.mockResolvedValue(undefined);
   mocks.rechargeRequired = null;
   mocks.activeRechargeIntentId = null;
+  mocks.pendingRecovery = null;
+  mocks.recoveryDialogOpen = false;
   mocks.resumeAfterRecharge.mockResolvedValue(undefined);
+  mocks.abandonRechargeUsage.mockResolvedValue(undefined);
+  mocks.refreshPendingRecovery.mockResolvedValue(undefined);
   mocks.streamingText = null;
   mocks.streamConnectionFailed = false;
 });
@@ -666,6 +721,33 @@ describe('ChatPage controlled knowledge experience', () => {
     expect(page.container.querySelector('.rt-genui__canvas')).not.toBeInTheDocument();
     expect(screen.queryByText('FORGED_ARTIFACT_TITLE')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '开始生成 →' })).not.toBeInTheDocument();
+  });
+
+  it('uses the server recovery dialog without falling back to the legacy recharge dialog', async () => {
+    const recovery = pendingRecoveryView();
+    mocks.pendingRecovery = recovery;
+    mocks.recoveryDialogOpen = true;
+    mocks.pendingRetryAvailable = true;
+
+    const page = renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTestId('recovery-recharge-dialog')).toHaveAttribute(
+      'data-recovery-usage',
+      recovery.usageId,
+    );
+    expect(screen.queryByTestId('recharge-dialog')).not.toBeInTheDocument();
+    expect(page.container.querySelector('.rt-recharge-background')).toHaveAttribute(
+      'aria-hidden',
+      'true',
+    );
+    expect(screen.queryByRole('button', { name: '重试原任务' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟恢复到账' }));
+    await waitFor(() =>
+      expect(mocks.resumeAfterRecharge).toHaveBeenCalledWith(recovery.activeRechargeIntentId),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '模拟服务端放弃' }));
+    await waitFor(() => expect(mocks.abandonRechargeUsage).toHaveBeenCalledOnce());
   });
 
   it('restores only the authoritative result and hides forged Message, SSE, error, and artifact data', () => {

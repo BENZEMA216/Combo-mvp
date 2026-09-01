@@ -391,8 +391,15 @@ function KnowledgeResultCard({ result }: { result: KnowledgeTurnResult }) {
           <ol>
             {result.citations.map((citation, index) => (
               <li key={citation.chunkId}>
-                <span aria-hidden="true">[{index + 1}]</span>
-                <span>{citation.displayLabel}</span>
+                <div className="rt-knowledge-citation__label">
+                  <span aria-hidden="true">[{index + 1}]</span>
+                  <span>{citation.displayLabel}</span>
+                </div>
+                {citation.excerpt && (
+                  <blockquote className="rt-knowledge-citation__excerpt">
+                    {citation.excerpt}
+                  </blockquote>
+                )}
               </li>
             ))}
           </ol>

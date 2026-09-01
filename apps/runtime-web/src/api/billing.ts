@@ -1,5 +1,6 @@
 // 消费端充值 API。乐收赢结果只用于展示支付动作；余额是否到账只读 Combo 内部订单。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { RecoveryRechargeOrderViewSchema, type RecoveryRechargeOrderView } from '@cb/shared';
 import { apiGet, apiPost } from './client.js';
 
 export type RechargeChannel = 'qr';
@@ -42,6 +43,10 @@ export interface CreateRechargeOrderInput {
   payType: RechargePayType;
 }
 
+export interface CreateRecoveryRechargeOrderInput extends CreateRechargeOrderInput {
+  recoveryUsageId: string;
+}
+
 export function useWallet(enabled = true) {
   return useQuery({
     queryKey: ['billing', 'wallet'],
@@ -57,6 +62,21 @@ export function useCreateRechargeOrder() {
   });
 }
 
+export function useCreateRecoveryRechargeOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateRecoveryRechargeOrderInput) =>
+      RecoveryRechargeOrderViewSchema.parse(
+        await apiPost<unknown>('/billing/recharge-orders', input),
+      ),
+    onSuccess: (_order, input) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['billing', 'recharge-order-by-recovery', input.recoveryUsageId],
+      });
+    },
+  });
+}
+
 export function useRechargeOrderByIntent(rechargeIntentId: string) {
   return useQuery({
     queryKey: ['billing', 'recharge-order-by-intent', rechargeIntentId],
@@ -67,6 +87,30 @@ export function useRechargeOrderByIntent(rechargeIntentId: string) {
     retry: false,
   });
 }
+
+export async function getRechargeOrderByRecovery(
+  recoveryUsageId: string,
+): Promise<RecoveryRechargeOrderView | null> {
+  const value = await apiGet<unknown>(
+    `/billing/recharge-orders/by-recovery/${encodeURIComponent(recoveryUsageId)}`,
+  );
+  if (value === null) return null;
+  return RecoveryRechargeOrderViewSchema.parse(value);
+}
+
+export function useRechargeOrderByRecovery(recoveryUsageId: string) {
+  return useQuery({
+    queryKey: ['billing', 'recharge-order-by-recovery', recoveryUsageId],
+    queryFn: () => getRechargeOrderByRecovery(recoveryUsageId),
+    retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return rechargeOrderRefetchInterval(status, query.state.data?.reconciliationActive);
+    },
+  });
+}
+
+export type { RecoveryRechargeOrderView };
 
 export function useRechargeOrder(orderId: string | null) {
   return useQuery({

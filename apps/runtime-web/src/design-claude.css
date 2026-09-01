@@ -1452,16 +1452,34 @@ body {
 
 .rt-knowledge-citations li {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 5px;
+  gap: 7px;
   color: var(--cb-fg);
   font-size: 13px;
 }
 
-.rt-knowledge-citations li > :first-child {
+.rt-knowledge-citation__label {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 5px;
+}
+
+.rt-knowledge-citation__label > :first-child {
   color: var(--cb-accent);
   font-family: var(--cb-font-mono);
   font-size: 11px;
+}
+
+.rt-knowledge-citation__excerpt {
+  margin: 0 0 5px 28px;
+  border-left: 2px solid var(--cb-border);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--cb-surface) 88%, var(--cb-fg) 12%);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .rt-knowledge-receipt {
