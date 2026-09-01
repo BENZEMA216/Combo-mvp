@@ -12,7 +12,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfi
 COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 # Authoring 的 Publisher 运行时依赖 creator-agent-protocol；两个工作区依赖都先构建。
 RUN pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/shared build && pnpm -F @cb/authoring build
 
@@ -28,7 +28,7 @@ COPY --from=build /app/packages/creator-agent-protocol/package.json ./packages/c
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /app/apps/authoring/package.json ./apps/authoring/package.json
 COPY --from=build /app/db/package.json ./db/package.json
-RUN pnpm install --prod --frozen-lockfile=false
+RUN pnpm install --prod --frozen-lockfile
 # 产物：协议/shared dist + api dist + 迁移运行时白名单（migrate 容器用 --experimental-strip-types 直跑 TS）。
 # 不复制完整 db 源码树，避免把测试、fixture 或开发辅助文件带入生产镜像。
 COPY --from=build /app/packages/creator-agent-protocol/dist ./packages/creator-agent-protocol/dist
