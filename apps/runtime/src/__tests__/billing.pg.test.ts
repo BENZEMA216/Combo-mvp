@@ -225,7 +225,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     const packageDigest = `sha256:${suffix}${suffix}` as const;
     const releaseId = `release.agent-package.${suffix}` as const;
     const chunkId = `chunk.knowledge.${suffix}` as const;
-    const content = 'Combo 的前三次成功回答使用免费额度。';
+    const content = 'Combo 的免费额度可以用于前三次成功回答。';
     const knowledge = createCreatorKnowledgeBundle({
       protocol: 'combo.knowledge-bundle/1',
       chunks: [
@@ -275,7 +275,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       ownerUserId: chain.consumerUserId,
       agentBinding: binding,
     });
-    const question = 'Combo 的免费额度是多少？';
+    const question = 'Combo 的免费额度可以用于哪些成功回答？';
     const answer = content;
     const resolved: ResolvedKnowledgeAgent = {
       binding,
