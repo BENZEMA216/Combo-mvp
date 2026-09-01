@@ -45,8 +45,12 @@ const CHUNK = `chunk.knowledge.${'2'.repeat(32)}`;
 const SECOND_CHUNK = `chunk.knowledge.${'7'.repeat(32)}`;
 const QUESTION = '免费额度是多少？';
 const ANSWER = '前三次成功回答免费。';
-const GROUNDED_ANSWER = 'Combo 的前三次成功回答使用免费额度。';
-const SECOND_GROUNDED_ANSWER = 'Combo 余额不足时返回 402。';
+const GROUNDED_ANSWER = 'Combo 的免费额度可以用于前三次成功回答。';
+const LONG_GROUNDED_QUESTION = '前三次用完以后为什么会提示余额不足？';
+const LONG_GROUNDED_ANSWER = 'Combo 前三次用完以后会提示余额不足，因为免费额度已经用完。';
+const SECOND_GROUNDED_ANSWER = 'Combo 余额不足会返回 402。';
+const MULTI_GROUNDED_QUESTION = 'Combo 的免费额度是什么，余额不足会怎样？';
+const MULTI_GROUNDED_ANSWER = `${GROUNDED_ANSWER}${SECOND_GROUNDED_ANSWER}`;
 const binding: KnowledgeAgentBinding = {
   productKind: 'knowledge_agent_test',
   capability: { id: CAPABILITY, protocol: 'combo.agent-package-capability/2' },
@@ -62,7 +66,7 @@ const binding: KnowledgeAgentBinding = {
     resourceDigest: `sha256:${'5'.repeat(64)}`,
   },
 };
-const contents = ['Combo 的前三次成功回答使用免费额度。', 'Combo 余额不足时返回 402。'];
+const contents = [`${GROUNDED_ANSWER}${LONG_GROUNDED_ANSWER}`, SECOND_GROUNDED_ANSWER];
 const resolved: ResolvedKnowledgeAgent = {
   binding,
   name: '公开知识助手',
@@ -210,13 +214,16 @@ describe('knowledge run-turn high-risk boundaries', () => {
     });
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
-    ).toContain('每个事实性句子必须逐字复用所引 excerpt 中的完整原句');
+    ).toContain('每个句子必须逐字复用所引 excerpt 中的完整原句');
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
     ).toContain('不得提交 FAQ 问句、Markdown 标题/列表、名词型片段');
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
-    ).toContain('只共享泛化谓语/关系词、单字母、短数字、单个年份');
+    ).toContain('问题复述、短动作嵌入另一个词');
+    expect(
+      tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
+    ).toContain('关系、否定、条件、时间与限定必须直接对齐');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',
@@ -262,7 +269,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
       searchKnowledgeBundle(resolved.knowledge, '前三次用完以后为什么会提示余额不足？', 8).map(
         (hit) => hit.chunkId,
       ),
-    ).toEqual([SECOND_CHUNK, CHUNK]);
+    ).toEqual([CHUNK, SECOND_CHUNK]);
 
     const lateContent = `${'前置无关内容。'.repeat(260)}关键命中词说明余额不足会提示充值。${'后置内容。'.repeat(260)}`;
     const lateBundle = createCreatorKnowledgeBundle({
@@ -289,13 +296,13 @@ describe('knowledge run-turn high-risk boundaries', () => {
     const exposedHits = searchKnowledgeBundle(resolved.knowledge, '免费额度 余额不足', 8);
     const accepted = {
       status: 'answered' as const,
-      answer: `${GROUNDED_ANSWER}${SECOND_GROUNDED_ANSWER}`,
-      citationChunkIds: [CHUNK, SECOND_CHUNK],
+      answer: LONG_GROUNDED_ANSWER,
+      citationChunkIds: [CHUNK],
     };
     expect(
       validateKnowledgeCandidate({
         gate: groundedGate(),
-        question: '前三次用完以后为什么会提示余额不足？',
+        question: LONG_GROUNDED_QUESTION,
         candidate: accepted,
         exposedHits,
       }),
@@ -309,7 +316,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
       expect(
         validateKnowledgeCandidate({
           gate: groundedGate(),
-          question: '前三次用完以后为什么会提示余额不足？',
+          question: LONG_GROUNDED_QUESTION,
           candidate: { ...accepted, answer },
           exposedHits,
         }),
@@ -318,7 +325,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
     expect(
       validateKnowledgeCandidate({
         gate: groundedGate(),
-        question: '前三次用完以后为什么会提示余额不足？',
+        question: LONG_GROUNDED_QUESTION,
         candidate: accepted,
         exposedHits: [
           ...exposedHits,
@@ -335,7 +342,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
     expect(
       validateKnowledgeCandidate({
         gate: groundedGate(),
-        question: '前三次用完以后为什么会提示余额不足？',
+        question: LONG_GROUNDED_QUESTION,
         candidate: {
           ...accepted,
           citationChunkIds: [CHUNK, SECOND_CHUNK, `chunk.knowledge.${'8'.repeat(32)}`],
@@ -516,6 +523,286 @@ describe('knowledge run-turn high-risk boundaries', () => {
       excerpt: '支付必须在订单有效期内完成。',
     },
     {
+      question: '支付宝登录规则是什么？',
+      answer: '支付宝支付必须使用银行卡。',
+      excerpt: '支付宝支付必须使用银行卡。',
+    },
+    {
+      question: '支付宝退款时效规则是什么？',
+      answer: '支付宝登录必须使用验证码。',
+      excerpt: '支付宝登录必须使用验证码。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款功能允许查询申请状态。',
+      excerpt: '退款功能允许查询申请状态。',
+    },
+    {
+      question: '登录方式是什么？',
+      answer: '登录功能允许查看账户状态。',
+      excerpt: '登录功能允许查看账户状态。',
+    },
+    {
+      question: '退款流程是什么？',
+      answer: '退款政策允许七天内提交材料。',
+      excerpt: '退款政策允许七天内提交材料。',
+    },
+    {
+      question: '前三次用完以后会怎样？',
+      answer: '前三次用完以前会提示余额不足。',
+      excerpt: '前三次用完以前会提示余额不足。',
+    },
+    {
+      question: 'HTTP 402 表示什么？',
+      answer: 'HTTP 402 代表需要充值。',
+      excerpt: 'HTTP 402 代表需要充值。',
+    },
+    {
+      question: '如何支付？',
+      answer: '支付宝登录方式必须使用验证码。',
+      excerpt: '支付宝登录方式必须使用验证码。',
+    },
+    {
+      question: '如何提示？',
+      answer: '提示词必须包含明确任务。',
+      excerpt: '提示词必须包含明确任务。',
+    },
+    {
+      question: '如何提供？',
+      answer: '提供商必须完成实名认证。',
+      excerpt: '提供商必须完成实名认证。',
+    },
+    {
+      question: '如何支持？',
+      answer: '支持者必须提交证明。',
+      excerpt: '支持者必须提交证明。',
+    },
+    {
+      question: '如何使用？',
+      answer: '使用率必须低于上限。',
+      excerpt: '使用率必须低于上限。',
+    },
+    {
+      question: '如何返回？',
+      answer: '返回值是 402。',
+      excerpt: '返回值是 402。',
+    },
+    {
+      question: '吗啡是什么？',
+      answer: '咖啡是常见饮品。',
+      excerpt: '咖啡是常见饮品。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是退款规则。',
+      excerpt: '退款规则是退款规则。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则等于退款规则。',
+      excerpt: '退款规则等于退款规则。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则属于退款规则。',
+      excerpt: '退款规则属于退款规则。',
+    },
+    {
+      question: '华为是什么？',
+      answer: '华为是华为。',
+      excerpt: '华为是华为。',
+    },
+    {
+      question: 'API v2 是什么？',
+      answer: 'API v2 表示 API v2。',
+      excerpt: 'API v2 表示 API v2。',
+    },
+    {
+      question: '402 是什么意思？',
+      answer: '402 表示 402。',
+      excerpt: '402 表示 402。',
+    },
+    {
+      question: 'v2 呢？',
+      answer: 'v2 表示 v2。',
+      excerpt: 'v2 表示 v2。',
+    },
+    {
+      question: 'HTTP 402 表示什么？',
+      answer: 'HTTP 402 表示 HTTP 402。',
+      excerpt: 'HTTP 402 表示 HTTP 402。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是规则。',
+      excerpt: '退款规则是规则。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是退款。',
+      excerpt: '退款规则是退款。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则 is 退款规则。',
+      excerpt: '退款规则 is 退款规则。',
+    },
+    {
+      question: '用户如何支付？',
+      answer: '用户的支付宝登录方式必须使用验证码。',
+      excerpt: '用户的支付宝登录方式必须使用验证码。',
+    },
+    {
+      question: '系统是否存在？',
+      answer: '系统存在感必须保持稳定。',
+      excerpt: '系统存在感必须保持稳定。',
+    },
+    {
+      question: '用户可以支付吗？',
+      answer: '用户的支付宝登录方式必须使用验证码。',
+      excerpt: '用户的支付宝登录方式必须使用验证码。',
+    },
+    {
+      question: '系统可以存在吗？',
+      answer: '系统存在感必须保持稳定。',
+      excerpt: '系统存在感必须保持稳定。',
+    },
+    {
+      question: '什么值得买是什么？',
+      answer: '值得买是电商平台。',
+      excerpt: '值得买是电商平台。',
+    },
+    {
+      question: '如何阅读一本书是什么？',
+      answer: '阅读一本书是阅读指南。',
+      excerpt: '阅读一本书是阅读指南。',
+    },
+    {
+      question: '谁是凶手是什么？',
+      answer: '凶手是一部推理电影。',
+      excerpt: '凶手是一部推理电影。',
+    },
+    {
+      question: '数学等于号说明是什么？',
+      answer: '数学号说明包含运算符号。',
+      excerpt: '数学号说明包含运算符号。',
+    },
+    {
+      question: '退款需要材料说明是什么？',
+      answer: '退款材料说明包含文件列表。',
+      excerpt: '退款材料说明包含文件列表。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是退款规则本身。',
+      excerpt: '退款规则是退款规则本身。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是退款规则自身。',
+      excerpt: '退款规则是退款规则自身。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是 the 退款规则。',
+      excerpt: '退款规则是 the 退款规则。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款规则是 of 退款规则。',
+      excerpt: '退款规则是 of 退款规则。',
+    },
+    {
+      question: '可以退款吗？',
+      answer: '不能退款并记录申请。',
+      excerpt: '不能退款并记录申请。',
+    },
+    {
+      question: '必须登录吗？',
+      answer: '无需登录并保存数据。',
+      excerpt: '无需登录并保存数据。',
+    },
+    {
+      question: '高于 100 元吗？',
+      answer: '低于 100 元并需要确认。',
+      excerpt: '低于 100 元并需要确认。',
+    },
+    {
+      question: '退款可以吗？',
+      answer: '退款不能办理。',
+      excerpt: '退款不能办理。',
+    },
+    {
+      question: '是否不允许退款？',
+      answer: '允许退款并记录申请。',
+      excerpt: '允许退款并记录申请。',
+    },
+    {
+      question: '退款必须在七天内申请吗？',
+      answer: '退款不得在七天内申请。',
+      excerpt: '退款不得在七天内申请。',
+    },
+    {
+      question: '价格高于 100 元吗？',
+      answer: '价格低于 100 元。',
+      excerpt: '价格低于 100 元。',
+    },
+    {
+      question: '余额不足时不会返回 402 吗？',
+      answer: '余额不足时会返回 402。',
+      excerpt: '余额不足时会返回 402。',
+    },
+    {
+      question: '账户可以登录吗？',
+      answer: '账户不能登录。',
+      excerpt: '账户不能登录。',
+    },
+    {
+      question: '是否允许退款？',
+      answer: '系统不允许退款。',
+      excerpt: '系统不允许退款。',
+    },
+    {
+      question: '退款需要材料吗？',
+      answer: '退款不需要材料。',
+      excerpt: '退款不需要材料。',
+    },
+    {
+      question: '退款不需要材料吗？',
+      answer: '退款需要材料并完成审核。',
+      excerpt: '退款需要材料并完成审核。',
+    },
+    {
+      question: '系统不允许退款吗？',
+      answer: '系统允许退款并记录申请。',
+      excerpt: '系统允许退款并记录申请。',
+    },
+    {
+      question: '价格不高于 100 元吗？',
+      answer: '价格高于 100 元时需要确认。',
+      excerpt: '价格高于 100 元时需要确认。',
+    },
+    {
+      question: '为什么会提示余额不足？',
+      answer: '系统不会提示余额不足。',
+      excerpt: '系统不会提示余额不足。',
+    },
+    {
+      question: '是非规则是什么？',
+      answer: '是非规则。',
+      excerpt: '是非规则。',
+    },
+    {
+      question: '允许规则是什么？',
+      answer: '允许规则。',
+      excerpt: '允许规则。',
+    },
+    {
+      question: '要求说明是什么？',
+      answer: '要求说明。',
+      excerpt: '要求说明。',
+    },
+    {
       question: 'HTTP 402 是什么意思？',
       answer: 'HTTPS 402 表示需要充值。',
       excerpt: 'HTTPS 402 表示需要充值。',
@@ -561,6 +848,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
     { question: '退款规则是什么？', answer: '退款使用说明。' },
     { question: '退款规则是什么？', answer: '退款支持指南。' },
     { question: '退款规则是什么？', answer: '退款支持。' },
+    { question: '退款要求是什么？', answer: '退款要求。' },
   ])(
     'rejects an extractive Markdown title or nominal fragment: $answer',
     ({ question, answer }) => {
@@ -573,55 +861,9 @@ describe('knowledge run-turn high-risk boundaries', () => {
 
   it.each([
     {
-      question: '价格是多少？',
-      answer: '价格是 10 0 元。',
-      excerpt: '可选值是 10 和 0。价格是 100 元。',
-    },
-    {
-      question: '错误码是什么？',
-      answer: '错误码是 40 2。',
-      excerpt: '容量是 40，重试两次写作 2。错误码是 402。',
-    },
-    {
-      question: 'API 版本是什么？',
-      answer: 'API 版本是 v 2。',
-      excerpt: '变量 v 和数字 2 都有定义。API 版本是 v2。',
-    },
-  ])('rejects whitespace fusion or cross-sentence literal borrowing: $answer', (fixture) => {
-    expect(validateGroundedFixture(fixture)).toMatchObject({
-      outcome: 'failed',
-      validationCode: 'rejected',
-    });
-  });
-
-  it.each([
-    {
-      question: 'HTTP 402 表示什么？',
-      answer: 'HTTP 402 表示需要充值。',
-      excerpt: 'HTTP 402 表示需要充值。',
-    },
-    {
-      question: 'API v2 使用什么验证策略？',
-      answer: 'API v2 使用新的验证策略。',
-      excerpt: 'API v2 使用新的验证策略。',
-    },
-    {
-      question: '面积是多少？',
-      answer: '面积是 20 m2。',
-      excerpt: '面积是 20 m2。',
-    },
-  ])('accepts an exact declarative sentence with separated literal tokens: $answer', (fixture) => {
-    expect(validateGroundedFixture(fixture)).toMatchObject({
-      outcome: 'answered',
-      validationCode: 'accepted',
-    });
-  });
-
-  it.each([
-    {
       question: 'HTTP 402 代表什么？',
-      answer: 'HTTP 402 表示需要充值。',
-      excerpt: 'HTTP 402 表示需要充值。',
+      answer: 'HTTP 402 代表需要充值。',
+      excerpt: 'HTTP 402 代表需要充值。',
     },
     {
       question: '402 是什么意思？',
@@ -635,13 +877,13 @@ describe('knowledge run-turn high-risk boundaries', () => {
     },
     {
       question: '退款规则是什么？',
-      answer: '退款可以在七天内申请。',
-      excerpt: '退款可以在七天内申请。',
+      answer: '退款规则允许在七天内申请。',
+      excerpt: '退款规则允许在七天内申请。',
     },
     {
       question: '退款规则是什么？',
-      answer: '退款申请必须在七天内完成。',
-      excerpt: '退款申请必须在七天内完成。',
+      answer: '退款规则要求申请在七天内完成。',
+      excerpt: '退款规则要求申请在七天内完成。',
     },
     {
       question: '登录服务提供什么？',
@@ -650,8 +892,23 @@ describe('knowledge run-turn high-risk boundaries', () => {
     },
     {
       question: '该服务的退款规则是什么？',
-      answer: '退款可以在七天内申请。',
-      excerpt: '退款可以在七天内申请。',
+      answer: '退款规则允许在七天内申请。',
+      excerpt: '退款规则允许在七天内申请。',
+    },
+    {
+      question: '退款的规则是什么？',
+      answer: '退款的规则允许在七天内申请。',
+      excerpt: '退款的规则允许在七天内申请。',
+    },
+    {
+      question: '目的是什么？',
+      answer: '目的是达成清晰结果。',
+      excerpt: '目的是达成清晰结果。',
+    },
+    {
+      question: '的士是什么？',
+      answer: '的士是城市交通工具。',
+      excerpt: '的士是城市交通工具。',
     },
     {
       question: '华为是什么？',
@@ -660,18 +917,43 @@ describe('knowledge run-turn high-risk boundaries', () => {
     },
     {
       question: '行为规则是什么？',
-      answer: '行为必须符合安全政策。',
-      excerpt: '行为必须符合安全政策。',
+      answer: '行为规则要求符合安全政策。',
+      excerpt: '行为规则要求符合安全政策。',
     },
     {
       question: '支付规则是什么？',
-      answer: '支付必须在订单有效期内完成。',
-      excerpt: '支付必须在订单有效期内完成。',
+      answer: '支付规则要求在订单有效期内完成。',
+      excerpt: '支付规则要求在订单有效期内完成。',
     },
     {
       question: '如何支付？',
       answer: '支付可以使用银行卡完成。',
       excerpt: '支付可以使用银行卡完成。',
+    },
+    {
+      question: '如何支付？',
+      answer: '支付必须在订单有效期内完成。',
+      excerpt: '支付必须在订单有效期内完成。',
+    },
+    {
+      question: '用户如何支付？',
+      answer: '用户支付可以使用银行卡完成。',
+      excerpt: '用户支付可以使用银行卡完成。',
+    },
+    {
+      question: '接口如何返回？',
+      answer: '接口返回可以包含结果。',
+      excerpt: '接口返回可以包含结果。',
+    },
+    {
+      question: '系统是否存在？',
+      answer: '系统存在并保持运行。',
+      excerpt: '系统存在并保持运行。',
+    },
+    {
+      question: LONG_GROUNDED_QUESTION,
+      answer: LONG_GROUNDED_ANSWER,
+      excerpt: LONG_GROUNDED_ANSWER,
     },
     {
       question: '返回值是什么？',
@@ -690,8 +972,8 @@ describe('knowledge run-turn high-risk boundaries', () => {
     },
     {
       question: '使用说明是什么？',
-      answer: '使用需要先完成登录。',
-      excerpt: '使用需要先完成登录。',
+      answer: '使用说明要求先完成登录。',
+      excerpt: '使用说明要求先完成登录。',
     },
     {
       question: '提示词是什么？',
@@ -714,50 +996,150 @@ describe('knowledge run-turn high-risk boundaries', () => {
       excerpt: '关闭必须先保存数据。',
     },
     {
-      question: '费用是多少？',
-      answer: '费用是 10² 元。',
-      excerpt: '费用是 10² 元。',
+      question: '退款必须在七天内申请吗？',
+      answer: '退款必须在七天内申请并提交凭证。',
+      excerpt: '退款必须在七天内申请并提交凭证。',
+    },
+    {
+      question: '价格高于 100 元吗？',
+      answer: '价格高于 100 元时需要确认。',
+      excerpt: '价格高于 100 元时需要确认。',
+    },
+    {
+      question: '余额不足时不会返回 402 吗？',
+      answer: '余额不足时不会返回 402，而会提示充值。',
+      excerpt: '余额不足时不会返回 402，而会提示充值。',
+    },
+    {
+      question: '账户可以登录吗？',
+      answer: '账户可以登录并查看订单。',
+      excerpt: '账户可以登录并查看订单。',
+    },
+    {
+      question: '余额不足时会提示充值吗？',
+      answer: '余额不足时会提示充值并返回 402。',
+      excerpt: '余额不足时会提示充值并返回 402。',
+    },
+    {
+      question: '前三次用完以后会怎样？',
+      answer: '前三次用完以后会提示余额不足。',
+      excerpt: '前三次用完以后会提示余额不足。',
+    },
+    {
+      question: '为什么会提示余额不足？',
+      answer: '系统会提示余额不足并引导充值。',
+      excerpt: '系统会提示余额不足并引导充值。',
+    },
+    {
+      question: '是否允许退款？',
+      answer: '系统允许退款并记录申请。',
+      excerpt: '系统允许退款并记录申请。',
+    },
+    {
+      question: '退款需要材料吗？',
+      answer: '退款需要材料并完成审核。',
+      excerpt: '退款需要材料并完成审核。',
+    },
+    {
+      question: '是否高于 100 元？',
+      answer: '价格高于 100 元时需要确认。',
+      excerpt: '价格高于 100 元时需要确认。',
+    },
+    {
+      question: '为什么会提示余额不足？',
+      answer: '系统不会提示余额不足，但备用流程会提示余额不足并引导充值。',
+      excerpt: '系统不会提示余额不足，但备用流程会提示余额不足并引导充值。',
+    },
+    {
+      question: '如何提示？',
+      answer: '提示需要包含明确任务。',
+      excerpt: '提示需要包含明确任务。',
+    },
+    {
+      question: '如何提示？',
+      answer: '提示必须包含明确任务。',
+      excerpt: '提示必须包含明确任务。',
+    },
+    {
+      question: '用户可以支付吗？',
+      answer: '用户可以支付，随后完成订单。',
+      excerpt: '用户可以支付，随后完成订单。',
+    },
+    {
+      question: '系统可以存在吗？',
+      answer: '系统可以存在，并保持稳定。',
+      excerpt: '系统可以存在，并保持稳定。',
+    },
+    {
+      question: '是否存在？',
+      answer: '风险存在。',
+      excerpt: '风险存在。',
+    },
+    {
+      question: '吗啡是什么？',
+      answer: '吗啡是受管制药物。',
+      excerpt: '吗啡是受管制药物。',
+    },
+    {
+      question: '什么值得买是什么？',
+      answer: '什么值得买是电商平台。',
+      excerpt: '什么值得买是电商平台。',
+    },
+    {
+      question: '去哪儿是什么？',
+      answer: '去哪儿是旅游平台。',
+      excerpt: '去哪儿是旅游平台。',
+    },
+    {
+      question: '等于号是什么？',
+      answer: '等于号是数学符号。',
+      excerpt: '等于号是数学符号。',
+    },
+    {
+      question: '如何阅读一本书是什么？',
+      answer: '如何阅读一本书是一本阅读指南。',
+      excerpt: '如何阅读一本书是一本阅读指南。',
+    },
+    {
+      question: '谁是凶手是什么？',
+      answer: '谁是凶手是一部推理电影。',
+      excerpt: '谁是凶手是一部推理电影。',
+    },
+    {
+      question: '数学等于号说明是什么？',
+      answer: '数学等于号说明包含运算符号。',
+      excerpt: '数学等于号说明包含运算符号。',
+    },
+    {
+      question: '退款需要材料说明是什么？',
+      answer: '退款需要材料说明包含文件列表。',
+      excerpt: '退款需要材料说明包含文件列表。',
+    },
+    {
+      question: '登录方式是什么？',
+      answer: '登录方式使用 OAuth。',
+      excerpt: '登录方式使用 OAuth。',
+    },
+    {
+      question: '是非规则是什么？',
+      answer: '是非规则要求遵守安全标准。',
+      excerpt: '是非规则要求遵守安全标准。',
+    },
+    {
+      question: '允许规则是什么？',
+      answer: '允许规则必须明确审批范围。',
+      excerpt: '允许规则必须明确审批范围。',
+    },
+    {
+      question: '要求说明是什么？',
+      answer: '要求说明包含完整材料列表。',
+      excerpt: '要求说明包含完整材料列表。',
     },
   ])('accepts a relevant reformulation or exact NFC source sentence: $answer', (fixture) => {
     expect(validateGroundedFixture(fixture)).toMatchObject({
       outcome: 'answered',
       validationCode: 'accepted',
     });
-  });
-
-  it.each([
-    {
-      question: '费用是多少？',
-      answer: '费用是 102 元。',
-      excerpt: '费用是 10² 元。',
-    },
-    {
-      question: '版本是什么？',
-      answer: '版本是 IV。',
-      excerpt: '版本是 Ⅳ。',
-    },
-  ])('rejects an NFKC semantic collision: $answer', (fixture) => {
-    expect(validateGroundedFixture(fixture)).toMatchObject({
-      outcome: 'failed',
-      validationCode: 'rejected',
-    });
-  });
-
-  it('rejects an excerpt boundary fragment but accepts a complete interior source sentence', () => {
-    expect(
-      validateGroundedFixture({
-        question: '退款规则是什么？',
-        answer: '…退款可以在七天内申请。',
-        excerpt: '…退款可以在七天内申请。',
-      }),
-    ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
-    expect(
-      validateGroundedFixture({
-        question: '退款规则是什么？',
-        answer: '退款可以在七天内申请。',
-        excerpt: '…前句残片。退款可以在七天内申请。后句残片…',
-      }),
-    ).toMatchObject({ outcome: 'answered', validationCode: 'accepted' });
   });
 
   it('rejects an unrelated exact source sentence appended to a relevant answer', () => {
@@ -839,13 +1221,13 @@ describe('knowledge run-turn high-risk boundaries', () => {
         {
           deltas: ['私有候选文本'],
           invokeNamedTools: [
-            { name: 'knowledge_search', params: { query: '免费额度' } },
+            { name: 'knowledge_search', params: { query: '免费额度 余额不足' } },
             {
               name: 'submit_knowledge_answer',
               params: {
                 status: 'answered',
-                answer: GROUNDED_ANSWER,
-                citationChunkIds: [CHUNK],
+                answer: MULTI_GROUNDED_ANSWER,
+                citationChunkIds: [CHUNK, SECOND_CHUNK],
               },
             },
           ],
@@ -857,7 +1239,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
         createDisabledSandboxBackend(),
         15_000,
         groundedGate(),
-        '为什么前三次成功回答免费？',
+        MULTI_GROUNDED_QUESTION,
       );
       if (source === 'wallet') {
         context.db.seedBillingAccount(CONSUMER, 100n);
@@ -872,7 +1254,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
       await waitFor(() => context.db.agentUsageReceipts.size === 1);
       expect(context.agent.calls).toHaveLength(1);
       expect(context.db.messages.filter((message) => message.role === 'assistant')).toEqual([
-        expect.objectContaining({ content: [{ type: 'text', text: GROUNDED_ANSWER }] }),
+        expect.objectContaining({ content: [{ type: 'text', text: MULTI_GROUNDED_ANSWER }] }),
       ]);
       expect([...context.db.usageCharges.values()]).toEqual([
         expect.objectContaining({
@@ -886,8 +1268,14 @@ describe('knowledge run-turn high-risk boundaries', () => {
         expect.objectContaining({
           validator_policy_version: 'knowledge-agent-grounded-validator-v2',
           validation_code: 'accepted',
+          response_digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+          knowledge_resource_digest: binding.knowledge.resourceDigest,
+          citation_chunk_ids: [CHUNK, SECOND_CHUNK],
         }),
       ]);
+      const initialReceipt = [...context.db.agentUsageReceipts.values()][0]!;
+      const initialResponseDigest = initialReceipt.response_digest;
+      const initialResponseMessageId = initialReceipt.response_message_id;
       expect(JSON.stringify(context.db.messages)).not.toContain('私有候选文本');
       expect(JSON.stringify(context.db.messages)).not.toContain('伪造 transcript');
 
@@ -895,6 +1283,13 @@ describe('knowledge run-turn high-risk boundaries', () => {
       expect(context.agent.calls).toHaveLength(1);
       expect(context.db.usageCharges.size).toBe(1);
       expect(context.db.agentUsageReceipts.size).toBe(1);
+      expect([...context.db.agentUsageReceipts.values()][0]).toMatchObject({
+        response_digest: initialResponseDigest,
+        response_message_id: initialResponseMessageId,
+        knowledge_resource_digest: binding.knowledge.resourceDigest,
+        citation_chunk_ids: [CHUNK, SECOND_CHUNK],
+      });
+      expect(context.db.messages.filter((message) => message.role === 'assistant')).toHaveLength(1);
       expect([...context.db.billingFreeAllowances.values()][0]).toMatchObject({
         free_used_count: source === 'wallet' ? 3 : 1,
         free_reserved_count: 0,

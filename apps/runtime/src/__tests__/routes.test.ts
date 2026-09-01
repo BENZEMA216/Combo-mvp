@@ -1401,7 +1401,7 @@ describe('knowledge Agent handler closed loop', () => {
   const usageId = '00000000-0000-4000-8000-000000000104';
   const sourceSha = '7'.repeat(40);
   const question = 'Combo 的免费额度是多少？';
-  const answer = 'Combo 的前三次成功回答使用免费额度。';
+  const answer = 'Combo 的免费额度可以用于前三次成功回答。';
   const chunkId = `chunk.knowledge.${'8'.repeat(32)}`;
   const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -1418,7 +1418,7 @@ describe('knowledge Agent handler closed loop', () => {
     });
     const agentMarkdown = encode('# Knowledge Agent\nAnswer only from retrieved evidence.');
     const skillMarkdown = encode('# Knowledge\nSearch before submitting an answer.');
-    const content = 'Combo 的前三次成功回答使用免费额度。';
+    const content = answer;
     const knowledge = {
       protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
       chunks: [

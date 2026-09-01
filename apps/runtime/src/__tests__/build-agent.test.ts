@@ -76,7 +76,7 @@ describe('composeSystemPrompt', () => {
     expect(prompt).not.toContain('# Miniapp 设计模式');
   });
 
-  it('知识回答要求逐句直接复用证据并保持事实关系与极性', () => {
+  it('知识回答要求逐句直接复用证据并提供实质信息', () => {
     const prompt = composeKnowledgeSystemPrompt(
       {
         name: '公开知识助手',
@@ -88,11 +88,13 @@ describe('composeSystemPrompt', () => {
     );
     expect(prompt).toContain('每个事实性句子必须逐字复用被引用 excerpt 中的完整原句');
     expect(prompt).toContain('不得删改其中的限定、关系、否定、条件、数额、日期或版本');
-    expect(prompt).toContain('每句必须有陈述式终止标点及明确谓语或关系信号');
+    expect(prompt).toContain('每句必须有陈述式终止标点及主题之外的明确谓语或事实增量');
     expect(prompt).toContain('FAQ 问句、Markdown 标题/列表、名词型片段');
-    expect(prompt).toContain('只共享泛化疑问词或谓语/关系词');
+    expect(prompt).toContain('问题原样复述、短动作嵌入另一个词');
     expect(prompt).toContain('单字母、短数字、单个年份');
     expect(prompt).toContain('API/HTTP/HTTPS token');
+    expect(prompt).toContain('当前中文 Beta 不做自由语义改写或前提纠正');
+    expect(prompt).toContain('关系、否定、条件、时间与限定必须直接对齐');
   });
 
   it('v1 固定 oracle 不注入 v2 整句抽取合同', () => {
