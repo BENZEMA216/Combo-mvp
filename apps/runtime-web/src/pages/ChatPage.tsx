@@ -17,7 +17,7 @@ import { FloatingChat } from '../components/FloatingChat.js';
 import { GeneratingPageSkeleton } from '../components/GeneratingPageSkeleton.js';
 import { KnowledgeConversation } from '../components/KnowledgeConversation.js';
 import { QueryErrorNotice } from '../components/QueryErrorNotice.js';
-import { RechargeDialog } from '../components/RechargeDialog.js';
+import { RechargeDialog, RecoveryRechargeDialog } from '../components/RechargeDialog.js';
 import { SessionSidebar } from '../components/SessionSidebar.js';
 import { TrialIntakeForm } from '../components/TrialIntakeForm.js';
 import {
@@ -209,8 +209,11 @@ export function ChatPage() {
   }, [activeArtifact?.id, activeArtifact?.updatedAt]);
 
   useEffect(() => {
-    rechargeBackgroundRef.current?.toggleAttribute('inert', stream.rechargeRequired !== null);
-  }, [stream.rechargeRequired]);
+    rechargeBackgroundRef.current?.toggleAttribute(
+      'inert',
+      stream.rechargeRequired !== null || stream.recoveryDialogOpen,
+    );
+  }, [stream.rechargeRequired, stream.recoveryDialogOpen]);
 
   useEffect(() => {
     if (!mobileSessionsOpen) return undefined;
@@ -247,16 +250,15 @@ export function ChatPage() {
   }, [stream.retryPending]);
 
   const resumeAfterRecharge = useCallback(
-    async (creditedIntentId: string): Promise<unknown> => {
+    async (creditedIntentId: string): Promise<void> => {
       const requestedGeneration = sessionGenerationRef.current;
-      const accepted = await stream.resumeAfterRecharge(creditedIntentId);
-      if (sessionGenerationRef.current !== requestedGeneration) return accepted;
+      await stream.resumeAfterRecharge(creditedIntentId);
+      if (sessionGenerationRef.current !== requestedGeneration) return;
       // Recharge resume bypasses the mounted input source's own onSend success path. Only after
       // the same usageId is authoritatively accepted may we clear its draft/error by remounting.
       setRetryResolutionVersion((version) => version + 1);
       setSelectedElement(null);
       setInspectionEnabled(false);
-      return accepted;
     },
     [stream.resumeAfterRecharge],
   );
@@ -311,7 +313,7 @@ export function ChatPage() {
       <div
         ref={rechargeBackgroundRef}
         className="rt-recharge-background"
-        aria-hidden={stream.rechargeRequired ? true : undefined}
+        aria-hidden={stream.rechargeRequired || stream.recoveryDialogOpen ? true : undefined}
       >
         {!studioMode && (
           <SessionSidebar
@@ -426,7 +428,11 @@ export function ChatPage() {
                     results={detail.knowledgeResults ?? []}
                     isRunning={stream.running}
                     contractError={detail.knowledgeResults === undefined}
-                    pendingRetryAvailable={stream.pendingRetryAvailable && !stream.rechargeRequired}
+                    pendingRetryAvailable={
+                      stream.pendingRetryAvailable &&
+                      !stream.rechargeRequired &&
+                      !stream.recoveryDialogOpen
+                    }
                     onRetryPending={retryPendingUsage}
                     streamConnectionFailed={stream.streamConnectionFailed}
                     onRetryStreamConnection={stream.retryStreamConnection}
@@ -452,19 +458,21 @@ export function ChatPage() {
                     />
                   )}
                   <div className="rt-genui__canvas" data-state={canvasState}>
-                    {stream.pendingRetryAvailable && !stream.rechargeRequired && (
-                      <div className="rt-inline-error" role="alert">
-                        上一次发送结果仍待确认。为避免重复运行或扣费，请先重试原任务。
-                        <button
-                          type="button"
-                          className="rt-toolbar-pill"
-                          disabled={stream.running}
-                          onClick={() => void retryPendingUsage().catch(() => undefined)}
-                        >
-                          重试原任务
-                        </button>
-                      </div>
-                    )}
+                    {stream.pendingRetryAvailable &&
+                      !stream.rechargeRequired &&
+                      !stream.recoveryDialogOpen && (
+                        <div className="rt-inline-error" role="alert">
+                          上一次发送结果仍待确认。为避免重复运行或扣费，请先重试原任务。
+                          <button
+                            type="button"
+                            className="rt-toolbar-pill"
+                            disabled={stream.running}
+                            onClick={() => void retryPendingUsage().catch(() => undefined)}
+                          >
+                            重试原任务
+                          </button>
+                        </div>
+                      )}
                     {studioMode && activeArtifact && (
                       <StudioDesignToolbar
                         artifact={activeArtifact}
@@ -632,6 +640,15 @@ export function ChatPage() {
           onClose={stream.clearRechargeRequired}
           onActiveRechargeIntentChange={stream.setActiveRechargeIntent}
           onCredited={resumeAfterRecharge}
+          onAbandon={stream.abandonRechargeUsage}
+        />
+      )}
+      {stream.pendingRecovery && stream.recoveryDialogOpen && (
+        <RecoveryRechargeDialog
+          recovery={stream.pendingRecovery}
+          onClose={stream.clearRechargeRequired}
+          onCredited={resumeAfterRecharge}
+          onRefreshRecovery={stream.refreshPendingRecovery}
           onAbandon={stream.abandonRechargeUsage}
         />
       )}

@@ -10,6 +10,10 @@ import {
   registerPendingRecoveryRoutes,
 } from '../modules/billing/pending-recovery-routes.js';
 import type { EndpointDecl } from '../platform/http/_helpers.js';
+import {
+  HOSTED_KNOWLEDGE_AGENT_ENDPOINTS,
+  registerHostedKnowledgeAgentRoutes,
+} from '../modules/knowledge-agent/consumer-entry.js';
 
 /** 全部业务端点声明汇总（供守门/测试核对端点数、方法、鉴权链）。 */
 export const ALL_ENDPOINTS: EndpointDecl[] = [
@@ -17,6 +21,7 @@ export const ALL_ENDPOINTS: EndpointDecl[] = [
   ...SESSION_ENDPOINTS,
   ...ARTIFACT_ENDPOINTS,
   ...PENDING_RECOVERY_ENDPOINTS,
+  ...HOSTED_KNOWLEDGE_AGENT_ENDPOINTS,
 ];
 
 /** 注册全部业务路由（API_PREFIX 子作用域）。 */
@@ -27,6 +32,7 @@ export async function registerBusinessRoutes(app: FastifyInstance): Promise<void
       await registerSessionRoutes(scoped);
       await registerArtifactRoutes(scoped);
       await registerPendingRecoveryRoutes(scoped);
+      await registerHostedKnowledgeAgentRoutes(scoped);
       await registerClientEventRoutes(scoped); // 浏览器侧错误/调试事件（只落结构化日志）
     },
     { prefix: API_PREFIX },

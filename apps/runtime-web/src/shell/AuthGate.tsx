@@ -83,9 +83,13 @@ function GatePanel({ role, children }: { role: 'status' | 'alert'; children: Rea
 
 export function AuthGate({
   children,
+  anonymous,
+  returnTo,
   navigateToAuth = (target) => window.location.assign(target),
 }: {
   children: ReactNode;
+  anonymous?: ReactNode;
+  returnTo?: string;
   navigateToAuth?: (target: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -138,6 +142,7 @@ export function AuthGate({
   }
 
   if (query.data.status === 'anon') {
+    if (anonymous !== undefined) return anonymous;
     return (
       <GatePanel role="alert">
         <p className="rt-auth-gate__msg">请先登录后进入试用模式。</p>
@@ -145,7 +150,7 @@ export function AuthGate({
           <button
             type="button"
             className="rt-btn rt-btn--accent"
-            onClick={() => navigateToAuth(loginUrl())}
+            onClick={() => navigateToAuth(loginUrl(returnTo))}
           >
             去登录
           </button>

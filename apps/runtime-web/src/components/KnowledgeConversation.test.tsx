@@ -200,6 +200,30 @@ describe('KnowledgeConversation authoritative projection', () => {
     expect(screen.getByText(`sha256:${'b'.repeat(64)}`)).toBeInTheDocument();
   });
 
+  it('renders only the frozen citation excerpt as escaped plain text', () => {
+    const base = answeredResult('wallet');
+    const excerpt = '# FROZEN_CHUNK <strong>不是 HTML</strong>\n第二行原文。';
+    const result = KnowledgeTurnResultSchema.parse({
+      ...base,
+      citations: [
+        { ...base.citations[0], excerpt },
+        { ...base.citations[1], excerpt: '另一条冻结片段。' },
+      ],
+    });
+    const page = render(
+      <KnowledgeConversation {...props({ messages: [userMessage()], results: [result] })} />,
+    );
+
+    const citations = screen.getByRole('region', { name: '来源引用' });
+    expect(page.container.querySelector('.rt-knowledge-citation__excerpt')?.textContent).toBe(
+      excerpt,
+    );
+    expect(page.container.querySelector('.rt-knowledge-citation__excerpt strong')).toBeNull();
+    expect(page.container.querySelector('script')).toBeNull();
+    expect(within(citations).queryByText(base.answer!.responseDigest)).not.toBeInTheDocument();
+    expect(within(citations).queryByText(base.receiptId)).not.toBeInTheDocument();
+  });
+
   it('shows free and insufficient-evidence settlement without inventing citations', () => {
     render(
       <KnowledgeConversation

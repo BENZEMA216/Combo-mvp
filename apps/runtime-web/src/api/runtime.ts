@@ -1,13 +1,17 @@
 // 试用端 API：端点函数 + React Query hooks。类型全来自 @cb/shared 试用域契约。
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import {
+  HostedKnowledgeAgentDescriptorSchema,
   RechargeRequiredBodySchema,
+  StartHostedKnowledgeAgentResultSchema,
   type ArtifactView,
+  type HostedKnowledgeAgentDescriptor,
   type MessageView,
   type RechargeRequiredBody,
   type SessionDetail,
   type SessionMode,
   type SessionView,
+  type StartHostedKnowledgeAgentResult,
 } from '@cb/shared';
 import { ApiError, apiDelete, apiGet, apiGetText, apiPatch, apiPost } from './client.js';
 
@@ -27,6 +31,36 @@ export function useCapabilities() {
   return useQuery({
     queryKey: ['capabilities'],
     queryFn: () => apiGet<TrialCapability[]>('/runtime/capabilities'),
+  });
+}
+
+export async function getHostedKnowledgeAgentDescriptor(): Promise<HostedKnowledgeAgentDescriptor> {
+  return HostedKnowledgeAgentDescriptorSchema.parse(
+    await apiGet<unknown>('/runtime/agents/combo-knowledge'),
+  );
+}
+
+export function useHostedKnowledgeAgentDescriptor() {
+  return useQuery({
+    queryKey: ['hosted-agent', 'combo-knowledge'],
+    queryFn: getHostedKnowledgeAgentDescriptor,
+    retry: false,
+  });
+}
+
+export async function startHostedKnowledgeAgent(): Promise<StartHostedKnowledgeAgentResult> {
+  return StartHostedKnowledgeAgentResultSchema.parse(
+    await apiPost<unknown>('/runtime/agents/combo-knowledge/start', {}),
+  );
+}
+
+export function useStartHostedKnowledgeAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: startHostedKnowledgeAgent,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
+    },
   });
 }
 
@@ -113,7 +147,15 @@ export function readRechargeRequired(
 ): RechargeRequired | null {
   if (!(error instanceof ApiError) || error.status !== 402) return null;
   const parsed = RechargeRequiredBodySchema.safeParse(error.responseBody);
-  return parsed.success && parsed.data.rechargeIntentId === expectedUsageId ? parsed.data : null;
+  if (!parsed.success) return null;
+  const recoveryUsageId = parsed.data.recoveryUsageId;
+  return recoveryUsageId === undefined
+    ? parsed.data.rechargeIntentId === expectedUsageId
+      ? parsed.data
+      : null
+    : recoveryUsageId === expectedUsageId
+      ? parsed.data
+      : null;
 }
 
 export interface SendSessionMessageResult {
@@ -127,11 +169,13 @@ export function sendSessionMessage(
   sessionId: string,
   text: string,
   usageId: string,
+  signal?: AbortSignal,
 ): Promise<SendSessionMessageResult> {
-  return apiPost<SendSessionMessageResult>(`/runtime/sessions/${sessionId}/messages`, {
-    text,
-    usageId,
-  });
+  return apiPost<SendSessionMessageResult>(
+    `/runtime/sessions/${sessionId}/messages`,
+    { text, usageId },
+    { signal },
+  );
 }
 
 /** 打断当前轮（无进行中的轮 → interrupted=false，幂等）。 */

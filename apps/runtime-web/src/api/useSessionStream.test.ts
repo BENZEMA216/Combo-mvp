@@ -5,6 +5,8 @@ import { createElement, StrictMode, type PropsWithChildren, type ReactElement } 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReleaseMetadataProvider } from '../shell/releaseIdentity.js';
 import { ApiError } from './client.js';
+import { resolvePendingRecoveryForSession } from './recovery.js';
+import type * as RecoveryApi from './recovery.js';
 import {
   readRechargeRequired,
   sendSessionMessage,
@@ -17,9 +19,17 @@ vi.mock('./runtime.js', () => ({
   readRechargeRequired: vi.fn(() => null),
   sendSessionMessage: vi.fn(),
 }));
+vi.mock('./recovery.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof RecoveryApi>();
+  return {
+    ...actual,
+    resolvePendingRecoveryForSession: vi.fn(),
+  };
+});
 
 const sendSessionMessageMock = vi.mocked(sendSessionMessage);
 const readRechargeRequiredMock = vi.mocked(readRechargeRequired);
+const resolvePendingRecoveryForSessionMock = vi.mocked(resolvePendingRecoveryForSession);
 const SESSION_A = '11111111-1111-4111-8111-111111111111';
 const SESSION_B = '22222222-2222-4222-8222-222222222222';
 const TURN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -64,10 +74,26 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  const localValues = new Map<string, string>();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      get length() {
+        return localValues.size;
+      },
+      clear: () => localValues.clear(),
+      getItem: (key: string) => localValues.get(key) ?? null,
+      key: (index: number) => [...localValues.keys()][index] ?? null,
+      removeItem: (key: string) => localValues.delete(key),
+      setItem: (key: string, value: string) => localValues.set(key, value),
+    } satisfies Storage,
+  });
   window.sessionStorage.clear();
   sendSessionMessageMock.mockReset();
   readRechargeRequiredMock.mockReset();
   readRechargeRequiredMock.mockReturnValue(null);
+  resolvePendingRecoveryForSessionMock.mockReset();
+  resolvePendingRecoveryForSessionMock.mockResolvedValue(null);
 });
 
 function recognizeRechargeForExpectedUsage(): void {
@@ -444,8 +470,8 @@ describe('runtime session generation fencing', () => {
       await expect(result.current.send('strict resume')).rejects.toThrow('免费次数已用完');
     });
     const usageId = result.current.activeRechargeIntentId!;
-    let first!: Promise<MessageView>;
-    let second!: Promise<MessageView>;
+    let first!: Promise<void>;
+    let second!: Promise<void>;
     act(() => {
       first = result.current.resumeAfterRecharge(usageId);
       second = result.current.resumeAfterRecharge(usageId);

@@ -33,7 +33,16 @@ function buildUrl(path: string): string {
 }
 
 /** 发请求 + 错误收口：非 2xx 解 ErrorEnvelope 后抛 ApiError；网络失败也归一成 ApiError。 */
-async function doFetch(method: string, path: string, body?: unknown): Promise<Response> {
+interface ApiRequestOptions {
+  signal?: AbortSignal;
+}
+
+async function doFetch(
+  method: string,
+  path: string,
+  body?: unknown,
+  options?: ApiRequestOptions,
+): Promise<Response> {
   const trace = clientTraceHeaders();
   const url = buildUrl(path);
   const fetchOnce = async (): Promise<Response> => {
@@ -46,6 +55,7 @@ async function doFetch(method: string, path: string, body?: unknown): Promise<Re
             ? trace.headers
             : { 'content-type': 'application/json', ...trace.headers },
         body: body === undefined ? undefined : JSON.stringify(body),
+        signal: options?.signal,
       });
     } catch (cause) {
       reportClientEvent('api_error', {
@@ -85,16 +95,22 @@ async function doFetch(method: string, path: string, body?: unknown): Promise<Re
   return res;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await doFetch(method, path, body);
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  options?: ApiRequestOptions,
+): Promise<T> {
+  const res = await doFetch(method, path, body, options);
   if (res.status === 204) return undefined as T;
   // 全部业务端点都是 { data, meta } 轻包络：解包只回 data。
   return ((await res.json()) as { data: T }).data;
 }
 
-export const apiGet = <T>(path: string): Promise<T> => request<T>('GET', path);
-export const apiPost = <T>(path: string, body?: unknown): Promise<T> =>
-  request<T>('POST', path, body);
+export const apiGet = <T>(path: string, options?: ApiRequestOptions): Promise<T> =>
+  request<T>('GET', path, undefined, options);
+export const apiPost = <T>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<T> =>
+  request<T>('POST', path, body, options);
 export const apiPatch = <T>(path: string, body: unknown): Promise<T> =>
   request<T>('PATCH', path, body);
 export const apiDelete = <T>(path: string): Promise<T> => request<T>('DELETE', path);
