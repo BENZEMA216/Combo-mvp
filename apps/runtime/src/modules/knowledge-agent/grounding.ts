@@ -355,7 +355,7 @@ function hasTopicalCoverage(
     return matches.some((anchor) => anchor.kind === 'han');
   }
   const literalMatches = matches.filter((anchor) => anchor.kind === 'literal');
-  return literalMatches.length >= 2 && literalMatches.some(literalAnchorIsDiscriminating);
+  return literalMatches.some(literalAnchorIsDiscriminating);
 }
 
 function hasInformationGain(

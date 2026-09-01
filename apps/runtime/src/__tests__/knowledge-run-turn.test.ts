@@ -422,6 +422,16 @@ describe('knowledge run-turn high-risk boundaries', () => {
       answer: 'API 在 2026 年发布。',
       excerpt: 'API 在 2026 年发布。',
     },
+    {
+      question: '2026 是什么意思？',
+      answer: '2026 年是系统发布时间。',
+      excerpt: '2026 年是系统发布时间。',
+    },
+    {
+      question: 'API 是什么意思？',
+      answer: 'API 需要在明天发布。',
+      excerpt: 'API 需要在明天发布。',
+    },
   ])(
     'rejects an exact but irrelevant source sentence: $answer',
     ({ question, answer, excerpt }) => {
@@ -514,6 +524,16 @@ describe('knowledge run-turn high-risk boundaries', () => {
       question: 'HTTP 402 代表什么？',
       answer: 'HTTP 402 表示需要充值。',
       excerpt: 'HTTP 402 表示需要充值。',
+    },
+    {
+      question: '402 是什么意思？',
+      answer: 'HTTP 402 表示需要充值。',
+      excerpt: 'HTTP 402 表示需要充值。',
+    },
+    {
+      question: 'v2 呢？',
+      answer: 'API v2 使用新的验证策略。',
+      excerpt: 'API v2 使用新的验证策略。',
     },
     {
       question: '退款规则是什么？',
