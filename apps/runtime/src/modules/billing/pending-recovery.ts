@@ -359,8 +359,8 @@ export async function abandonPendingUsageRecovery(
         SET request_text = NULL,
             recovery_status = 'abandoned',
             terminal_turn_id = $3,
-            abandoned_at = statement_timestamp(),
-            updated_at = statement_timestamp()
+            abandoned_at = GREATEST(statement_timestamp(), created_at),
+            updated_at = GREATEST(statement_timestamp(), updated_at, created_at)
       WHERE owner_user_id = $1 AND usage_id = $2
         AND recovery_status = 'active'`,
     [recovery.ownerUserId, recovery.usageId, terminalTurnId],
@@ -393,9 +393,11 @@ export async function closePendingUsageRecoveryForTerminal(
         SET request_text = NULL,
             recovery_status = $3,
             terminal_turn_id = $4,
-            accepted_at = CASE WHEN $3 = 'accepted' THEN statement_timestamp() ELSE NULL END,
-            abandoned_at = CASE WHEN $3 = 'abandoned' THEN statement_timestamp() ELSE NULL END,
-            updated_at = statement_timestamp()
+            accepted_at = CASE WHEN $3 = 'accepted'
+              THEN GREATEST(statement_timestamp(), created_at) ELSE NULL END,
+            abandoned_at = CASE WHEN $3 = 'abandoned'
+              THEN GREATEST(statement_timestamp(), created_at) ELSE NULL END,
+            updated_at = GREATEST(statement_timestamp(), updated_at, created_at)
       WHERE owner_user_id = $1 AND usage_id = $2
         AND recovery_status = 'active'`,
     [input.ownerUserId, input.usageId, accepted ? 'accepted' : 'abandoned', input.turnId],

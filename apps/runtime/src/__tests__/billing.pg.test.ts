@@ -431,6 +431,19 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
   it('reserves and completes a free use through combo_runtime service SQL', async () => {
     const chain = await seedChain();
     const { billing, turnId } = await reserveFreeUsage(chain, '成功的免费任务');
+    const clockRollbackFloor = await db.query<{ updated_at: string }>(
+      `UPDATE billing_free_allowances
+          SET updated_at = statement_timestamp() + interval '1 minute'
+        WHERE owner_user_id = $1 AND capability_id = $2
+        RETURNING updated_at::text`,
+      [chain.consumerUserId, chain.capabilityId],
+    );
+    await db.query(
+      `UPDATE usage_charges
+          SET updated_at = $2::timestamptz
+        WHERE turn_id = $1`,
+      [turnId, clockRollbackFloor.rows[0]!.updated_at],
+    );
 
     await withTransaction(runtimeDb, async (transaction) => {
       await lockTurnSession(transaction, chain.session.id);
@@ -447,6 +460,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       balance_cents: string;
       reserved_cents: string;
       debit_count: string;
+      allowance_updated_at: string;
+      charge_updated_at: string;
     }>(
       `SELECT
          fa.free_used_count,
@@ -455,6 +470,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
          uc.status AS charge_status,
          ba.balance_cents::text,
          ba.reserved_cents::text,
+         fa.updated_at::text AS allowance_updated_at,
+         uc.updated_at::text AS charge_updated_at,
          (SELECT count(*)::text
             FROM wallet_ledger wl
            WHERE wl.owner_user_id = $1
@@ -469,7 +486,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         AND uc.turn_id = $3`,
       [chain.consumerUserId, chain.capabilityId, turnId],
     );
-    expect(result.rows[0]).toEqual({
+    expect(result.rows[0]).toMatchObject({
       free_used_count: 1,
       free_reserved_count: 0,
       charge_source: 'free',
@@ -478,6 +495,12 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       reserved_cents: '0',
       debit_count: '0',
     });
+    expect(Date.parse(result.rows[0]!.allowance_updated_at)).toBeGreaterThanOrEqual(
+      Date.parse(clockRollbackFloor.rows[0]!.updated_at),
+    );
+    expect(Date.parse(result.rows[0]!.charge_updated_at)).toBeGreaterThanOrEqual(
+      Date.parse(clockRollbackFloor.rows[0]!.updated_at),
+    );
   });
 
   it('creates and settles an owner use without a pre-existing billing account', async () => {

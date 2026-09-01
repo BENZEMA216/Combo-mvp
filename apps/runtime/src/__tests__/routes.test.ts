@@ -152,12 +152,14 @@ describe('route registry self-check', () => {
 interface Captured {
   statusCode: number;
   body: unknown;
+  headers: Record<string, string>;
 }
 
 function makeReply(): FastifyReply {
   const reply = {
     statusCode: 0,
     body: undefined as unknown,
+    headers: {} as Record<string, string>,
     code(n: number) {
       this.statusCode = n;
       return this;
@@ -169,7 +171,8 @@ function makeReply(): FastifyReply {
     type() {
       return this;
     },
-    header() {
+    header(name: string, value: unknown) {
+      this.headers[name.toLowerCase()] = String(value);
       return this;
     },
   };
@@ -565,6 +568,7 @@ describe('session 端点 owner 守卫', () => {
       makeReq({ db, userId: ME, params: { id: sessionId } }),
     );
     expect(mine.statusCode).toBe(200);
+    expect(mine.headers['cache-control']).toBe('private, no-store');
 
     const theirs = await call(
       getSessionDetailHandler(),
@@ -575,6 +579,44 @@ describe('session 端点 owner 守卫', () => {
     const body = theirs.body as { error?: Record<string, unknown> };
     expect(body.error?.userMessage).toBeTruthy();
     expect(body.error && 'code' in body.error).toBe(false);
+    expect(theirs.headers['cache-control']).toBe('private, no-store');
+  });
+
+  it('GET /runtime/sessions/:id：未知 PostgreSQL detail 只记录固定安全码和 trace', async () => {
+    const db = new FakeDb();
+    const sessionId = await seedOwnedSession(db, ME);
+    const sensitive = 'request-text-and-body-must-never-be-logged';
+    const originalQuery = db.query.bind(db);
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      if (sql.replace(/\s+/g, ' ').includes('FROM sessions WHERE id = $1')) {
+        throw Object.assign(new Error(`body=${sensitive}`), {
+          detail: `request_text=${sensitive}`,
+          where: `unnamed portal body=${sensitive}`,
+        });
+      }
+      return originalQuery<R>(sql, params);
+    };
+    const errorLog = vi.fn();
+    const request = makeReq({ db, userId: ME, params: { id: sessionId } });
+    (request as unknown as { log: Record<string, unknown> }).log = {
+      ...silentLog,
+      error: errorLog,
+      warn: vi.fn(),
+    };
+
+    const reply = await call(getSessionDetailHandler(), request);
+
+    expect(reply.statusCode).toBe(500);
+    expect(reply.headers['cache-control']).toBe('private, no-store');
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(
+      { traceId: 'trace-test', detailFailure: 'unexpected_read_failure' },
+      'read session detail failed',
+    );
+    const serializedLog = JSON.stringify(errorLog.mock.calls);
+    expect(serializedLog).not.toContain(sensitive);
+    expect(serializedLog).not.toContain('request_text');
+    expect(serializedLog).not.toContain('body=');
   });
 
   it('GET /runtime/sessions/:id：透出消息 turnId 供前端按轮展示', async () => {
@@ -1575,6 +1617,23 @@ describe('knowledge Agent handler closed loop', () => {
       package_digest: packageDigest,
       knowledge_resource_path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
     });
+    const frozenObjectReads = vi.spyOn(store, 'getObjectBounded');
+    expect(
+      (
+        await call(
+          getSessionDetailHandler(),
+          makeReq({
+            db,
+            objectStore: store,
+            env,
+            turns,
+            userId: creator,
+            params: { id: sessionId },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(frozenObjectReads).not.toHaveBeenCalled();
 
     const sent = await call(
       sendMessageHandler(),
@@ -1591,16 +1650,16 @@ describe('knowledge Agent handler closed loop', () => {
     expect(sent.statusCode).toBe(202);
     await waitFor(() => db.agentUsageReceipts.size === 1);
 
-    const readDetail = () =>
+    const readDetail = (detailEnv = env, detailSessionId = sessionId) =>
       call(
         getSessionDetailHandler(),
         makeReq({
           db,
           objectStore: store,
-          env,
+          env: detailEnv,
           turns,
           userId: consumer,
-          params: { id: sessionId },
+          params: { id: detailSessionId },
         }),
       );
     const detail = await readDetail();
@@ -1633,10 +1692,43 @@ describe('knowledge Agent handler closed loop', () => {
       }),
     ]);
     const receipt = [...db.agentUsageReceipts.values()][0]!;
+    const frozenBundleObjectKey = agentPackageObjectKey(
+      packageDigest,
+      CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+    );
+    const originalBundleBytes = await store.getObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      frozenBundleObjectKey,
+    );
+    await store.putObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      frozenBundleObjectKey,
+      encode('tampered frozen Knowledge Bundle bytes'),
+    );
+    expect((await readDetail()).statusCode).toBe(503);
+    await store.putObject(AGENT_PACKAGE_OBJECT_BUCKET, frozenBundleObjectKey, originalBundleBytes);
+    const sessionRow = db.sessions.get(sessionId);
+    if (!sessionRow) throw new Error('missing knowledge Session fixture');
+    const resourceDigest = sessionRow.knowledge_resource_digest;
+    sessionRow.knowledge_resource_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    sessionRow.knowledge_resource_digest = resourceDigest;
+    const receiptPackageDigest = receipt.package_digest;
+    receipt.package_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.package_digest = receiptPackageDigest;
     const responseDigest = receipt.response_digest;
     receipt.response_digest = `sha256:${'0'.repeat(64)}`;
     expect((await readDetail()).statusCode).toBe(503);
     receipt.response_digest = responseDigest;
+    const responseMessage = db.messages.find(
+      (message) => message.id === receipt.response_message_id,
+    );
+    if (!responseMessage) throw new Error('missing knowledge response Message fixture');
+    const responseContent = responseMessage.content;
+    responseMessage.content = [{ type: 'text', text: 'tampered response body' }];
+    expect((await readDetail()).statusCode).toBe(503);
+    responseMessage.content = responseContent;
     const citationChunkIds = receipt.citation_chunk_ids;
     receipt.citation_chunk_ids = [`chunk.knowledge.${'0'.repeat(32)}`];
     expect((await readDetail()).statusCode).toBe(503);
@@ -1858,16 +1950,58 @@ describe('knowledge Agent handler closed loop', () => {
 
     expect(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY).toBe('knowledge-agent-grounded-validator-v2');
     setFrozenValidatorPolicy(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY);
+    const otherPackage = fixture();
+    const otherCapability = db.seedCapability({
+      id: CAPABILITY_ID,
+      owner_user_id: OWNER,
+      published: true,
+      kind: 'knowledge',
+      name: '另一个有效知识 Agent',
+      summary: '用于证明当前 gate 已真实漂移到另一个可解析 Package',
+    });
+    store.seedText(
+      CAPABILITY_BUCKET,
+      otherCapability.storage_key,
+      serializeCreatorAgentPackageCapability(otherPackage.projection),
+    );
+    db.seedAgentPackageRegistry({
+      packageDigest: otherPackage.packageDigest,
+      releaseId: otherPackage.projection.release.releaseId,
+      ownerUserId: OWNER,
+    });
+    await seedPackage(store, otherPackage);
     const driftedGate: KnowledgeAgentTestGate = {
-      ...gate,
-      capabilityId: '00000000-0000-4000-8000-000000000199',
-      releaseId: `release.agent-package.${'b'.repeat(32)}`,
-      packageDigest: `sha256:${'c'.repeat(64)}`,
+      ...otherPackage.gate,
+      sourceSha,
     };
+    expect(driftedGate.packageDigest).not.toBe(packageDigest);
+    await expect(
+      resolveKnowledgeAgentPackage({
+        db,
+        objectStore: store,
+        capability: {
+          id: otherCapability.id,
+          name: otherCapability.name,
+          summary: otherCapability.summary,
+          kind: otherCapability.kind,
+          published: otherCapability.published,
+          ownerUserId: otherCapability.owner_user_id,
+        },
+        projection: otherPackage.projection,
+        gate: driftedGate,
+      }),
+    ).resolves.toMatchObject({
+      binding: { release: { packageDigest: otherPackage.packageDigest } },
+    });
     const driftedEnv = {
       ...env,
       COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(driftedGate),
     } as Env;
+    expect(knowledgeAgentTestGateFromEnv(driftedEnv)).toMatchObject({
+      capabilityId: otherCapability.id,
+      releaseId: otherPackage.projection.release.releaseId,
+      packageDigest: otherPackage.packageDigest,
+    });
     const envWithoutKnowledgeGate = {
       ...env,
       COMBO_KNOWLEDGE_AGENT_TEST_GATE: undefined,
@@ -1887,6 +2021,34 @@ describe('knowledge Agent handler closed loop', () => {
       },
     });
     expect(agent.calls).toHaveLength(stateBeforePolicyFailures.agentCalls);
+    const stateBeforeActiveDetails = {
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    };
+    for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
+      const activeDetail = await readDetail(detailEnv);
+      expect(activeDetail.statusCode).toBe(200);
+      expect(activeDetail.headers['cache-control']).toBe('private, no-store');
+      const activeData = (activeDetail.body as { data: SessionDetail }).data;
+      expect(activeData.agentBinding).toMatchObject({
+        release: { releaseId: release.releaseId, packageDigest },
+      });
+      expect(activeData.knowledgeResults).toHaveLength(3);
+      expect(
+        activeData.knowledgeResults?.filter((result) => result.usageId === rechargeUsageId),
+      ).toEqual([]);
+      expect(activeData.knowledgeResults?.[0]).toMatchObject({
+        answer: { text: answer },
+        citations: [{ displayLabel: '公开计费手册' }],
+        billing: { source: 'free', settledCents: '0' },
+      });
+    }
+    expect({
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforeActiveDetails);
 
     const account = db.billingAccounts.get(consumer);
     if (!account) throw new Error('missing consumer billing account');
@@ -1912,6 +2074,38 @@ describe('knowledge Agent handler closed loop', () => {
       recovery_status: 'accepted',
       terminal_turn_id: expect.any(String),
     });
+    expect(
+      db.queries.some(
+        (query) =>
+          query.startsWith('UPDATE billing_free_allowances SET free_reserved_count') &&
+          query.includes('updated_at = GREATEST(now(), updated_at)'),
+      ),
+    ).toBe(true);
+    for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
+      const acceptedDetail = await readDetail(detailEnv);
+      expect(acceptedDetail.statusCode).toBe(200);
+      expect(acceptedDetail.headers['cache-control']).toBe('private, no-store');
+      const acceptedData = (acceptedDetail.body as { data: SessionDetail }).data;
+      expect(acceptedData.knowledgeResults).toHaveLength(4);
+      expect(
+        acceptedData.knowledgeResults?.filter((result) => result.usageId === rechargeUsageId),
+      ).toEqual([
+        expect.objectContaining({
+          outcome: 'answered',
+          answer: expect.objectContaining({ text: answer }),
+          citations: [expect.objectContaining({ displayLabel: '公开计费手册' })],
+          billing: expect.objectContaining({
+            source: 'wallet',
+            unitPriceCents: '1',
+            settledCents: '1',
+          }),
+          validation: expect.objectContaining({
+            policyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+            code: 'accepted',
+          }),
+        }),
+      ]);
+    }
     const terminalReplayAgent = makeFakeAgentFactory();
     const terminalReplayTurns = createTurnRunner({
       db,
@@ -1953,6 +2147,27 @@ describe('knowledge Agent handler closed loop', () => {
           db.usageCharges.get(entry.usage_charge_id)?.usage_id === rechargeUsageId,
       ),
     ).toHaveLength(1);
+    const stateBeforeTerminalDetails = {
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      debits: [...db.walletLedger.values()].filter((entry) => entry.entry_type === 'usage_debit')
+        .length,
+    };
+    for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
+      const terminalDetail = await readDetail(detailEnv);
+      expect(terminalDetail.statusCode).toBe(200);
+      expect(
+        (terminalDetail.body as { data: SessionDetail }).data.knowledgeResults?.filter(
+          (result) => result.usageId === rechargeUsageId,
+        ),
+      ).toHaveLength(1);
+    }
+    expect({
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      debits: [...db.walletLedger.values()].filter((entry) => entry.entry_type === 'usage_debit')
+        .length,
+    }).toEqual(stateBeforeTerminalDetails);
     expect(
       (
         await call(
@@ -2139,6 +2354,17 @@ describe('knowledge Agent handler closed loop', () => {
       request_text: null,
       recovery_status: 'abandoned',
     });
+    const cancelledDetail = await readDetail(envWithoutKnowledgeGate, cancelSessionId);
+    expect(cancelledDetail.statusCode).toBe(200);
+    expect((cancelledDetail.body as { data: SessionDetail }).data.knowledgeResults).toEqual([]);
+    expect(
+      [...db.usageCharges.values()].filter((charge) => charge.usage_id === cancelUsageId),
+    ).toEqual([]);
+    expect(
+      [...db.walletLedger.values()].filter(
+        (entry) => db.usageCharges.get(entry.usage_charge_id)?.usage_id === cancelUsageId,
+      ),
+    ).toEqual([]);
 
     const expiredSessionId = '00000000-0000-4000-8000-000000000111';
     const expiredUsageId = '00000000-0000-4000-8000-000000000112';
