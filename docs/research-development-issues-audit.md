@@ -29,7 +29,7 @@ flowchart LR
 
 因此，当前大量绿色单元测试、模块集成测试、CI、Preview 发布或受控 Test 结果，都不能升级为“创作者从当前对话制作 Agent，其他用户通过链接或自然语言获取，并在自己的当前 Codex 中继续工作”的产品闭环证据。仓库自己的机器可读验收状态也仍是 [`productStatus: BLOCKED`](https://github.com/dangdang-tech/Combo/blob/a2a1391f867cb71107465cba29ca9267a636d535/apps/creator-worker/creator-conversation-acceptance.v1.json#L1-L37)。
 
-这次审计还确认了两项需要维护者私密处置的 P0 级部署信任与环境隔离风险。为避免在公开仓库披露可利用路径，本文不写文件位置和复现步骤，也不把它们误标为已解决。
+这次审计还确认了两项需要维护者优先处置的 P0 级风险：候选构建与受信部署控制面的隔离不足，以及 Preview/Production 数据面与任务执行边界不足。第 4 节分别记录状态、影响和修复设计；为避免在公开仓库形成可直接复用的利用指南，本文不写精确执行链和复现步骤，也不把它们误标为已解决。
 
 ## 2. 审计范围与方法
 
@@ -219,12 +219,26 @@ Package V1 最多一个 Skill，也没有 Tool/MCP/App 权限与依赖声明。�
 
 ## 4. 当前质量、CI 与交付问题
 
-### Q-01 · P0 · 两项安全敏感问题需私密修复
+### Q-01A · P0 · 候选构建与受信部署控制面隔离不足
 
-审计发现两项仍存在的部署信任/环境隔离问题，可能影响受信控制面与跨环境数据边界。按照负责任披露原则，公开文档不记录路径、配置和利用方式。
+当前 Test 候选、Release artifact 与部署控制器之间没有形成可验证的单向信任边界：候选 revision 仍可能影响受信部署步骤，部署 job 的环境审批与凭据边界也没有形成一致的 fail-closed 证明。这与“受保护控制器只把候选不可变 artifact 当作数据输入”的安全模型不一致。
 
-- 状态：未解决；不是“因为未公开所以不存在”。
-- 建议：维护者立即建立私密修复任务、指定 owner、保留证据，并在修复合并后只公开影响、修复版本和升级动作。仓库当前没有 `SECURITY.md` 或专用私密报告入口，也应补齐负责任披露渠道。
+- 状态：现存，阻塞继续信任当前 Test 分支部署，也阻塞扩大 Preview/Production 自动部署信任面。
+- 影响：候选改动的权限影响可能不止于构建产物，还可能扩展到受信部署主机或共享集群控制面。
+- 建议：部署控制器固定到受保护的 `main` SHA；候选只以不可变 artifact/digest 输入；部署 job 绑定 GitHub Environment；Test、Preview、Production 分权使用凭据；受信主机只运行固定 allowlist runner。
+- 披露边界：精确文件、执行顺序和复现步骤由维护者私密留存，不在公开报告中展开。
+
+### Q-01B · P0 · Preview/Production 数据面与任务执行边界不足
+
+当前部署拓扑明确让 Preview 与 Production 复用部分基础数据服务；与此同时，环境间的数据库权限、任务队列消费和对象存储命名边界没有形成完整的隔离证明，Preview 自动发布还包含迁移与应用 rollout。
+
+- 状态：现存；共享基础设施本身是已记录的设计，但缺少足以阻止跨环境读写和任务竞争的强制边界。
+- 影响：Preview worker 可能与 Production 竞争任务，Preview 代码或迁移也可能作用于共享数据面，使预览回归扩大为生产数据或任务处理风险。
+- 公开证据：[`deployment-topology.md`](https://github.com/dangdang-tech/Combo/blob/a2a1391f867cb71107465cba29ca9267a636d535/docs/deployment-topology.md#L15-L20)、[`deployment-topology.md`](https://github.com/dangdang-tech/Combo/blob/a2a1391f867cb71107465cba29ca9267a636d535/docs/deployment-topology.md#L52-L65)
+- 建议：至少按环境拆分数据库角色/schema、任务队列 namespace 和对象存储 bucket/prefix；禁止 Preview worker 消费 Production 任务；迁移采用 expand-contract 与跨版本兼容门禁。理想状态是使用隔离或脱敏克隆的 foundation；但这与当前权威拓扑“Preview 不单独建立 foundation”的约束不同，选择该方案前必须先完成部署拓扑决策并更新 `deployment-topology.md`，不能直接实施。
+- 披露边界：具体运行标识、配置组合和复现步骤只进入私密修复记录。
+
+两项风险都应立即建立有 owner、修复版本和回归证据的私密任务。仓库当前没有 `SECURITY.md` 或专用私密报告入口，也应补齐负责任披露渠道。
 
 ### Q-02 · P1 · Release 晋升未绑定 exact artifact
 
