@@ -12,10 +12,13 @@ import {
   defaultBaseRef,
   isExactProductBaselineBootstrap,
   isExactMaintenanceModeBootstrap,
+  legacyContractPath,
   maintenanceModeBootstrap,
   parseContract,
   parseNumstat,
   policyPaths,
+  previousTrancheLock,
+  productBaselineBootstrap,
   productGoalLock,
   verifyProductBaselineSources,
 } from './vnext-rebaseline-budget.mjs';
@@ -92,12 +95,26 @@ function approvedNextProjectSource(current = readFileSync(committedProjectPath, 
 }
 
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
-  assert.equal(contract.baseSha, 'd15a985c67c2b9b5e08a5b8bc03a772fb543aecb');
-  assert.equal(contract.donorSha, '871c8f43b0725fa2f471173b2fbcf380ccfba930');
+  assert.equal(contract.baseSha, 'a1f11aed98d465fa91044beba7ccbcb95629030f');
+  assert.deepEqual(contract.previousTranche, previousTrancheLock);
   assert.deepEqual(contract.compatibility, {
-    preservePostgresMigrationHistory: false,
-    preserveWorkerSqliteSchemaHistory: false,
+    preservePostgresMigrationHistory: true,
+    preserveWorkerSqliteSchemaHistory: true,
   });
+  assert.equal(contract.scopeId, 'vnext-r1-r3-test-only');
+  assert.equal(contract.trancheId, 'fixed-hosted-agent-test-beta');
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(join(repo, legacyContractPath)))
+      .digest('hex'),
+    previousTrancheLock.contractSha256,
+  );
+  assert.equal(productBaselineBootstrap.paths.includes(legacyContractPath), true);
+  assert.equal(maintenanceModeBootstrap.paths.includes(legacyContractPath), true);
+  assert.equal(productBaselineBootstrap.paths.includes(contractPath), false);
+  assert.equal(maintenanceModeBootstrap.paths.includes(contractPath), false);
+  assert.equal(policyPaths.includes(legacyContractPath), true);
+  assert.equal(policyPaths.includes(contractPath), true);
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
   assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
@@ -142,8 +159,8 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   );
 
   const duplicate = source.replace(
-    '"schemaVersion": 1,',
-    '"schemaVersion": 1,\n  "schemaVersion": 1,',
+    '"schemaVersion": 2,',
+    '"schemaVersion": 2,\n  "schemaVersion": 2,',
   );
   assert.throws(() => parseContract(duplicate), /canonical JSON/);
 
@@ -159,6 +176,34 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   assert.throws(
     () => parseContract(`${JSON.stringify(relaxed, null, 2)}\n`),
     /from 1 through 5000/,
+  );
+
+  const rewrittenHistory = structuredClone(contract);
+  rewrittenHistory.previousTranche.changedLines = 69999;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(rewrittenHistory, null, 2)}\n`),
+    /previousTranche changed/,
+  );
+
+  const detachedTranche = structuredClone(contract);
+  detachedTranche.baseSha = '0'.repeat(40);
+  assert.throws(
+    () => parseContract(`${JSON.stringify(detachedTranche, null, 2)}\n`),
+    /must continue previousTranche/,
+  );
+
+  const forgottenMigrationHistory = structuredClone(contract);
+  forgottenMigrationHistory.compatibility.preservePostgresMigrationHistory = false;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(forgottenMigrationHistory, null, 2)}\n`),
+    /migration history must be preserved/,
+  );
+
+  const relaxedCumulative = structuredClone(contract);
+  relaxedCumulative.limits.maxChangedLinesFromBase = 15001;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(relaxedCumulative, null, 2)}\n`),
+    /from 1 through 15000/,
   );
 
   const overlapping = structuredClone(contract);
@@ -632,11 +677,11 @@ test('per-pull-request file, line, and per-file ceilings are exact', () => {
 
 test('the cumulative train has a separate hard ceiling and the same scope boundary', () => {
   assert.equal(
-    assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 70000)]).changedLines,
-    70000,
+    assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 15000)]).changedLines,
+    15000,
   );
   assert.throws(
-    () => assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 70001)]),
+    () => assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 15001)]),
     /cumulative changed-line budget exceeded/,
   );
   assert.equal(
@@ -723,7 +768,7 @@ test(
 
 test('the baseline bootstrap is bound to one base and one exact three-file change', () => {
   const exactEntries = [
-    entry(contractPath),
+    entry(legacyContractPath),
     entry('scripts/vnext-rebaseline-budget.mjs'),
     entry('scripts/vnext-rebaseline-budget.test.mjs'),
   ];
