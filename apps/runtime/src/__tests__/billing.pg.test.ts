@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { digestCreatorAgentPackageFile } from '@cb/creator-agent-protocol/agent-package';
 import {
   createCreatorKnowledgeBundle,
@@ -13,10 +13,7 @@ import {
   UsageRequestConflictError,
   type UsageRequest,
 } from '../modules/billing/service.js';
-import {
-  createTurnRunner,
-  TurnAdmissionUnavailableError,
-} from '../modules/agent/run-turn.js';
+import { createTurnRunner, TurnAdmissionUnavailableError } from '../modules/agent/run-turn.js';
 import {
   createTurn,
   finishTurnCas,

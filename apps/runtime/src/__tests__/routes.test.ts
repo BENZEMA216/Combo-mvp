@@ -53,10 +53,7 @@ import {
   getOrCreateStudioSession,
 } from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
-import {
-  createTurnRunner,
-  type TurnRunner,
-} from '../modules/agent/run-turn.js';
+import { createTurnRunner, type TurnRunner } from '../modules/agent/run-turn.js';
 import {
   AGENT_PACKAGE_OBJECT_BUCKET,
   agentPackageObjectKey,
@@ -1845,9 +1842,7 @@ describe('knowledge Agent handler closed loop', () => {
       agentCalls: agent.calls.length,
     }).toEqual(stateBeforePolicyFailures);
 
-    expect(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY).toBe(
-      'knowledge-agent-grounded-validator-v2',
-    );
+    expect(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY).toBe('knowledge-agent-grounded-validator-v2');
     setFrozenValidatorPolicy(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY);
     const driftedGate: KnowledgeAgentTestGate = {
       ...gate,
@@ -1888,9 +1883,7 @@ describe('knowledge Agent handler closed loop', () => {
     expect(replay).toMatchObject({ statusCode: 202, body: { data: { replayed: true } } });
     await waitFor(() => db.agentUsageReceipts.size === 4);
     expect(
-      [...db.agentUsageReceipts.values()].filter(
-        (receipt) => receipt.usage_id === rechargeUsageId,
-      ),
+      [...db.agentUsageReceipts.values()].filter((receipt) => receipt.usage_id === rechargeUsageId),
     ).toEqual([
       expect.objectContaining({
         validator_policy_version: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
