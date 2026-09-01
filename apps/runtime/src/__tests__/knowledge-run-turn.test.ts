@@ -214,6 +214,9 @@ describe('knowledge run-turn high-risk boundaries', () => {
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
     ).toContain('不得提交 FAQ 问句、Markdown 标题/列表、名词型片段');
+    expect(
+      tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
+    ).toContain('只共享泛化谓语/关系词、单字母、短数字、单个年份');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',
@@ -447,6 +450,36 @@ describe('knowledge run-turn high-risk boundaries', () => {
       answer: '前 10 次需要充值。',
       excerpt: '前 10 次需要充值。',
     },
+    {
+      question: 'v 是什么意思？',
+      answer: '版本 v 表示试验通道。',
+      excerpt: '版本 v 表示试验通道。',
+    },
+    {
+      question: 'a 呢？',
+      answer: '等级 a 表示测试通道。',
+      excerpt: '等级 a 表示测试通道。',
+    },
+    {
+      question: '登录服务提供什么？',
+      answer: '退款服务提供七天保障。',
+      excerpt: '退款服务提供七天保障。',
+    },
+    {
+      question: '账户可以怎么登录？',
+      answer: '退款可以在七天内申请。',
+      excerpt: '退款可以在七天内申请。',
+    },
+    {
+      question: '登录功能可以使用什么方式？',
+      answer: '退款可以使用银行卡申请。',
+      excerpt: '退款可以使用银行卡申请。',
+    },
+    {
+      question: '该服务的退款规则是什么？',
+      answer: '该服务支持火星天气。',
+      excerpt: '该服务支持火星天气。',
+    },
   ])(
     'rejects an exact but irrelevant source sentence: $answer',
     ({ question, answer, excerpt }) => {
@@ -559,6 +592,16 @@ describe('knowledge run-turn high-risk boundaries', () => {
       question: '退款规则是什么？',
       answer: '退款申请必须在七天内完成。',
       excerpt: '退款申请必须在七天内完成。',
+    },
+    {
+      question: '登录服务提供什么？',
+      answer: '登录服务提供单点认证。',
+      excerpt: '登录服务提供单点认证。',
+    },
+    {
+      question: '该服务的退款规则是什么？',
+      answer: '退款可以在七天内申请。',
+      excerpt: '退款可以在七天内申请。',
     },
     {
       question: '费用是多少？',

@@ -455,7 +455,7 @@ export function createKnowledgeToolSession(input: {
     name: 'submit_knowledge_answer',
     label: '提交知识答案',
     description: input.requiresGroundedExtractiveAnswer
-      ? '提交唯一候选终态。answered 的每个事实性句子必须逐字复用所引 excerpt 中的完整原句，保留内部空白和句末标点，不得删改限定、关系、否定、条件、数额、日期或版本；只提交直接回答问题、有陈述式终止标点及明确谓语或关系信号的完整陈述句，不得提交 FAQ 问句、Markdown 标题/列表、名词型片段或仅回显问题的标题。citationChunkIds 必须来自本轮检索且升序。证据不足时提交 insufficient_evidence。平台会独立验证。'
+      ? '提交唯一候选终态。answered 的每个事实性句子必须逐字复用所引 excerpt 中的完整原句，保留内部空白和句末标点，不得删改限定、关系、否定、条件、数额、日期或版本；只提交直接回答问题、有陈述式终止标点及明确谓语或关系信号的完整陈述句，不得提交 FAQ 问句、Markdown 标题/列表、名词型片段、仅回显问题的标题，或只共享泛化谓语/关系词、单字母、短数字、单个年份、API/HTTP/HTTPS token 的内容。citationChunkIds 必须来自本轮检索且升序。证据不足时提交 insufficient_evidence。平台会独立验证。'
       : '提交唯一候选终态。answered 必须给出答案和本轮检索过的升序 chunkId；证据不足时提交 insufficient_evidence。平台会独立验证。',
     parameters: SubmitParams,
     async execute(

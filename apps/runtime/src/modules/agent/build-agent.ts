@@ -137,7 +137,7 @@ export function composeKnowledgeSystemPrompt(
     ...(knowledge.requiresGroundedExtractiveAnswer
       ? [
           '每个事实性句子必须逐字复用被引用 excerpt 中的完整原句；不得删改其中的限定、关系、否定、条件、数额、日期或版本。',
-          '只提交直接回答用户问题的完整陈述句，并保留原句内部空白和句末标点；每句必须有陈述式终止标点及明确谓语或关系信号。FAQ 问句、Markdown 标题/列表、名词型片段、仅回显问题的标题、只共享泛化疑问词或单个年份/API token 的内容都视为证据不足。',
+          '只提交直接回答用户问题的完整陈述句，并保留原句内部空白和句末标点；每句必须有陈述式终止标点及明确谓语或关系信号。FAQ 问句、Markdown 标题/列表、名词型片段、仅回显问题的标题、只共享泛化疑问词或谓语/关系词，以及只共享单字母、短数字、单个年份或 API/HTTP/HTTPS token 的内容都视为证据不足。',
         ]
       : []),
     '证据不足时调用 submit_knowledge_answer，status=insufficient_evidence，不要填写 answer 或 citations。',

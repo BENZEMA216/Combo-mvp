@@ -14,12 +14,106 @@ const DECLARATIVE_TERMINATOR_PATTERN = /[。；;！!]/u;
 const MARKDOWN_BLOCK_PREFIX_PATTERN = /^(?:#{1,6}|[-*+]\s|\d{1,9}[.)、]\s|>\s?)/u;
 const INTERROGATIVE_PHRASE_PATTERN =
   /请问|如何|为什么|为何|怎么回事|怎么|怎样|什么|多少|哪些|哪个|哪一个|哪种|哪家|哪里|哪儿|谁|何时|什么时候|是不是|有没有|能不能|可不可以|是否|能否|可否|几(?:个|次|种|天|年|月|元)|吗$|呢$/u;
-const HAN_DECLARATIVE_PREDICATE_PATTERN =
-  /(?:是|可以|能够|应当|应该|必须|需要|无需|不得|不能|不会|没有|属于|等于|高于|低于|超过|少于|多于|位于|基于|用于|使用|返回|表示|意味着|包含|包括|提供|允许|禁止|收取|支付|扣除|释放|提示|支持|适用|视为|称为|分为|设为|改为|定义为)(?=.)|存在|生效|失效|开启|关闭|为(?=[\p{Zs}\t]*[\p{N}\p{Script=Latin}])/u;
-const HAN_CLAUSAL_RELATION_PATTERN =
-  /(?:是|可以|能够|应当|应该|必须|需要|无需|不得|不能|不会|没有|属于|等于|高于|低于|超过|少于|多于|意味着|视为|称为|分为|设为|改为|定义为)(?=.)|存在|生效|失效|为(?=[\p{Zs}\t]*[\p{N}\p{Script=Latin}])/u;
-const HAN_NOMINAL_FRAGMENT_SUFFIX_PATTERN =
-  /(?:说明|申请|流程|规则|指南|政策|功能|方案|步骤|方法|方式|标题|手册|文档|介绍|概述|须知|教程|帮助|服务)$/u;
+const HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES = Object.freeze([
+  '定义为',
+  '意味着',
+  '应当',
+  '应该',
+  '不得',
+  '不能',
+  '不会',
+  '无需',
+  '属于',
+  '等于',
+  '高于',
+  '低于',
+  '超过',
+  '少于',
+  '多于',
+  '视为',
+  '称为',
+  '分为',
+  '设为',
+  '改为',
+  '可以',
+  '能够',
+  '必须',
+  '需要',
+  '没有',
+  '是',
+]);
+const HAN_ACTION_ARGUMENT_PREDICATE_PHRASES = Object.freeze([
+  '位于',
+  '基于',
+  '用于',
+  '使用',
+  '返回',
+  '表示',
+  '包含',
+  '包括',
+  '提供',
+  '允许',
+  '禁止',
+  '收取',
+  '支付',
+  '扣除',
+  '释放',
+  '提示',
+  '支持',
+  '适用',
+]);
+const HAN_STANDALONE_PREDICATE_PHRASES = Object.freeze(['存在', '生效', '失效', '开启', '关闭']);
+const HAN_DECLARATIVE_ARGUMENT_PREDICATE_PHRASES = Object.freeze([
+  ...HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES,
+  ...HAN_ACTION_ARGUMENT_PREDICATE_PHRASES,
+]);
+const HAN_DECLARATIVE_PREDICATE_PHRASES = Object.freeze([
+  ...HAN_DECLARATIVE_ARGUMENT_PREDICATE_PHRASES,
+  ...HAN_STANDALONE_PREDICATE_PHRASES,
+  '为',
+]);
+const HAN_NOMINAL_FRAGMENT_SUFFIXES = Object.freeze([
+  '说明',
+  '申请',
+  '流程',
+  '规则',
+  '指南',
+  '政策',
+  '功能',
+  '方案',
+  '步骤',
+  '方法',
+  '方式',
+  '标题',
+  '手册',
+  '文档',
+  '介绍',
+  '概述',
+  '须知',
+  '教程',
+  '帮助',
+  '服务',
+]);
+
+function regexAlternative(phrases: readonly string[]): string {
+  return [...phrases]
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))
+    .map((phrase) => phrase.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    .join('|');
+}
+
+const HAN_DECLARATIVE_PREDICATE_PATTERN = new RegExp(
+  `(?:${regexAlternative(HAN_DECLARATIVE_ARGUMENT_PREDICATE_PHRASES)})(?=.)|(?:${regexAlternative(HAN_STANDALONE_PREDICATE_PHRASES)})|为(?=[\\p{Zs}\\t]*[\\p{N}\\p{Script=Latin}])`,
+  'u',
+);
+const HAN_CLAUSAL_RELATION_PATTERN = new RegExp(
+  `(?:${regexAlternative(HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES)})(?=.)|(?:${regexAlternative(HAN_STANDALONE_PREDICATE_PHRASES.filter((phrase) => phrase !== '开启' && phrase !== '关闭'))})|为(?=[\\p{Zs}\\t]*[\\p{N}\\p{Script=Latin}])`,
+  'u',
+);
+const HAN_NOMINAL_FRAGMENT_SUFFIX_PATTERN = new RegExp(
+  `(?:${regexAlternative(HAN_NOMINAL_FRAGMENT_SUFFIXES)})$`,
+  'u',
+);
 const LATIN_DECLARATIVE_PREDICATE_PATTERN =
   /(?:^|[^\p{Script=Latin}\p{N}_])(?:is|are|was|were|has|have|can|must|should|will|means?|requires?|returns?|uses?|includes?|provides?|allows?|supports?)(?=[^\p{Script=Latin}\p{N}_]+.)/iu;
 const LATIN_CLAUSAL_RELATION_PATTERN =
@@ -64,18 +158,28 @@ const QUESTION_FORM_NOISE_PHRASES = Object.freeze([
   '吗',
   '呢',
 ]);
+const QUESTION_FORM_MASK_PHRASES = Object.freeze(
+  [...QUESTION_FORM_NOISE_PHRASES].sort(
+    (left, right) => right.length - left.length || left.localeCompare(right),
+  ),
+);
 const GENERIC_HAN_TOPIC_PHRASES = Object.freeze([
-  '规则',
-  '功能',
   '系统',
   '内容',
   '信息',
   '问题',
   '答案',
-  '说明',
-  '方法',
-  '方式',
+  ...HAN_NOMINAL_FRAGMENT_SUFFIXES,
 ]);
+const QUESTION_TOPIC_MASK_PHRASES = Object.freeze(
+  [
+    ...new Set([
+      ...QUESTION_FORM_MASK_PHRASES,
+      ...GENERIC_HAN_TOPIC_PHRASES,
+      ...HAN_DECLARATIVE_PREDICATE_PHRASES,
+    ]),
+  ].sort((left, right) => right.length - left.length || left.localeCompare(right)),
+);
 const GENERIC_LITERAL_TOPIC_TOKENS = new Set(['api', 'http', 'https']);
 const YEAR_LITERAL_PATTERN = /^(?:19|20)\d{2}$/u;
 const LATIN_LITERAL_PATTERN = /\p{Script=Latin}/u;
@@ -294,13 +398,22 @@ function isDeclarativeProposition(sentence: ExtractiveSentence): boolean {
   );
 }
 
-function questionRelevanceText(value: string, topical: boolean): string {
-  let text = validationText(value).toLocaleLowerCase('und');
-  for (const phrase of QUESTION_FORM_NOISE_PHRASES) text = text.replaceAll(phrase, ' ');
-  if (topical) {
-    for (const phrase of GENERIC_HAN_TOPIC_PHRASES) text = text.replaceAll(phrase, ' ');
+function maskPhrasesToFixedPoint(value: string, phrases: readonly string[]): string {
+  let text = value;
+  while (true) {
+    let masked = text;
+    for (const phrase of phrases) masked = masked.replaceAll(phrase, ' ');
+    if (masked === text) return masked;
+    text = masked;
   }
-  return text;
+}
+
+function questionRelevanceText(value: string, topical: boolean): string {
+  const text = validationText(value).toLocaleLowerCase('und');
+  return maskPhrasesToFixedPoint(
+    text,
+    topical ? QUESTION_TOPIC_MASK_PHRASES : QUESTION_FORM_MASK_PHRASES,
+  );
 }
 
 function relevanceAnchors(
@@ -349,7 +462,7 @@ function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
     return false;
   }
   return (
-    LATIN_LITERAL_PATTERN.test(anchor.text) ||
+    (LATIN_LITERAL_PATTERN.test(anchor.text) && Array.from(anchor.text).length >= 2) ||
     (ASCII_INTEGER_LITERAL_PATTERN.test(anchor.text) && anchor.text.length >= 3)
   );
 }
@@ -430,8 +543,10 @@ function citedSentenceSupport(
 /**
  * Conservative Test-only extractive guard. Every declarative answer sentence must NFC-match one
  * complete cited sentence, including its internal whitespace, terminal punctuation, and ordered
- * Latin/numeric tokens. Deterministic topical-anchor coverage rejects generic question words or a
- * lone year/API token. Passing only proves direct textual support and query relevance in the fixed
+ * Latin/numeric tokens. Deterministic topical-anchor coverage masks the same Chinese predicate and
+ * nominal grammar used by the proposition gate, so shared relation wording cannot replace an
+ * independent topic. A one-code-point Latin token, short number, lone year, or API token is also
+ * insufficient. Passing only proves direct textual support and query relevance in the fixed
  * Package; it does not prove that the source itself is factually true.
  */
 export function hasGroundedLexicalSupport(input: {

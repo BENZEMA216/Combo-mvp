@@ -90,7 +90,9 @@ describe('composeSystemPrompt', () => {
     expect(prompt).toContain('不得删改其中的限定、关系、否定、条件、数额、日期或版本');
     expect(prompt).toContain('每句必须有陈述式终止标点及明确谓语或关系信号');
     expect(prompt).toContain('FAQ 问句、Markdown 标题/列表、名词型片段');
-    expect(prompt).toContain('单个年份/API token');
+    expect(prompt).toContain('只共享泛化疑问词或谓语/关系词');
+    expect(prompt).toContain('单字母、短数字、单个年份');
+    expect(prompt).toContain('API/HTTP/HTTPS token');
   });
 
   it('v1 固定 oracle 不注入 v2 整句抽取合同', () => {
