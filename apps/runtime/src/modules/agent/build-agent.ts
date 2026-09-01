@@ -17,6 +17,7 @@ import {
   type RuntimeModel,
 } from '../../platform/infra/llm.js';
 import type { MessageRecord } from '../session/repo.js';
+import { GROUNDED_ANSWER_STRUCTURE_POLICY } from '../knowledge-agent/grounding.js';
 import { withDesignStudioInstructions } from './design-studio-prompt.js';
 import { DESIGN_STUDIO_BOOTSTRAP_MARKER } from './design-visual-profile.js';
 import { TurnAgentUnavailableError, type TurnAgent, type TurnAgentFactory } from './run-turn.js';
@@ -138,7 +139,9 @@ export function composeKnowledgeSystemPrompt(
       ? [
           '每个事实性句子必须逐字复用被引用 excerpt 中的完整原句；不得删改其中的限定、关系、否定、条件、数额、日期或版本。',
           '只提交直接回答用户问题并给出实质信息的完整陈述句，保留原句内部空白和句末标点；每句必须有陈述式终止标点及主题之外的明确谓语或事实增量。FAQ 问句、Markdown 标题/列表、名词型片段、问题原样复述、短动作嵌入另一个词，以及只共享单字母、短数字、单个年份或 API/HTTP/HTTPS token 的内容都视为证据不足。',
-          '当前中文 Beta 不做自由语义改写或前提纠正：只结构化去掉分句尾完整疑问壳、末尾问句粒子、句首整体指示脚手架，或至多一个有足够上下文的疑问操作词；分句尾疑问壳优先，实体或标题内部的同形字样不能删除。剩余实体、名词属性、动作、关系、否定、条件、时间与限定必须直接对齐，并按连续原文由整段答案逐组覆盖；每个答案句至少覆盖一组并包含问题中的全部拉丁字母或数字限定。缺少任一主题、关系或限定都提交 insufficient_evidence。',
+          '当前中文 Beta 不做自由语义改写或前提纠正：只结构化去掉分句尾完整疑问壳、末尾问句粒子、句首整体指示脚手架，或至多一个有足够上下文的疑问操作词；分句尾疑问壳优先，实体或标题内部的同形字样不能删除。剩余实体、名词属性、动作、关系、否定、条件、时间与限定必须直接对齐。',
+          GROUNDED_ANSWER_STRUCTURE_POLICY,
+          '缺少任一主题、关系或限定都提交 insufficient_evidence。',
         ]
       : []),
     '证据不足时调用 submit_knowledge_answer，status=insufficient_evidence，不要填写 answer 或 citations。',

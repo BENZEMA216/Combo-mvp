@@ -224,6 +224,12 @@ describe('knowledge run-turn high-risk boundaries', () => {
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
     ).toContain('关系、否定、条件、时间与限定必须直接对齐');
+    expect(
+      tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
+    ).toContain('不完整的前置上下文分句必须与后续疑问分句组成同一连通骨架');
+    expect(
+      tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
+    ).toContain('每个连通骨架必须完整出现在同一个答案逗号分句内');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',

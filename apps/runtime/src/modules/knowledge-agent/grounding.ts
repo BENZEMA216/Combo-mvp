@@ -10,11 +10,16 @@ const SENTENCE_UNIT_PATTERN = /[^。！？!?；;\n]+(?:[。！？!?；;\n]+|$)/g
 const SENTENCE_TERMINATOR_PATTERN = /[。！？!?；;\n]+$/u;
 const EDGE_HORIZONTAL_WHITESPACE_PATTERN = /^[\p{Zs}\t\r]+|[\p{Zs}\t\r]+$/gu;
 const USER_WHITESPACE_PATTERN = /\s+/gu;
+const QUESTION_HAN_WHITESPACE_PATTERN = /(?<=\p{Script=Han})\s+|\s+(?=\p{Script=Han})/gu;
 const INTERROGATIVE_TERMINATOR_PATTERN = /[?？]/u;
 const DECLARATIVE_TERMINATOR_PATTERN = /[。；;！!]/u;
 const MARKDOWN_BLOCK_PREFIX_PATTERN = /^(?:#{1,6}|[-*+]\s|\d{1,9}[.)、]\s|>\s?)/u;
 const QUESTION_CLAUSE_PATTERN = /[^，,。；;！？!?\n]+/gu;
 const ANSWER_SUBCLAUSE_PATTERN = /[^，,]+/gu;
+const QUESTION_QUANTITY_SLOT = '\u{e000}';
+const QUESTION_CHOICE_SLOT = '\u{e001}';
+const QUESTION_VALUE_SLOT_SPLIT_PATTERN = /([\u{e000}\u{e001}])/u;
+const QUESTION_QUANTITY_VALUE_PATTERN = /^(?:\p{N}+|[零〇一二两三四五六七八九十百千万亿]+)$/u;
 const QUESTION_SKELETON_ATOM_PATTERN =
   /\p{Script=Han}+|[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
 const HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES = Object.freeze([
@@ -144,6 +149,13 @@ const QUESTION_STRUCTURAL_OPERATOR_PHRASES = Object.freeze(
     '什么是',
   ].sort((left, right) => right.length - left.length || left.localeCompare(right)),
 );
+const QUESTION_VALUE_OPERATOR_PHRASES = Object.freeze(
+  ['哪一个', '多少', '哪些', '哪几', '哪种', '哪个', '哪家'].sort(
+    (left, right) => right.length - left.length || left.localeCompare(right),
+  ),
+);
+const QUESTION_COUNTING_GE_PATTERN =
+  /几(?=(?:个|份|次|种|项|名|位|家|条|台|套|本|张|件|笔|元|天|年|月|人))/gu;
 const QUESTION_TRAILING_SHELL_PHRASES = Object.freeze(
   [
     '是什么意思',
@@ -186,7 +198,7 @@ const LATIN_INFORMATION_GAIN_NOISE_PATTERN =
 const HAN_PREFIX_PATTERN = /^\p{Script=Han}/u;
 const LEADING_SEMANTIC_NEGATION_PATTERN = /[不没未无非莫]$/u;
 const LOCAL_SCOPE_MISMATCH_PATTERN =
-  /(?:不|没|未|无|非|莫|可能|也许|或许|大概|恐怕|拒绝|禁止|否认)/u;
+  /(?:不|没|未|无|非|莫|可能|也许|或许|大概|恐怕|似乎|看似|据称|貌似|暂定|倾向|拒绝|禁止|否认)/u;
 const SHORT_TOPIC_ACTIONS = new Set(HAN_ACTION_ARGUMENT_PREDICATE_PHRASES);
 const SHORT_TOPIC_STANDALONES = new Set(HAN_STANDALONE_PREDICATE_PHRASES);
 const DECLARATIVE_CONTINUATION_PHRASES = Object.freeze(
@@ -245,6 +257,10 @@ const SUBSTANTIVE_HAN_FUNCTION_PHRASES = Object.freeze([
   '关于',
   '对于',
   '针对',
+  '围绕',
+  '有关',
+  '面向',
+  '涉及',
   '以及',
   '并且',
   '而且',
@@ -256,6 +272,8 @@ const SUBSTANTIVE_HAN_FUNCTION_PHRASES = Object.freeze([
   '或',
   '之',
 ]);
+export const GROUNDED_ANSWER_STRUCTURE_POLICY =
+  '不完整的前置上下文分句必须与后续疑问分句组成同一连通骨架；每个连通骨架必须完整出现在同一个答案逗号分句内，其中的数量或选择问句槽位必须由同一分句内的有界非空值填充；真正的多个完整问题才可由不同答案句分别支持；拉丁字母或数字限定只约束它所属的问题和答案句，不得跨问题补齐。';
 const SUBSTANTIVE_DEMONSTRATIVE_RUN_PATTERN =
   /(?<![\p{Script=Han}\p{N}])(?:另一个|上述|前述|这些|这个|该等|某个|某些|同一|相同|这种|那种|那个|那些|另一|本|该|此|其|这|那)\p{Script=Han}*/gu;
 
@@ -429,6 +447,12 @@ interface StrippedQuestionClause {
   removedQuestionShell: boolean;
 }
 
+interface QuestionObligation {
+  pattern: string;
+  topicGroups: readonly QuestionTopicGroup[];
+  literalQualifiers: ReadonlyMap<string, RelevanceAnchor>;
+}
+
 function validationText(value: string): string {
   return value.normalize('NFC');
 }
@@ -542,6 +566,34 @@ function structuralQuestionOperatorMatches(
   return matches;
 }
 
+function valueQuestionOperatorMatches(value: string): readonly { index: number; phrase: string }[] {
+  const matches: { index: number; phrase: string }[] = [];
+  for (const phrase of QUESTION_VALUE_OPERATOR_PHRASES) {
+    let fromIndex = 0;
+    while (fromIndex <= value.length - phrase.length) {
+      const index = value.indexOf(phrase, fromIndex);
+      if (index < 0) break;
+      if (
+        hasQuestionSideContent(value.slice(index + phrase.length)) &&
+        (index === 0 || hasQuestionSideContent(value.slice(0, index)))
+      ) {
+        matches.push({ index, phrase });
+      }
+      fromIndex = index + phrase.length;
+    }
+  }
+  for (const match of value.matchAll(QUESTION_COUNTING_GE_PATTERN)) {
+    const index = match.index;
+    if (
+      hasQuestionSideContent(value.slice(index + match[0].length)) &&
+      (index === 0 || hasQuestionSideContent(value.slice(0, index)))
+    ) {
+      matches.push({ index, phrase: match[0] });
+    }
+  }
+  return matches.sort((left, right) => left.index - right.index);
+}
+
 function stripQuestionClauseShell(value: string): StrippedQuestionClause | null {
   const withoutTerminalParticle = stripTerminalQuestionParticle(value);
   const removedTerminalParticle = withoutTerminalParticle !== value;
@@ -562,7 +614,19 @@ function stripQuestionClauseShell(value: string): StrippedQuestionClause | null 
   }
 
   const operators = structuralQuestionOperatorMatches(text);
-  if (operators.length > 1) return null;
+  const valueOperators = valueQuestionOperatorMatches(text);
+  if (operators.length + valueOperators.length > 1) return null;
+  const [valueOperator] = valueOperators;
+  if (valueOperator) {
+    const slot =
+      valueOperator.phrase === '多少' || valueOperator.phrase === '几'
+        ? QUESTION_QUANTITY_SLOT
+        : QUESTION_CHOICE_SLOT;
+    text = `${text.slice(0, valueOperator.index)}${slot}${text.slice(
+      valueOperator.index + valueOperator.phrase.length,
+    )}`;
+    return { text, removedStructuralOperator: true, removedQuestionShell: true };
+  }
   const [operator] = operators;
   if (operator) {
     text = `${text.slice(0, operator.index)}${text.slice(operator.index + operator.phrase.length)}`;
@@ -582,46 +646,95 @@ function connectedSkeletonText(value: string): string {
     .join('');
 }
 
-function questionConnectedSkeletons(value: string): readonly string[] | null {
+function connectedSkeletonPatternText(value: string): string {
+  return value
+    .split(QUESTION_VALUE_SLOT_SPLIT_PATTERN)
+    .map((part) =>
+      part === QUESTION_QUANTITY_SLOT || part === QUESTION_CHOICE_SLOT
+        ? part
+        : connectedSkeletonText(part),
+    )
+    .join('');
+}
+
+function parsedQuestionObligations(
+  value: string,
+): readonly { text: string; removedStructuralOperator: boolean }[] | null {
   const compact = validationText(value)
     .toLocaleLowerCase('und')
-    .replace(USER_WHITESPACE_PATTERN, '');
-  const skeletons: string[] = [];
+    .replace(QUESTION_HAN_WHITESPACE_PATTERN, '');
+  const obligations: { text: string; removedStructuralOperator: boolean }[] = [];
   let pendingContext = '';
   for (const clauseMatch of compact.matchAll(QUESTION_CLAUSE_PATTERN)) {
     const shelled = stripQuestionClauseShell(clauseMatch[0]);
     if (shelled === null) return null;
-    const skeleton = connectedSkeletonText(shelled.text);
-    if (skeleton === '') continue;
+    const skeleton = connectedSkeletonPatternText(shelled.text);
+    if (skeleton.replaceAll(QUESTION_QUANTITY_SLOT, '').replaceAll(QUESTION_CHOICE_SLOT, '') === '')
+      continue;
     if (shelled.removedQuestionShell) {
-      skeletons.push(`${pendingContext}${skeleton}`);
+      obligations.push({
+        text: `${pendingContext}${shelled.text}`,
+        removedStructuralOperator: shelled.removedStructuralOperator,
+      });
       pendingContext = '';
     } else {
-      pendingContext += skeleton;
+      pendingContext += shelled.text;
     }
   }
-  if (pendingContext !== '') skeletons.push(pendingContext);
-  return skeletons;
+  if (pendingContext !== '') {
+    obligations.push({ text: pendingContext, removedStructuralOperator: false });
+  }
+  return obligations;
 }
 
-function answerConnectedSubclauses(sentences: readonly ExtractiveSentence[]): readonly string[] {
-  return sentences.flatMap((sentence) =>
+function answerConnectedSubclauses(
+  sentence: ExtractiveSentence,
+): readonly { text: string; skeleton: string }[] {
+  return Object.freeze(
     [...sentence.body.matchAll(ANSWER_SUBCLAUSE_PATTERN)]
-      .map((match) => connectedSkeletonText(match[0]))
-      .filter((value) => value !== ''),
+      .map((match) => ({
+        text: validationText(match[0]).toLocaleLowerCase('und'),
+        skeleton: connectedSkeletonText(match[0]),
+      }))
+      .filter((value) => value.skeleton !== ''),
   );
 }
 
-function hasConnectedQuestionSkeletonCoverage(
-  question: string,
-  sentences: readonly ExtractiveSentence[],
-): boolean {
-  const skeletons = questionConnectedSkeletons(question);
-  if (skeletons === null || skeletons.length === 0) return false;
-  const answerSubclauses = answerConnectedSubclauses(sentences);
-  return skeletons.every((skeleton) =>
-    answerSubclauses.some((subclause) => subclause.includes(skeleton)),
+function validQuestionSlotFill(slot: string, fill: string): boolean {
+  if (fill === '') return false;
+  if (slot === QUESTION_QUANTITY_SLOT) return QUESTION_QUANTITY_VALUE_PATTERN.test(fill);
+  return (
+    Array.from(fill).length <= 32 &&
+    !HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES.some(
+      (phrase) => Array.from(phrase).length >= 2 && fill.includes(phrase),
+    ) &&
+    !HAN_STANDALONE_PREDICATE_PHRASES.some((phrase) => fill.includes(phrase))
   );
+}
+
+function matchesConnectedSkeleton(pattern: string, target: string): boolean {
+  if (!pattern.includes(QUESTION_QUANTITY_SLOT) && !pattern.includes(QUESTION_CHOICE_SLOT)) {
+    return target.includes(pattern);
+  }
+  const parts = pattern.split(QUESTION_VALUE_SLOT_SPLIT_PATTERN).filter((part) => part !== '');
+  let cursor = 0;
+  let pendingSlot: string | null = null;
+  for (const part of parts) {
+    if (part === QUESTION_QUANTITY_SLOT || part === QUESTION_CHOICE_SLOT) {
+      if (pendingSlot !== null) return false;
+      pendingSlot = part;
+      continue;
+    }
+    const found = target.indexOf(part, cursor);
+    if (found < 0) return false;
+    if (pendingSlot !== null) {
+      const fill = target.slice(cursor, found);
+      if (!validQuestionSlotFill(pendingSlot, fill)) return false;
+      pendingSlot = null;
+    }
+    cursor = found + part.length;
+  }
+  return pendingSlot === null || validQuestionSlotFill(pendingSlot, target.slice(cursor));
 }
 
 function setHanRelevanceAnchors(anchors: Map<string, RelevanceAnchor>, text: string): void {
@@ -656,41 +769,63 @@ function relevanceAnchors(value: string): Map<string, RelevanceAnchor> {
   return anchors;
 }
 
-function questionTopicGroups(value: string): readonly QuestionTopicGroup[] | null {
-  // User whitespace is not a semantic boundary. A longest clause suffix takes precedence so title
-  // entities such as 如何阅读一本书 and 谁是凶手 stay intact. Without such a suffix, at most one
-  // structurally placed operator is removed without inserting a boundary: 用户如何支付 becomes the
-  // exact group 用户支付. Entity/property/relation/polarity/temporal text otherwise remains exact.
-  const compact = validationText(value)
-    .toLocaleLowerCase('und')
-    .replace(USER_WHITESPACE_PATTERN, '');
+function questionTopicGroupsFromText(
+  text: string,
+  removedStructuralOperator: boolean,
+): readonly QuestionTopicGroup[] {
   const groups: QuestionTopicGroup[] = [];
-  for (const clauseMatch of compact.matchAll(QUESTION_CLAUSE_PATTERN)) {
-    const shelled = stripQuestionClauseShell(clauseMatch[0]);
-    if (shelled === null) return null;
-    for (const match of shelled.text.matchAll(HAN_PATTERN)) {
-      if (Array.from(match[0]).length < 2) continue;
-      const actionContext =
-        SHORT_TOPIC_ACTIONS.has(match[0]) ||
-        (shelled.removedStructuralOperator &&
-          [...SHORT_TOPIC_ACTIONS].some((phrase) => match[0].endsWith(phrase)));
-      const standaloneContext =
-        SHORT_TOPIC_STANDALONES.has(match[0]) ||
-        (shelled.removedStructuralOperator &&
-          [...SHORT_TOPIC_STANDALONES].some((phrase) => match[0].endsWith(phrase)));
-      groups.push({
-        text: match[0],
-        predicateContext: actionContext ? 'action' : standaloneContext ? 'standalone' : 'none',
-      });
-    }
+  const compact = text.replace(USER_WHITESPACE_PATTERN, '');
+  for (const match of compact.matchAll(HAN_PATTERN)) {
+    if (Array.from(match[0]).length < 2) continue;
+    const actionContext =
+      SHORT_TOPIC_ACTIONS.has(match[0]) ||
+      (removedStructuralOperator &&
+        [...SHORT_TOPIC_ACTIONS].some((phrase) => match[0].endsWith(phrase)));
+    const standaloneContext =
+      SHORT_TOPIC_STANDALONES.has(match[0]) ||
+      (removedStructuralOperator &&
+        [...SHORT_TOPIC_STANDALONES].some((phrase) => match[0].endsWith(phrase)));
+    groups.push({
+      text: match[0],
+      predicateContext: actionContext ? 'action' : standaloneContext ? 'standalone' : 'none',
+    });
   }
-  return groups;
+  return Object.freeze(groups);
 }
 
-function questionLiteralQualifiers(value: string): ReadonlyMap<string, RelevanceAnchor> {
+function literalQualifiers(value: string): ReadonlyMap<string, RelevanceAnchor> {
   const anchors = new Map<string, RelevanceAnchor>();
   setLiteralRelevanceAnchors(anchors, validationText(value).toLocaleLowerCase('und'));
   return anchors;
+}
+
+function questionObligations(value: string): readonly QuestionObligation[] | null {
+  const parsed = parsedQuestionObligations(value);
+  if (parsed === null) return null;
+  const obligations: QuestionObligation[] = [];
+  for (const { text, removedStructuralOperator } of parsed) {
+    const pattern = connectedSkeletonPatternText(text);
+    if (pattern.replaceAll(QUESTION_QUANTITY_SLOT, '').replaceAll(QUESTION_CHOICE_SLOT, '') === '')
+      continue;
+    obligations.push(
+      Object.freeze({
+        pattern,
+        topicGroups: questionTopicGroupsFromText(text, removedStructuralOperator),
+        literalQualifiers: literalQualifiers(text),
+      }),
+    );
+  }
+  return Object.freeze(obligations);
+}
+
+function questionTopicGroups(value: string): readonly QuestionTopicGroup[] | null {
+  // User whitespace is not a semantic boundary. Each complete question becomes one obligation;
+  // an incomplete context clause is carried into the following interrogative clause instead of
+  // becoming a separate topic that another answer sentence could subsidize.
+  const obligations = questionObligations(value);
+  return obligations === null
+    ? null
+    : Object.freeze(obligations.flatMap((obligation) => obligation.topicGroups));
 }
 
 function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
@@ -707,10 +842,15 @@ function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
   );
 }
 
-function hasDeclarativeContinuation(target: string, end: number, allowTerminal: boolean): boolean {
+function hasDeclarativeContinuation(
+  target: string,
+  end: number,
+  allowTerminal: boolean,
+  allowLiteralContinuation: boolean,
+): boolean {
   const suffix = target.slice(end).trimStart();
   if (suffix === '') return allowTerminal;
-  if (!HAN_PREFIX_PATTERN.test(suffix)) return true;
+  if (!HAN_PREFIX_PATTERN.test(suffix)) return allowLiteralContinuation;
   return (
     DECLARATIVE_CONTINUATION_PHRASES.some((phrase) => suffix.startsWith(phrase)) ||
     CLAUSE_CONTINUATION_PHRASES.some(
@@ -723,6 +863,12 @@ function localSubclausePrefix(target: string, end: number): string {
   const prefix = target.slice(0, end);
   const boundary = Math.max(prefix.lastIndexOf('，'), prefix.lastIndexOf(','));
   return prefix.slice(boundary + 1);
+}
+
+function actionGroupHasSubject(group: string): boolean {
+  const action = [...SHORT_TOPIC_ACTIONS].find((phrase) => group.endsWith(phrase));
+  if (!action) return false;
+  return Array.from(group.slice(0, -action.length)).some((point) => /\p{Script=Han}/u.test(point));
 }
 
 function hasTopicGroupCoverage(
@@ -744,13 +890,26 @@ function hasTopicGroupCoverage(
         LOCAL_SCOPE_MISMATCH_PATTERN.test(localPrefix));
     const hasRequiredPredicateContext =
       predicateContext === 'none' ||
-      hasDeclarativeContinuation(target, index + group.length, predicateContext === 'standalone');
+      hasDeclarativeContinuation(
+        target,
+        index + group.length,
+        predicateContext === 'standalone',
+        predicateContext === 'action' && actionGroupHasSubject(group),
+      );
+    const hasNominalBridgePrefix =
+      predicateContext === 'action' &&
+      SUBSTANTIVE_HAN_FUNCTION_PHRASES.some((phrase) => localPrefix.includes(phrase));
     const hasPriorPredicate =
       predicateContext === 'action' &&
       (DECLARATIVE_CONTINUATION_PHRASES.some((phrase) => localPrefix.trimEnd().endsWith(phrase)) ||
         HAN_DECLARATIVE_PREDICATE_PATTERN.test(localPrefix) ||
         LATIN_DECLARATIVE_PREDICATE_PATTERN.test(localPrefix));
-    if (!hasUnsupportedPrefix && !hasPriorPredicate && hasRequiredPredicateContext) {
+    if (
+      !hasUnsupportedPrefix &&
+      !hasNominalBridgePrefix &&
+      !hasPriorPredicate &&
+      hasRequiredPredicateContext
+    ) {
       return true;
     }
     fromIndex = index + 1;
@@ -844,60 +1003,54 @@ function hasPredicateOutsideTopicSpan(
   );
 }
 
-function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSentence[]): boolean {
-  if (!hasConnectedQuestionSkeletonCoverage(question, sentences)) return false;
-  const topicGroups = questionTopicGroups(question);
-  if (topicGroups === null) return false;
-  const strictTopicGroups = topicGroups.map((group) => group.text);
-  const literalQualifiers = questionLiteralQualifiers(question);
-  const questionAnchors = relevanceAnchors(question);
-  const answerAnchors = relevanceAnchors(sentences.map((sentence) => sentence.body).join('\n'));
-  const sentenceTexts = sentences.map((sentence) =>
-    validationText(sentence.body).toLocaleLowerCase('und'),
+function sentenceSupportsObligation(
+  sentence: ExtractiveSentence,
+  obligation: QuestionObligation,
+  allQuestionAnchors: ReadonlyMap<string, RelevanceAnchor>,
+): boolean {
+  const strictTopicGroups = obligation.topicGroups.map((group) => group.text);
+  const matchingSubclauses = answerConnectedSubclauses(sentence).filter((subclause) =>
+    matchesConnectedSkeleton(obligation.pattern, subclause.skeleton),
   );
-
-  if (topicGroups.length === 0) {
-    if (
-      !hasDiscriminatingLiteralCoverage(literalQualifiers, answerAnchors) ||
-      !hasEveryLiteralQualifier(literalQualifiers, answerAnchors)
-    ) {
-      return false;
-    }
-    return sentences.every((sentence) => {
-      const sentenceAnchors = relevanceAnchors(sentence.body);
+  if (matchingSubclauses.length === 0) return false;
+  const directSubclause = matchingSubclauses.some((subclause) => {
+    const anchors = relevanceAnchors(subclause.text);
+    if (obligation.topicGroups.length === 0) {
       return (
-        hasDiscriminatingLiteralCoverage(literalQualifiers, sentenceAnchors) &&
-        hasEveryLiteralQualifier(literalQualifiers, sentenceAnchors) &&
-        hasPredicateOutsideTopicSpan(sentence, strictTopicGroups) &&
-        hasSubstantiveInformationGain(sentence, strictTopicGroups, questionAnchors)
+        hasDiscriminatingLiteralCoverage(obligation.literalQualifiers, anchors) &&
+        hasEveryLiteralQualifier(obligation.literalQualifiers, anchors)
       );
-    });
-  }
-
-  if (
-    !topicGroups.every((group) =>
-      sentenceTexts.some((sentence) =>
-        hasTopicGroupCoverage(group.text, sentence, group.predicateContext),
-      ),
-    ) ||
-    !hasEveryLiteralQualifier(literalQualifiers, answerAnchors)
-  ) {
-    return false;
-  }
-
-  // Every sentence must cover one topic group and all mixed literal qualifiers. Other sentences
-  // cannot subsidize an unrelated topic or repair a year/version/API drift after the fact.
-  return sentences.every((sentence, index) => {
-    const sentenceAnchors = relevanceAnchors(sentence.body);
+    }
     return (
-      topicGroups.some((group) =>
-        hasTopicGroupCoverage(group.text, sentenceTexts[index]!, group.predicateContext),
-      ) &&
-      hasEveryLiteralQualifier(literalQualifiers, sentenceAnchors) &&
-      hasPredicateOutsideTopicSpan(sentence, strictTopicGroups) &&
-      hasSubstantiveInformationGain(sentence, strictTopicGroups, questionAnchors)
+      obligation.topicGroups.every((group) =>
+        hasTopicGroupCoverage(group.text, subclause.text, group.predicateContext),
+      ) && hasEveryLiteralQualifier(obligation.literalQualifiers, anchors)
     );
   });
+  return (
+    directSubclause &&
+    hasPredicateOutsideTopicSpan(sentence, strictTopicGroups) &&
+    (obligation.pattern.includes(QUESTION_QUANTITY_SLOT) ||
+      obligation.pattern.includes(QUESTION_CHOICE_SLOT) ||
+      hasSubstantiveInformationGain(sentence, strictTopicGroups, allQuestionAnchors))
+  );
+}
+
+function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSentence[]): boolean {
+  const obligations = questionObligations(question);
+  if (obligations === null || obligations.length === 0) return false;
+  const allQuestionAnchors = relevanceAnchors(question);
+  const bindings = sentences.map((sentence) =>
+    obligations
+      .map((obligation, index) =>
+        sentenceSupportsObligation(sentence, obligation, allQuestionAnchors) ? index : -1,
+      )
+      .filter((index) => index >= 0),
+  );
+  return (
+    bindings.every((indexes) => indexes.length === 1) &&
+    obligations.every((_, index) => bindings.some(([bound]) => bound === index))
+  );
 }
 
 function sentenceSupportKey(sentence: ExtractiveSentence): string {

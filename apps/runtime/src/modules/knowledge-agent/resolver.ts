@@ -62,6 +62,7 @@ import {
   type TurnLastError,
 } from '../agent/turn-repo.js';
 import {
+  GROUNDED_ANSWER_STRUCTURE_POLICY,
   hasGroundedLexicalSupport,
   searchGroundedKnowledgeBundle,
   type GroundedKnowledgeSearchHit,
@@ -455,7 +456,7 @@ export function createKnowledgeToolSession(input: {
     name: 'submit_knowledge_answer',
     label: '提交知识答案',
     description: input.requiresGroundedExtractiveAnswer
-      ? '提交唯一候选终态。answered 的每个句子必须逐字复用所引 excerpt 中的完整原句，保留内部空白和句末标点，不得删改限定、关系、否定、条件、数额、日期或版本；每句必须是直接回答问题、有陈述式终止标点、主题之外明确谓语或实质事实增量的完整陈述，不得提交 FAQ 问句、Markdown 标题/列表、名词型片段、问题复述、短动作嵌入另一个词，或只共享单字母、短数字、单个年份、API/HTTP/HTTPS token 的内容。当前中文 Beta 不做语义改写或前提纠正，只结构化去掉分句尾完整疑问壳、末尾问句粒子、句首整体指示脚手架，或至多一个有足够上下文的疑问操作词；分句尾疑问壳优先，实体或标题内部同形字样保留。剩余实体、名词属性、动作、关系、否定、条件、时间与限定必须直接对齐，并按连续原文由整段答案逐组覆盖；每句至少覆盖一组且包含全部拉丁字母或数字限定。缺少任一项即提交 insufficient_evidence。citationChunkIds 必须来自本轮检索且升序。平台会独立验证。'
+      ? `提交唯一候选终态。answered 的每个句子必须逐字复用所引 excerpt 中的完整原句，保留内部空白和句末标点，不得删改限定、关系、否定、条件、数额、日期或版本；每句必须是直接回答问题、有陈述式终止标点、主题之外明确谓语或实质事实增量的完整陈述，不得提交 FAQ 问句、Markdown 标题/列表、名词型片段、问题复述、短动作嵌入另一个词，或只共享单字母、短数字、单个年份、API/HTTP/HTTPS token 的内容。当前中文 Beta 不做语义改写或前提纠正，只结构化去掉分句尾完整疑问壳、末尾问句粒子、句首整体指示脚手架，或至多一个有足够上下文的疑问操作词；分句尾疑问壳优先，实体或标题内部同形字样保留。剩余实体、名词属性、动作、关系、否定、条件、时间与限定必须直接对齐。${GROUNDED_ANSWER_STRUCTURE_POLICY}缺少任一项即提交 insufficient_evidence。citationChunkIds 必须来自本轮检索且升序。平台会独立验证。`
       : '提交唯一候选终态。answered 必须给出答案和本轮检索过的升序 chunkId；证据不足时提交 insufficient_evidence。平台会独立验证。',
     parameters: SubmitParams,
     async execute(
