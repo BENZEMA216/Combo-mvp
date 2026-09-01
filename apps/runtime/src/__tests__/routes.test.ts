@@ -50,7 +50,6 @@ import { createTurnRunner, type TurnRunner } from '../modules/agent/run-turn.js'
 import {
   AGENT_PACKAGE_OBJECT_BUCKET,
   agentPackageObjectKey,
-  knowledgeQuestionDigest,
   resolveKnowledgeAgentPackage,
 } from '../modules/knowledge-agent/resolver.js';
 import {
@@ -1401,8 +1400,8 @@ describe('knowledge Agent handler closed loop', () => {
   const capabilityId = '00000000-0000-4000-8000-000000000103';
   const usageId = '00000000-0000-4000-8000-000000000104';
   const sourceSha = '7'.repeat(40);
-  const question = 'Combo 的免费额度是多少？';
-  const answer = '前三次成功回答免费。';
+  const question = 'Combo 的免费额度可以用于哪些成功回答？';
+  const answer = 'Combo 的免费额度可以用于前三次成功回答。';
   const chunkId = `chunk.knowledge.${'8'.repeat(32)}`;
   const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -1419,7 +1418,7 @@ describe('knowledge Agent handler closed loop', () => {
     });
     const agentMarkdown = encode('# Knowledge Agent\nAnswer only from retrieved evidence.');
     const skillMarkdown = encode('# Knowledge\nSearch before submitting an answer.');
-    const content = 'Combo 的前三次成功回答使用免费额度。';
+    const content = answer;
     const knowledge = {
       protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
       chunks: [
@@ -1471,20 +1470,13 @@ describe('knowledge Agent handler closed loop', () => {
       release,
     });
     const gate: KnowledgeAgentTestGate = {
-      protocol: 'combo.knowledge-agent-runtime-test-gate/1',
+      protocol: 'combo.knowledge-agent-runtime-test-gate/2',
       sourceSha,
       publisherUserId: creator,
       capabilityId,
       releaseId: release.releaseId,
       packageDigest,
-      validatorPolicyVersion: 'knowledge-agent-test-validator-v1',
-      cases: [
-        {
-          questionDigest: knowledgeQuestionDigest(question),
-          answer,
-          citationChunkIds: [chunkId],
-        },
-      ],
+      validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
     };
     const env = {
       COMBO_ENVIRONMENT: 'test',
@@ -1608,6 +1600,10 @@ describe('knowledge Agent handler closed loop', () => {
         answer: expect.objectContaining({ text: answer }),
         citations: [expect.objectContaining({ displayLabel: '公开计费手册' })],
         billing: expect.objectContaining({ source: 'free', settledCents: '0' }),
+        validation: expect.objectContaining({
+          policyVersion: 'knowledge-agent-grounded-validator-v2',
+          code: 'accepted',
+        }),
       }),
     ]);
     const receipt = [...db.agentUsageReceipts.values()][0]!;
@@ -1919,5 +1915,59 @@ describe('controlled knowledge Agent Test gate configuration', () => {
         }),
       }),
     ).toThrow(/COMBO_KNOWLEDGE_AGENT_TEST_GATE/u);
+  });
+
+  it('parses canonical v2 without oracle cases while preserving canonical v1', () => {
+    const legacy = fixture().gate;
+    const current = {
+      protocol: 'combo.knowledge-agent-runtime-test-gate/2',
+      sourceSha: SOURCE_SHA,
+      publisherUserId: OWNER,
+      capabilityId: CAPABILITY_ID,
+      releaseId: legacy.releaseId,
+      packageDigest: legacy.packageDigest,
+      validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
+    };
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: SOURCE_SHA,
+      COMBO_RELEASE_ID: `release-${SOURCE_SHA}`,
+      COMBO_BUILT_AT: '2026-07-28T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(current),
+    } as Env;
+    expect(knowledgeAgentTestGateFromEnv(env)).toEqual(current);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(legacy),
+      }),
+    ).toEqual(legacy);
+
+    for (const invalid of [
+      { ...current, cases: legacy.cases },
+      { ...current, minimumGroundingCoverage: 0 },
+      { ...current, validatorPolicyVersion: 'knowledge-agent-test-validator-v1' },
+      { ...current, extra: true },
+    ]) {
+      expect(() =>
+        knowledgeAgentTestGateFromEnv({
+          ...env,
+          COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(invalid),
+        }),
+      ).toThrow(/COMBO_KNOWLEDGE_AGENT_TEST_GATE/u);
+    }
+    expect(() =>
+      knowledgeAgentTestGateFromEnv({ ...env, COMBO_ENVIRONMENT: 'production' }),
+    ).toThrow(/只能用于 Test Runtime/u);
+    const driftSha = 'f'.repeat(40);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_SOURCE_SHA: driftSha,
+        COMBO_RELEASE_ID: `release-${driftSha}`,
+      }),
+    ).toBeNull();
   });
 });
