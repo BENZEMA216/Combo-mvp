@@ -19,7 +19,7 @@
 - `agent-session-receipts-roles.pg.test.ts` 以真实 API/worker/Runtime 登录角色核对 receipt 表级与列级权限、DB-generated `id/created_at`、trigger function 禁止直接执行及 Registry 写入边界。
 - `agent-session-receipts-upgrade.pg.test.ts` 创建并安全销毁独立 PostgreSQL 16 数据库，先执行到 exact Registry 0017、写入已提交的 completed/reserved legacy 行，再应用 receipts 0018，验证默认兼容、约束已 VALIDATE、空 receipt 集合和 ledger 幂等计划。
 - `pending-usage-recovery-migration.test.ts` 静态锁定 0019 的 expand-only 表、最长七天活动期限、终态清正文、单向订单外键、无跨服务锁触发器与 Runtime/API 窄权限。
-- `pending-usage-recovery.pg.test.ts` 在真实 PostgreSQL 16 上验证 exact Session/Package/价格快照、初始 intent、每 Session 单 active、终态后释放新 pending 槽位、过期拒绝、terminal 不可复活、accepted 的 completed/answered/settled receipt、abandoned 的无 admission 或 released/nonanswered receipt，以及订单恢复绑定不可改写。
+- `pending-usage-recovery.pg.test.ts` 在真实 PostgreSQL 16 上验证 exact Session/Package/价格快照、初始 intent、每 Session 单 active、终态后释放新 pending 槽位、过期拒绝、terminal 不可复活、accepted 的 completed/answered/settled receipt、abandoned 的无 admission 或 released/nonanswered receipt，以及订单恢复金额必须匹配价格快照且绑定不可改写。
 - `pending-usage-recovery-roles.pg.test.ts` 以真实 API/worker/Runtime 角色核对 Runtime insert/终态、正文隔离、Runtime 与订单隔离、`PUBLIC` ACL，并让两个 API 连接按相同 owner+usage advisory lock、pending row lock、CAS、订单 INSERT 的完整顺序竞争同一 active intent，证明只有胜者能提交恢复订单。
 - `pending-usage-recovery-upgrade.pg.test.ts` 创建并安全销毁独立 PostgreSQL 16 数据库，先执行到 exact receipts 0018 并写入旧充值订单，再只应用 0019，验证旧订单 `recovery_usage_id` 保持 `NULL`、新表为空、约束已验证和 ledger 幂等计划。
 

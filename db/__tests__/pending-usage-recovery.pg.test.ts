@@ -714,6 +714,29 @@ pgDescribe('pending usage recovery on PostgreSQL 16', () => {
       ).toEqual({ request_text: null, recovery_status: 'abandoned' });
 
       const orderFixture = await seedPending(owner);
+      await expectDatabaseError(
+        owner,
+        () =>
+          owner.query(
+            `INSERT INTO recharge_orders (
+               order_no, owner_user_id, client_idempotency_key, package_id, amount_cents,
+               payment_method, pay_type, gateway_environment, institution_no, merchant_no,
+               pay_trace_no, pay_time, recovery_usage_id
+             ) VALUES (
+               $1, $2, $3, 'manual', $4, 'qr', 'alipay', 'test', 'institution', 'merchant',
+               $5, '20260901120000', $6
+             )`,
+            [
+              `CBR${randomUUID().replaceAll('-', '')}`,
+              orderFixture.ownerUserId,
+              orderFixture.usageId,
+              UNIT_PRICE_CENTS + 99,
+              `CB${randomUUID().replaceAll('-', '')}`,
+              orderFixture.usageId,
+            ],
+          ),
+        '23514',
+      );
       const orderId = (
         await owner.query<{ id: string }>(
           `INSERT INTO recharge_orders (

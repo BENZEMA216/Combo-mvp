@@ -119,6 +119,13 @@ describe('0019 pending usage recovery migration', () => {
     expect(closure).toBeDefined();
     expect(closure).not.toMatch(/recharge_orders/iu);
     expect(closure).not.toMatch(/FOR\s+(?:NO\s+KEY\s+)?UPDATE/iu);
+    const orderGuard = sql.match(
+      /CREATE FUNCTION guard_recharge_order_recovery_binding\(\) RETURNS trigger AS \$\$([\s\S]*?)\n\$\$/,
+    )?.[1];
+    expect(orderGuard).toBeDefined();
+    expect(orderGuard).toContain('unit_price_cents');
+    expect(orderGuard).toContain('pending_row.unit_price_cents IS DISTINCT FROM NEW.amount_cents');
+    expect(orderGuard).not.toMatch(/FOR\s+(?:NO\s+KEY\s+)?UPDATE/iu);
     expect(sql).toContain("pg_advisory_xact_lock(hashtextextended(owner_user_id::text || ':' ||");
     expect(sql).toContain('This ordinary SELECT is only a static last-line binding check');
   });

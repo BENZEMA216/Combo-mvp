@@ -647,7 +647,7 @@ DECLARE
 BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW.recovery_usage_id IS NOT NULL THEN
-      SELECT recovery_status, active_recharge_intent_id, expires_at
+      SELECT recovery_status, active_recharge_intent_id, unit_price_cents, expires_at
         INTO pending_row
         FROM public.pending_usage_recoveries
        WHERE owner_user_id = NEW.owner_user_id
@@ -656,7 +656,8 @@ BEGIN
          OR pending_row.recovery_status IS DISTINCT FROM 'active'
          OR pending_row.expires_at <= statement_timestamp()
          OR pending_row.active_recharge_intent_id::text IS DISTINCT FROM
-            NEW.client_idempotency_key THEN
+            NEW.client_idempotency_key
+         OR pending_row.unit_price_cents IS DISTINCT FROM NEW.amount_cents THEN
         RAISE EXCEPTION 'recharge order does not match the active pending usage intent'
           USING ERRCODE = '23514';
       END IF;

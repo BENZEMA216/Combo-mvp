@@ -51,7 +51,7 @@ Authoring 创建首个或替代充值订单时，必须在同一个数据库事�
 
 `0018` 只让 `combo_runtime` 读取 receipt，并按列追加业务快照；receipt `id` 和 `created_at` 只能由数据库生成，Runtime 没有 receipt UPDATE/DELETE/TRUNCATE 权限。当前用户会话详情由 Runtime 服务提供，因此 `combo_api` 不需要 receipt SELECT；`combo_worker` 与 `PUBLIC` 保持零权限。所有 0018 trigger function 都撤销直接 EXECUTE，触发器仍以调用者权限执行约束。
 
-`0019` 只让 `combo_runtime` 读取待恢复请求正文、追加活动行，并通过窄列更新接受或放弃；它不能读取 `recharge_orders`。`combo_api` 只能读取 owner、`usageId`、状态、active intent、单价、期限和更新时间，并只能 CAS active intent 与更新时间；它看不到请求正文、Agent 绑定、政策版本或 terminal Turn。`combo_worker` 与 `PUBLIC` 保持零权限。pending guard 与 deferred closure 使用固定 `search_path`、无动态 SQL 的 `SECURITY DEFINER`，并撤销所有应用角色和 `PUBLIC` 的直接执行权限，使 API CAS 不需要扩大到正文或 receipt 读取。约束函数不取得额外行锁，也不从待恢复表反向读取充值订单。
+`0019` 只让 `combo_runtime` 读取待恢复请求正文、追加活动行，并通过窄列更新接受或放弃；它不能读取 `recharge_orders`。`combo_api` 只能读取 owner、`usageId`、状态、active intent、单价、期限和更新时间，并只能 CAS active intent 与更新时间；它看不到请求正文、Agent 绑定、政策版本或 terminal Turn。恢复订单的金额必须与该待恢复行的单价快照完全相等。`combo_worker` 与 `PUBLIC` 保持零权限。pending guard 与 deferred closure 使用固定 `search_path`、无动态 SQL 的 `SECURITY DEFINER`，并撤销所有应用角色和 `PUBLIC` 的直接执行权限，使 API CAS 不需要扩大到正文或 receipt 读取。约束函数不取得额外行锁，也不从待恢复表反向读取充值订单。
 
 计费约束在事务提交时强制验证 `可用余额 + 预留余额 = 不可变流水净额`、钱包预留与运行中使用记录一致、免费计数与免费使用记录一致，并双向核对成功充值/完成扣费与其唯一流水。应用不能只改余额或终态，也不能只伪造一条外观合法的流水。乐收赢付款时间属于外部秒级时钟，不与数据库订单创建时间硬比较；内部 `credited_at` 仍使用数据库时间。
 
