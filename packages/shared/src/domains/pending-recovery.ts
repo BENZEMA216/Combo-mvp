@@ -72,6 +72,16 @@ export const PendingUsageRecoveryViewSchema = z
   .strict();
 export type PendingUsageRecoveryView = z.infer<typeof PendingUsageRecoveryViewSchema>;
 
+export const PendingUsageRecoveryListResultSchema = z
+  .object({ recoveries: z.array(PendingUsageRecoveryViewSchema).max(100) })
+  .strict();
+export type PendingUsageRecoveryListResult = z.infer<typeof PendingUsageRecoveryListResultSchema>;
+
+export const PendingUsageRecoveryExactResultSchema = z
+  .object({ recovery: PendingUsageRecoveryViewSchema })
+  .strict();
+export type PendingUsageRecoveryExactResult = z.infer<typeof PendingUsageRecoveryExactResultSchema>;
+
 export const PendingUsageRecoveryListQuerySchema = z
   .object({ sessionId: CanonicalUuidSchema.optional() })
   .strict();

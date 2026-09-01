@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { IsoDateTimeSchema } from '../core/ids.js';
+import { IdSchema, IsoDateTimeSchema } from '../core/ids.js';
 
 export const KNOWLEDGE_AGENT_PRODUCT_KIND = 'knowledge_agent_test' as const;
 export const KNOWLEDGE_CAPABILITY_PROTOCOL = 'combo.agent-package-capability/2' as const;
@@ -9,6 +9,8 @@ export const KNOWLEDGE_BUNDLE_PROTOCOL = 'combo.knowledge-bundle/1' as const;
 export const AGENT_USAGE_RECEIPT_PROTOCOL = 'combo.agent-usage-receipt/1' as const;
 export const KNOWLEDGE_RESOURCE_PATH = 'skills/knowledge/references/knowledge-bundle.json' as const;
 export const INSUFFICIENT_EVIDENCE_ANSWER = '现有知识中没有足够证据回答这个问题。' as const;
+export const HOSTED_KNOWLEDGE_AGENT_SLUG = 'combo-knowledge' as const;
+export const KNOWLEDGE_CITATION_EXCERPT_MAX_UTF8_BYTES = 2 * 1_024;
 
 const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
@@ -109,6 +111,23 @@ const CitationLabelSchema = z
   )
   .refine((value) => !containsUnsafeDisplayText(value), 'Citation label contains unsafe text');
 
+/**
+ * Display-only projection of exact frozen chunk text. It is deliberately absent from receipts,
+ * digests, request fingerprints, validation, and settlement; old Runtime detail can omit it while
+ * the fixed hosted entry always projects it from the verified Package bytes.
+ */
+export const KnowledgeCitationExcerptSchema = z
+  .string()
+  .min(1)
+  .max(KNOWLEDGE_CITATION_EXCERPT_MAX_UTF8_BYTES)
+  .refine((value) => value.normalize('NFC') === value, 'Citation excerpt must use NFC')
+  .refine((value) => !containsUnsafeDisplayText(value), 'Citation excerpt contains unsafe text')
+  .refine(
+    (value) => utf8ByteLength(value) <= KNOWLEDGE_CITATION_EXCERPT_MAX_UTF8_BYTES,
+    'Citation excerpt exceeds the UTF-8 byte limit',
+  );
+export type KnowledgeCitationExcerpt = z.infer<typeof KnowledgeCitationExcerptSchema>;
+
 export const LegacyAgentBindingSchema = z
   .object({ productKind: z.literal('legacy_capability') })
   .strict();
@@ -192,9 +211,43 @@ export const KnowledgeCitationSchema = z
     chunkId: ChunkIdSchema,
     sourceId: SourceIdSchema,
     displayLabel: CitationLabelSchema,
+    /** Optional only for rolling compatibility with detail produced by an older Runtime. */
+    excerpt: KnowledgeCitationExcerptSchema.optional(),
   })
   .strict();
 export type KnowledgeCitation = z.infer<typeof KnowledgeCitationSchema>;
+
+const HostedAgentPublicTextSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine((value) => value.normalize('NFC') === value, 'Hosted Agent text must use NFC')
+  .refine((value) => value.trim() === value, 'Hosted Agent text whitespace must be canonical')
+  .refine((value) => !containsUnsafeDisplayText(value), 'Hosted Agent text contains unsafe text');
+
+/** Public descriptor for the one fixed hosted consumer Agent; no Registry selector may cross it. */
+export const HostedKnowledgeAgentDescriptorSchema = z
+  .object({
+    slug: z.literal(HOSTED_KNOWLEDGE_AGENT_SLUG),
+    name: HostedAgentPublicTextSchema,
+    summary: HostedAgentPublicTextSchema,
+    billing: z
+      .object({
+        currency: z.literal('CNY'),
+        unitPriceCents: KnowledgeCentsSchema.refine(
+          (value) => BigInt(value) > 0n,
+          'Hosted Agent unit price must be positive',
+        ),
+        freeUses: z.number().int().min(0).max(POSTGRES_INTEGER_MAX),
+      })
+      .strict(),
+  })
+  .strict();
+export type HostedKnowledgeAgentDescriptor = z.infer<typeof HostedKnowledgeAgentDescriptorSchema>;
+
+/** POST /runtime/agents/combo-knowledge/start returns no Capability or Package selectors. */
+export const StartHostedKnowledgeAgentResultSchema = z.object({ sessionId: IdSchema }).strict();
+export type StartHostedKnowledgeAgentResult = z.infer<typeof StartHostedKnowledgeAgentResultSchema>;
 
 const KnowledgeResultCommonShape = {
   protocol: z.literal(AGENT_USAGE_RECEIPT_PROTOCOL),

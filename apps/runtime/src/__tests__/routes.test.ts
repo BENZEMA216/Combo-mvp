@@ -114,8 +114,17 @@ async function createDirectArtifactTool(input: {
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 14 endpoints (capability 1 + session 9 + artifact 1 + recovery 3)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(14);
+  it('registers exactly 16 endpoints including the fixed hosted Agent descriptor and start', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(16);
+    expect(ALL_ENDPOINTS).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ method: 'GET', url: '/runtime/agents/combo-knowledge' }),
+        expect.objectContaining({
+          method: 'POST',
+          url: '/runtime/agents/combo-knowledge/start',
+        }),
+      ]),
+    );
   });
 
   it('no duplicate (method,url) pairs', () => {
@@ -1610,7 +1619,12 @@ describe('knowledge Agent handler closed loop', () => {
       expect.objectContaining({
         outcome: 'answered',
         answer: expect.objectContaining({ text: answer }),
-        citations: [expect.objectContaining({ displayLabel: '公开计费手册' })],
+        citations: [
+          expect.objectContaining({
+            displayLabel: '公开计费手册',
+            excerpt: answer,
+          }),
+        ],
         billing: expect.objectContaining({ source: 'free', settledCents: '0' }),
         validation: expect.objectContaining({
           policyVersion: 'knowledge-agent-grounded-validator-v2',

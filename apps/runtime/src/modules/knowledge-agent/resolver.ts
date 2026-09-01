@@ -26,6 +26,7 @@ import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { StringEnum, Type, type Static } from '@earendil-works/pi-ai';
 import {
   INSUFFICIENT_EVIDENCE_ANSWER,
+  KNOWLEDGE_CITATION_EXCERPT_MAX_UTF8_BYTES,
   KnowledgeAgentBindingSchema,
   KnowledgeTurnResultSchema,
   knowledgeBindingsEqual,
@@ -1088,6 +1089,22 @@ function bindingFromReceipt(row: KnowledgeReceiptDbRow): KnowledgeAgentBinding {
   });
 }
 
+/** Exact UTF-8 prefix of one frozen cited chunk; never enters a receipt or any billing digest. */
+export function boundedFrozenCitationExcerpt(content: string): string {
+  if (Buffer.byteLength(content, 'utf8') <= KNOWLEDGE_CITATION_EXCERPT_MAX_UTF8_BYTES) {
+    return content;
+  }
+  let bytes = 0;
+  let codeUnits = 0;
+  for (const codePoint of content) {
+    const next = Buffer.byteLength(codePoint, 'utf8');
+    if (bytes + next > KNOWLEDGE_CITATION_EXCERPT_MAX_UTF8_BYTES) break;
+    bytes += next;
+    codeUnits += codePoint.length;
+  }
+  return content.slice(0, codeUnits);
+}
+
 /** Re-verifies every display field from the immutable receipt, Message, and frozen Bundle bytes. */
 export function projectKnowledgeResults(input: {
   binding: KnowledgeAgentBinding;
@@ -1125,6 +1142,7 @@ export function projectKnowledgeResults(input: {
         chunkId: chunk.id,
         sourceId: chunk.source.sourceId,
         displayLabel: chunk.source.displayLabel,
+        excerpt: boundedFrozenCitationExcerpt(chunk.content),
       };
     });
     return KnowledgeTurnResultSchema.parse({
