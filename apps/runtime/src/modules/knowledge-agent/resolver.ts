@@ -18,7 +18,6 @@ import {
   parseCreatorKnowledgeBundle,
   resolveCreatorKnowledgeBundleResource,
   type CreatorKnowledgeBundle,
-  type CreatorKnowledgeChunk,
 } from '@cb/creator-agent-protocol/knowledge-bundle';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import { StringEnum, Type, type Static } from '@earendil-works/pi-ai';
@@ -31,7 +30,10 @@ import {
   type KnowledgeTurnResult,
 } from '@cb/shared';
 
-import type { KnowledgeAgentTestGate } from '../../platform/config/env.js';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  type KnowledgeAgentTestGate,
+} from '../../platform/config/env.js';
 import {
   withTransaction,
   type Queryable,
@@ -59,6 +61,11 @@ import {
   type TerminalTurnStatus,
   type TurnLastError,
 } from '../agent/turn-repo.js';
+import {
+  hasGroundedLexicalSupport,
+  searchGroundedKnowledgeBundle,
+  type GroundedKnowledgeSearchHit,
+} from './grounding.js';
 
 export const AGENT_PACKAGE_OBJECT_BUCKET = 'combo-artifacts' as const;
 const MARKDOWN_MAX_BYTES = 65_536;
@@ -287,7 +294,6 @@ const SEARCH_LIMIT_DEFAULT = 5;
 const SEARCH_LIMIT_MAX = 8;
 const QUERY_MAX_UTF8_BYTES = 1_024;
 const ANSWER_MAX_UTF8_BYTES = 32 * 1_024;
-const EXCERPT_MAX_CODE_POINTS = 1_200;
 const EMPTY_CITATIONS = Object.freeze([]) as readonly [];
 const SearchParams = Type.Object(
   {
@@ -310,13 +316,7 @@ const SubmitParams = Type.Object(
   { additionalProperties: false },
 );
 type SubmitParamsT = Static<typeof SubmitParams>;
-export interface KnowledgeSearchHit {
-  chunkId: string;
-  sourceId: string;
-  displayLabel: string;
-  contentDigest: string;
-  excerpt: string;
-}
+export type KnowledgeSearchHit = GroundedKnowledgeSearchHit;
 export type KnowledgeAnswerCandidate =
   | Readonly<{ status: 'answered'; answer: string; citationChunkIds: readonly string[] }>
   | Readonly<{
@@ -379,34 +379,12 @@ function canonicalText(value: unknown, maximumBytes: number, field: string): str
   }
   return value;
 }
-function tokens(value: string): string[] {
-  return value.toLocaleLowerCase('und').match(/[\p{L}\p{N}]+/gu) ?? [];
-}
-function excerpt(content: string): string {
-  const points = Array.from(content);
-  if (points.length <= EXCERPT_MAX_CODE_POINTS) return content;
-  return `${points.slice(0, EXCERPT_MAX_CODE_POINTS).join('')}…`;
-}
-function scoreChunk(
-  chunk: CreatorKnowledgeChunk,
-  query: string,
-  queryTokens: readonly string[],
-): number {
-  const normalized = chunk.content.toLocaleLowerCase('und');
-  let score = normalized.includes(query.toLocaleLowerCase('und')) ? 10_000 : 0;
-  for (const token of queryTokens) {
-    if (normalized.includes(token)) score += 100 + Math.min(token.length, 32);
-  }
-  return score;
-}
 export function searchKnowledgeBundle(
   bundle: CreatorKnowledgeBundle,
   rawQuery: unknown,
   rawLimit: unknown = SEARCH_LIMIT_DEFAULT,
 ): KnowledgeSearchHit[] {
   const query = canonicalText(rawQuery, QUERY_MAX_UTF8_BYTES, 'knowledge query');
-  const queryTokens = [...new Set(tokens(query))];
-  if (queryTokens.length === 0) fail('knowledge query is invalid');
   if (
     !Number.isSafeInteger(rawLimit) ||
     Number(rawLimit) < 1 ||
@@ -414,18 +392,7 @@ export function searchKnowledgeBundle(
   ) {
     fail('knowledge search limit is invalid');
   }
-  return bundle.chunks
-    .map((chunk) => ({ chunk, score: scoreChunk(chunk, query, queryTokens) }))
-    .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => right.score - left.score || left.chunk.id.localeCompare(right.chunk.id))
-    .slice(0, Number(rawLimit))
-    .map(({ chunk }) => ({
-      chunkId: chunk.id,
-      sourceId: chunk.source.sourceId,
-      displayLabel: chunk.source.displayLabel,
-      contentDigest: chunk.contentDigest,
-      excerpt: excerpt(chunk.content),
-    }));
+  return searchGroundedKnowledgeBundle(bundle, query, Number(rawLimit));
 }
 function canonicalCitationIds(value: unknown, exposed: ReadonlySet<string>): readonly string[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 32) {
@@ -564,7 +531,7 @@ export function knowledgeQuestionDigest(question: string): `sha256:${string}` {
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
-/** Platform-owned controlled-Test oracle. Package instructions never configure acceptance. */
+/** Platform-owned Test validation. Package instructions never configure acceptance. */
 export function validateKnowledgeCandidate(input: {
   gate: KnowledgeAgentTestGate;
   question: string;
@@ -585,6 +552,30 @@ export function validateKnowledgeCandidate(input: {
       validationCode: 'insufficient_evidence',
       answer: INSUFFICIENT_EVIDENCE_ANSWER,
       citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  if (input.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2') {
+    const accepted =
+      input.gate.validatorPolicyVersion === KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY &&
+      hasGroundedLexicalSupport({
+        question: input.question,
+        answer: input.candidate.answer,
+        citationChunkIds: input.candidate.citationChunkIds,
+        exposedHits: input.exposedHits,
+      });
+    if (!accepted) {
+      return Object.freeze({
+        outcome: 'failed',
+        validationCode: 'rejected',
+        answer: null,
+        citationChunkIds: EMPTY_CITATIONS,
+      });
+    }
+    return Object.freeze({
+      outcome: 'answered',
+      validationCode: 'accepted',
+      answer: input.candidate.answer,
+      citationChunkIds: Object.freeze([...input.candidate.citationChunkIds]),
     });
   }
   const expected = input.gate.cases.find(

@@ -28,6 +28,15 @@ import {
   type FakeAgentScript,
 } from './fakes.js';
 
+type LegacyKnowledgeAgentTestGate = Extract<
+  KnowledgeAgentTestGate,
+  { protocol: 'combo.knowledge-agent-runtime-test-gate/1' }
+>;
+type GroundedKnowledgeAgentTestGate = Extract<
+  KnowledgeAgentTestGate,
+  { protocol: 'combo.knowledge-agent-runtime-test-gate/2' }
+>;
+
 const CREATOR = '00000000-0000-4000-8000-000000000001';
 const CONSUMER = '00000000-0000-4000-8000-000000000002';
 const CAPABILITY = '00000000-0000-4000-8000-000000000003';
@@ -81,7 +90,7 @@ const definition: CapabilityDefinition = {
   meta: {},
 };
 
-function gate(): KnowledgeAgentTestGate {
+function gate(): LegacyKnowledgeAgentTestGate {
   return {
     protocol: 'combo.knowledge-agent-runtime-test-gate/1',
     sourceSha: SOURCE_SHA,
@@ -97,6 +106,18 @@ function gate(): KnowledgeAgentTestGate {
         citationChunkIds: [CHUNK],
       },
     ],
+  };
+}
+
+function groundedGate(): GroundedKnowledgeAgentTestGate {
+  return {
+    protocol: 'combo.knowledge-agent-runtime-test-gate/2',
+    sourceSha: SOURCE_SHA,
+    publisherUserId: CREATOR,
+    capabilityId: CAPABILITY,
+    releaseId: binding.release.releaseId,
+    packageDigest: binding.release.packageDigest,
+    validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
   };
 }
 
@@ -119,6 +140,8 @@ async function runtime(
   idleTimeoutMs = 60_000,
   sandbox = createDisabledSandboxBackend(),
   shutdownTimeoutMs = 15_000,
+  knowledgeGate: KnowledgeAgentTestGate = gate(),
+  question = QUESTION,
 ) {
   const db = new FakeDb();
   db.seedCapability({ id: CAPABILITY, owner_user_id: CREATOR, published: true });
@@ -147,10 +170,10 @@ async function runtime(
     runner.startTurn({
       session,
       definition,
-      text: QUESTION,
+      text: question,
       usageId: '00000000-0000-4000-8000-000000000007',
       capabilityOwnerUserId: CREATOR,
-      knowledge: { resolved, gate: gate(), runtimeSourceSha: SOURCE_SHA },
+      knowledge: { resolved, gate: knowledgeGate, runtimeSourceSha: SOURCE_SHA },
       log: silentLog,
     });
   return { db, session, agent, eventLog, runner, start };
@@ -202,6 +225,294 @@ describe('knowledge run-turn high-risk boundaries', () => {
         exposedHits: tools.exposedHits(),
       }),
     ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+  });
+
+  it('retrieves a Chinese reformulation and centers a bounded excerpt on a late match', () => {
+    expect(
+      searchKnowledgeBundle(resolved.knowledge, '前三次用完以后为什么会提示余额不足？', 8).map(
+        (hit) => hit.chunkId,
+      ),
+    ).toEqual([SECOND_CHUNK, CHUNK]);
+
+    const lateContent = `${'前置无关内容。'.repeat(260)}关键命中词说明余额不足会提示充值。${'后置内容。'.repeat(260)}`;
+    const lateBundle = createCreatorKnowledgeBundle({
+      protocol: 'combo.knowledge-bundle/1',
+      chunks: [
+        {
+          id: CHUNK,
+          source: {
+            sourceId: `source.knowledge.${'6'.repeat(32)}`,
+            displayLabel: '长篇公开手册',
+          },
+          content: lateContent,
+          contentDigest: digestCreatorAgentPackageFile(new TextEncoder().encode(lateContent)),
+        },
+      ],
+    });
+    const [hit] = searchKnowledgeBundle(lateBundle, '关键命中词', 1);
+    expect(hit?.excerpt).toContain('关键命中词');
+    expect(Array.from(hit?.excerpt ?? '')).toHaveLength(1_200);
+    expect(hit?.excerpt.startsWith('…')).toBe(true);
+  });
+
+  it('accepts a novel grounded v2 answer but rejects lexical support violations', async () => {
+    const exposedHits = searchKnowledgeBundle(resolved.knowledge, '免费额度 余额不足', 8);
+    const accepted = {
+      status: 'answered' as const,
+      answer: '前三次成功回答免费。余额不足时返回 402。',
+      citationChunkIds: [CHUNK, SECOND_CHUNK],
+    };
+    expect(
+      validateKnowledgeCandidate({
+        gate: groundedGate(),
+        question: '前三次用完以后为什么会提示余额不足？',
+        candidate: accepted,
+        exposedHits,
+      }),
+    ).toMatchObject({ outcome: 'answered', validationCode: 'accepted' });
+
+    for (const answer of [
+      '前三次成功回答免费，之后需要支付 100 元。',
+      '该规则由 2099-01-01 发布的 v99 版本规定。',
+      '前三次成功回答免费。另外所有退款都会自动到账。',
+    ]) {
+      expect(
+        validateKnowledgeCandidate({
+          gate: groundedGate(),
+          question: '前三次用完以后为什么会提示余额不足？',
+          candidate: { ...accepted, answer },
+          exposedHits,
+        }),
+      ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+    }
+    expect(
+      validateKnowledgeCandidate({
+        gate: groundedGate(),
+        question: '前三次用完以后为什么会提示余额不足？',
+        candidate: accepted,
+        exposedHits: [
+          ...exposedHits,
+          {
+            chunkId: `chunk.knowledge.${'8'.repeat(32)}`,
+            sourceId: `source.knowledge.${'9'.repeat(32)}`,
+            displayLabel: '无关资料',
+            contentDigest: `sha256:${'a'.repeat(64)}`,
+            excerpt: '火星天气与本问题无关。',
+          },
+        ],
+      }),
+    ).toMatchObject({ outcome: 'answered' });
+    expect(
+      validateKnowledgeCandidate({
+        gate: groundedGate(),
+        question: '前三次用完以后为什么会提示余额不足？',
+        candidate: {
+          ...accepted,
+          citationChunkIds: [CHUNK, SECOND_CHUNK, `chunk.knowledge.${'8'.repeat(32)}`],
+        },
+        exposedHits: [
+          ...exposedHits,
+          {
+            chunkId: `chunk.knowledge.${'8'.repeat(32)}`,
+            sourceId: `source.knowledge.${'9'.repeat(32)}`,
+            displayLabel: '无关资料',
+            contentDigest: `sha256:${'a'.repeat(64)}`,
+            excerpt: '火星天气与本问题无关。',
+          },
+        ],
+      }),
+    ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+
+    expect(
+      validateKnowledgeCandidate({
+        gate: gate(),
+        question: '未配置的陌生问题',
+        candidate: { status: 'answered', answer: ANSWER, citationChunkIds: [CHUNK] },
+        exposedHits: [exposedHits[0]!],
+      }),
+    ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+  });
+
+  it.each(['free', 'wallet'] as const)(
+    'releases a rejected v2 %s reservation without exposing candidate material',
+    async (source) => {
+      const context = await runtime(
+        {
+          deltas: ['私有候选文本'],
+          invokeNamedTools: [
+            { name: 'knowledge_search', params: { query: '免费额度' } },
+            {
+              name: 'submit_knowledge_answer',
+              params: {
+                status: 'answered',
+                answer: '前三次成功回答免费，之后需要支付 100 元。',
+                citationChunkIds: [CHUNK],
+              },
+            },
+          ],
+        },
+        60_000,
+        createDisabledSandboxBackend(),
+        15_000,
+        groundedGate(),
+        '前三次用完以后为什么会提示余额不足？',
+      );
+      if (source === 'wallet') {
+        context.db.seedBillingAccount(CONSUMER, 100n);
+        context.db.seedFreeAllowance({
+          ownerUserId: CONSUMER,
+          capabilityId: CAPABILITY,
+          freeLimit: 3,
+          freeUsed: 3,
+        });
+      }
+      await context.start();
+      await waitFor(() => context.db.agentUsageReceipts.size === 1);
+      expect([...context.db.usageCharges.values()][0]).toMatchObject({
+        charge_source: source,
+        status: 'released',
+        execution_outcome: 'failed',
+      });
+      expect([...context.db.agentUsageReceipts.values()][0]).toMatchObject({
+        validator_policy_version: 'knowledge-agent-grounded-validator-v2',
+        validation_code: 'rejected',
+        response_message_id: null,
+      });
+      expect(context.db.messages.filter((message) => message.role === 'assistant')).toHaveLength(0);
+      expect(JSON.stringify(context.db.messages)).not.toContain('私有候选文本');
+      const allowance = [...context.db.billingFreeAllowances.values()][0]!;
+      expect(allowance).toMatchObject({
+        free_used_count: source === 'wallet' ? 3 : 0,
+        free_reserved_count: 0,
+      });
+      if (source === 'wallet') {
+        expect(context.db.billingAccounts.get(CONSUMER)).toMatchObject({
+          balance_cents: 100n,
+          reserved_cents: 0n,
+        });
+      }
+      await context.runner.dispose();
+    },
+  );
+
+  it.each(['free', 'wallet'] as const)(
+    'settles one authoritative v2 %s answer and replays it without re-execution',
+    async (source) => {
+      const context = await runtime(
+        {
+          deltas: ['私有候选文本'],
+          invokeNamedTools: [
+            { name: 'knowledge_search', params: { query: '免费额度' } },
+            {
+              name: 'submit_knowledge_answer',
+              params: { status: 'answered', answer: ANSWER, citationChunkIds: [CHUNK] },
+            },
+          ],
+          finalMessages: [
+            { role: 'assistant', content: [{ type: 'text', text: '伪造 transcript' }] },
+          ],
+        },
+        60_000,
+        createDisabledSandboxBackend(),
+        15_000,
+        groundedGate(),
+        '为什么前三次成功回答免费？',
+      );
+      if (source === 'wallet') {
+        context.db.seedBillingAccount(CONSUMER, 100n);
+        context.db.seedFreeAllowance({
+          ownerUserId: CONSUMER,
+          capabilityId: CAPABILITY,
+          freeLimit: 3,
+          freeUsed: 3,
+        });
+      }
+      expect((await context.start()).status).toBe('started');
+      await waitFor(() => context.db.agentUsageReceipts.size === 1);
+      expect(context.agent.calls).toHaveLength(1);
+      expect(context.db.messages.filter((message) => message.role === 'assistant')).toEqual([
+        expect.objectContaining({ content: [{ type: 'text', text: ANSWER }] }),
+      ]);
+      expect([...context.db.usageCharges.values()]).toEqual([
+        expect.objectContaining({
+          charge_source: source,
+          status: 'completed',
+          execution_outcome: 'answered',
+          settled_cents: source === 'wallet' ? 1n : 0n,
+        }),
+      ]);
+      expect([...context.db.agentUsageReceipts.values()]).toEqual([
+        expect.objectContaining({
+          validator_policy_version: 'knowledge-agent-grounded-validator-v2',
+          validation_code: 'accepted',
+        }),
+      ]);
+      expect(JSON.stringify(context.db.messages)).not.toContain('私有候选文本');
+      expect(JSON.stringify(context.db.messages)).not.toContain('伪造 transcript');
+
+      expect((await context.start()).status).toBe('replayed');
+      expect(context.agent.calls).toHaveLength(1);
+      expect(context.db.usageCharges.size).toBe(1);
+      expect(context.db.agentUsageReceipts.size).toBe(1);
+      expect([...context.db.billingFreeAllowances.values()][0]).toMatchObject({
+        free_used_count: source === 'wallet' ? 3 : 1,
+        free_reserved_count: 0,
+      });
+      if (source === 'wallet') {
+        expect(context.db.billingAccounts.get(CONSUMER)).toMatchObject({
+          balance_cents: 99n,
+          reserved_cents: 0n,
+        });
+        expect(context.db.walletLedger.size).toBe(1);
+      }
+      await context.runner.dispose();
+    },
+  );
+
+  it('requires an empty insufficient submission and releases it with zero settlement', async () => {
+    const tools = createKnowledgeToolSession({
+      knowledge: resolved.knowledge,
+      turnSignal: new AbortController().signal,
+    });
+    await executeTool(tools, 'knowledge_search', { query: '不存在的问题' });
+    await expect(
+      executeTool(tools, 'submit_knowledge_answer', {
+        status: 'insufficient_evidence',
+        answer: '不允许的答案',
+      }),
+    ).rejects.toThrow('cannot contain an answer or citations');
+
+    const context = await runtime(
+      {
+        invokeNamedTools: [
+          { name: 'knowledge_search', params: { query: '不存在的问题' } },
+          { name: 'submit_knowledge_answer', params: { status: 'insufficient_evidence' } },
+        ],
+      },
+      60_000,
+      createDisabledSandboxBackend(),
+      15_000,
+      groundedGate(),
+      '知识库没有覆盖的陌生问题',
+    );
+    await context.start();
+    await waitFor(() => context.db.agentUsageReceipts.size === 1);
+    expect([...context.db.usageCharges.values()][0]).toMatchObject({
+      status: 'released',
+      settled_cents: 0n,
+      execution_outcome: 'insufficient_evidence',
+    });
+    expect([...context.db.agentUsageReceipts.values()][0]).toMatchObject({
+      execution_outcome: 'insufficient_evidence',
+      validation_code: 'insufficient_evidence',
+      citation_chunk_ids: [],
+      settled_cents: 0n,
+    });
+    expect([...context.db.billingFreeAllowances.values()][0]).toMatchObject({
+      free_used_count: 0,
+      free_reserved_count: 0,
+    });
+    await context.runner.dispose();
   });
   it('terminalizes knowledge shutdown while legacy sandbox cleanup exceeds the deadline', async () => {
     const sandbox = {

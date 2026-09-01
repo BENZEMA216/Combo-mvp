@@ -16,7 +16,7 @@ Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring
 - `src/modules/agent/` 负责 Turn 生命周期、Pi Agent、Redis 事件流、Studio 模式和模型工具。
 - `src/modules/billing/` 负责免费额度、全局钱包预留、按次扣费和 `usageId` 幂等。
 - `src/modules/artifact/` 负责 Artifact 索引、对象正文、Studio HTML 契约、UI revision 和 `upsert_artifact`。
-- `src/modules/knowledge-agent/` 负责受控 Test 的 exact Package 解析、知识检索、平台验证、原子终态和 receipt 投影。
+- `src/modules/knowledge-agent/` 负责受控 Test 的 exact Package 解析、中文确定性知识检索、v1 精确 oracle、v2 保守词法支持验证、原子终态和 receipt 投影。
 - `src/bootstrap/` 组装 Fastify、基础设施、TurnRunner 和路由。
 - `src/processes/api.ts` 是唯一 HTTP 进程入口，默认监听 3100。
 
