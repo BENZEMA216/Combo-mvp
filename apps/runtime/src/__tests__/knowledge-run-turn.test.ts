@@ -45,6 +45,8 @@ const CHUNK = `chunk.knowledge.${'2'.repeat(32)}`;
 const SECOND_CHUNK = `chunk.knowledge.${'7'.repeat(32)}`;
 const QUESTION = '免费额度是多少？';
 const ANSWER = '前三次成功回答免费。';
+const GROUNDED_ANSWER = 'Combo 的前三次成功回答使用免费额度。';
+const SECOND_GROUNDED_ANSWER = 'Combo 余额不足时返回 402。';
 const binding: KnowledgeAgentBinding = {
   productKind: 'knowledge_agent_test',
   capability: { id: CAPABILITY, protocol: 'combo.agent-package-capability/2' },
@@ -186,7 +188,11 @@ describe('knowledge run-turn high-risk boundaries', () => {
     const tools = createKnowledgeToolSession({
       knowledge: resolved.knowledge,
       turnSignal: new AbortController().signal,
+      requiresGroundedExtractiveAnswer: true,
     });
+    expect(
+      tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
+    ).toContain('每个事实性句子必须逐字复用所引 excerpt 中的完整原句');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',
@@ -259,7 +265,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
     const exposedHits = searchKnowledgeBundle(resolved.knowledge, '免费额度 余额不足', 8);
     const accepted = {
       status: 'answered' as const,
-      answer: '前三次成功回答免费。余额不足时返回 402。',
+      answer: `${GROUNDED_ANSWER}${SECOND_GROUNDED_ANSWER}`,
       citationChunkIds: [CHUNK, SECOND_CHUNK],
     };
     expect(
@@ -329,6 +335,42 @@ describe('knowledge run-turn high-risk boundaries', () => {
         question: '未配置的陌生问题',
         candidate: { status: 'answered', answer: ANSWER, citationChunkIds: [CHUNK] },
         exposedHits: [exposedHits[0]!],
+      }),
+    ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+  });
+
+  it.each([
+    {
+      question: '余额不足时会怎样？',
+      answer: '余额充足时返回 402。',
+      citationChunkIds: [SECOND_CHUNK],
+    },
+    {
+      question: '余额不足时会怎样？',
+      answer: '余额不足时不会返回 402。',
+      citationChunkIds: [SECOND_CHUNK],
+    },
+    {
+      question: '前三次成功回答如何收费？',
+      answer: '前三次成功回答收费。',
+      citationChunkIds: [CHUNK],
+    },
+    {
+      question: '余额不足时会怎样？',
+      answer: '余额不足。返回 402。',
+      citationChunkIds: [SECOND_CHUNK],
+    },
+  ])('rejects an unsupported polarity, relation, or clause recombination: $answer', (candidate) => {
+    expect(
+      validateKnowledgeCandidate({
+        gate: groundedGate(),
+        question: candidate.question,
+        candidate: {
+          status: 'answered',
+          answer: candidate.answer,
+          citationChunkIds: candidate.citationChunkIds,
+        },
+        exposedHits: searchKnowledgeBundle(resolved.knowledge, candidate.question, 8),
       }),
     ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
   });
@@ -405,7 +447,11 @@ describe('knowledge run-turn high-risk boundaries', () => {
             { name: 'knowledge_search', params: { query: '免费额度' } },
             {
               name: 'submit_knowledge_answer',
-              params: { status: 'answered', answer: ANSWER, citationChunkIds: [CHUNK] },
+              params: {
+                status: 'answered',
+                answer: GROUNDED_ANSWER,
+                citationChunkIds: [CHUNK],
+              },
             },
           ],
           finalMessages: [
@@ -431,7 +477,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
       await waitFor(() => context.db.agentUsageReceipts.size === 1);
       expect(context.agent.calls).toHaveLength(1);
       expect(context.db.messages.filter((message) => message.role === 'assistant')).toEqual([
-        expect.objectContaining({ content: [{ type: 'text', text: ANSWER }] }),
+        expect.objectContaining({ content: [{ type: 'text', text: GROUNDED_ANSWER }] }),
       ]);
       expect([...context.db.usageCharges.values()]).toEqual([
         expect.objectContaining({

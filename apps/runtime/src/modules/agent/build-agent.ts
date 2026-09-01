@@ -115,7 +115,12 @@ export function composeSystemPrompt(
 }
 
 export function composeKnowledgeSystemPrompt(
-  knowledge: { name: string; description: string; instructions: string },
+  knowledge: {
+    name: string;
+    description: string;
+    instructions: string;
+    requiresGroundedExtractiveAnswer: boolean;
+  },
   now: Date = new Date(),
 ): string {
   return [
@@ -129,6 +134,11 @@ export function composeKnowledgeSystemPrompt(
     '# 知识回答协议 —— 必须遵守',
     '你不能用自由文本直接向用户作答。先调用 knowledge_search 检索证据；只可引用本轮返回的 chunkId。',
     '证据充分时调用 submit_knowledge_answer，status=answered，并提交完整答案与升序、不重复的 citationChunkIds。',
+    ...(knowledge.requiresGroundedExtractiveAnswer
+      ? [
+          '每个事实性句子必须逐字复用被引用 excerpt 中的完整原句；不得删改其中的限定、关系、否定、条件、数额、日期或版本。',
+        ]
+      : []),
     '证据不足时调用 submit_knowledge_answer，status=insufficient_evidence，不要填写 answer 或 citations。',
     '每轮只能提交一次。提交后停止；模型正文和工具转录都只是候选，不会直接展示给用户。',
   ].join('\n');

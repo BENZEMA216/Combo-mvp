@@ -1,7 +1,7 @@
 // 系统提示词编排自检：作者 instructions 逐字在前，平台注入段带服务端日期与证据纪律（issue #19）。
 import { describe, expect, it } from 'vitest';
 import type { CapabilityDefinition } from '@cb/shared';
-import { composeSystemPrompt } from '../modules/agent/build-agent.js';
+import { composeKnowledgeSystemPrompt, composeSystemPrompt } from '../modules/agent/build-agent.js';
 
 const DEFINITION: CapabilityDefinition = {
   version: 1,
@@ -74,5 +74,29 @@ describe('composeSystemPrompt', () => {
   it('普通运行会话不注入 Miniapp 设计约束', () => {
     const prompt = composeSystemPrompt(DEFINITION, new Date('2026-07-23T08:00:00Z'), 'consume');
     expect(prompt).not.toContain('# Miniapp 设计模式');
+  });
+
+  it('知识回答要求逐句直接复用证据并保持事实关系与极性', () => {
+    const prompt = composeKnowledgeSystemPrompt(
+      {
+        name: '公开知识助手',
+        description: '只依据固定知识回答',
+        instructions: '先检索，再提交。',
+        requiresGroundedExtractiveAnswer: true,
+      },
+      new Date('2026-07-06T08:00:00Z'),
+    );
+    expect(prompt).toContain('每个事实性句子必须逐字复用被引用 excerpt 中的完整原句');
+    expect(prompt).toContain('不得删改其中的限定、关系、否定、条件、数额、日期或版本');
+  });
+
+  it('v1 固定 oracle 不注入 v2 整句抽取合同', () => {
+    const prompt = composeKnowledgeSystemPrompt({
+      name: '兼容知识助手',
+      description: '执行平台固定用例',
+      instructions: '先检索，再提交。',
+      requiresGroundedExtractiveAnswer: false,
+    });
+    expect(prompt).not.toContain('完整原句');
   });
 });

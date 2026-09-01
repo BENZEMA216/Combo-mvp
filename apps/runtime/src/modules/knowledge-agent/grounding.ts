@@ -6,7 +6,7 @@ import type {
 const EXCERPT_MAX_CODE_POINTS = 1_200;
 const HAN_PATTERN = /\p{Script=Han}+/gu;
 const LITERAL_PATTERN = /[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
-const CLAIM_SEPARATOR_PATTERN = /[。！？!?；;，,\n]+/gu;
+const SENTENCE_SEPARATOR_PATTERN = /[。！？!?；;\n]+/gu;
 
 interface LexicalFeature {
   key: string;
@@ -176,25 +176,39 @@ function hasStrongOverlap(
   return weakMatches >= 2;
 }
 
-function claimHasSupport(claim: string, evidence: ReadonlyMap<string, LexicalFeature>): boolean {
-  const features = lexicalFeatures(claim);
-  if (features.size === 0) return false;
-  for (const feature of features.values()) {
-    if (feature.literal && !evidence.has(feature.key)) return false;
+function extractiveText(value: string): string {
+  return normalized(value).replace(/\s+/gu, '');
+}
+
+function extractiveSentences(value: string): string[] {
+  return value
+    .split(SENTENCE_SEPARATOR_PATTERN)
+    .map((sentence) => extractiveText(sentence))
+    .filter(Boolean);
+}
+
+function hitDirectlySupportsSentence(sentence: string, hit: GroundedKnowledgeSearchHit): boolean {
+  const sentenceFeatures = lexicalFeatures(sentence);
+  const evidenceFeatures = lexicalFeatures(hit.excerpt);
+  if (
+    sentenceFeatures.size === 0 ||
+    !extractiveSentences(hit.excerpt).includes(extractiveText(sentence))
+  ) {
+    return false;
   }
-  const total = [...features.values()].reduce((sum, feature) => sum + feature.weight, 0);
-  const matched = [...features.values()].reduce(
-    (sum, feature) => sum + (evidence.has(feature.key) ? feature.weight : 0),
-    0,
-  );
-  return hasStrongOverlap(features, evidence) && matched * 2 >= total;
+  // Keep the complete-token invariant explicit even though full-sentence equality is stricter.
+  for (const feature of sentenceFeatures.values()) {
+    if (feature.literal && !evidenceFeatures.has(feature.key)) return false;
+  }
+  return hasStrongOverlap(sentenceFeatures, evidenceFeatures);
 }
 
 /**
- * Conservative Test-only lexical support guard. Passing it means every candidate clause and
- * citation has strong lexical support in the excerpts exposed to this Turn. It does not prove
- * semantic entailment or factual truth; the immutable receipt records the policy version so this
- * limited claim remains auditable.
+ * Conservative Test-only extractive guard. Every factual sentence must equal a complete sentence
+ * in a cited excerpt (apart from Unicode normalization, whitespace, and terminal punctuation),
+ * preserving qualifiers, relations, polarity, and complete Latin/numeric tokens. Passing this
+ * guard only proves direct textual support from the immutable Package evidence; it does not prove
+ * that the source itself is factually true.
  */
 export function hasGroundedLexicalSupport(input: {
   question: string;
@@ -213,17 +227,21 @@ export function hasGroundedLexicalSupport(input: {
     citedHits.push(hit);
   }
 
+  const questionFeatures = lexicalFeatures(input.question);
   const answerFeatures = lexicalFeatures(input.answer);
   const evidenceFeatures = lexicalFeatures(citedHits.map((hit) => hit.excerpt).join('\n'));
   if (!hasStrongOverlap(lexicalFeatures(input.question), evidenceFeatures)) return false;
-  const claims = input.answer
-    .split(CLAIM_SEPARATOR_PATTERN)
-    .map((claim) => claim.trim())
-    .filter(Boolean);
-  if (claims.length === 0 || claims.some((claim) => !claimHasSupport(claim, evidenceFeatures))) {
-    return false;
+  if (!hasStrongOverlap(questionFeatures, answerFeatures)) return false;
+  const sentences = extractiveSentences(input.answer);
+  if (sentences.length === 0) return false;
+
+  const supportingChunkIds = new Set<string>();
+  for (const sentence of sentences) {
+    const supportingHits = citedHits.filter((hit) => hitDirectlySupportsSentence(sentence, hit));
+    if (supportingHits.length === 0) return false;
+    for (const hit of supportingHits) supportingChunkIds.add(hit.chunkId);
   }
 
-  // Every listed citation must support the answer itself; labels never count as evidence here.
-  return citedHits.every((hit) => hasStrongOverlap(answerFeatures, lexicalFeatures(hit.excerpt)));
+  // Every listed citation must directly support at least one answer sentence; labels never count.
+  return citedHits.every((hit) => supportingChunkIds.has(hit.chunkId));
 }

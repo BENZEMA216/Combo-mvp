@@ -417,6 +417,7 @@ function canonicalCitationIds(value: unknown, exposed: ReadonlySet<string>): rea
 export function createKnowledgeToolSession(input: {
   knowledge: CreatorKnowledgeBundle;
   turnSignal: AbortSignal;
+  requiresGroundedExtractiveAnswer?: boolean;
 }): KnowledgeToolSession {
   const exposed = new Map<string, KnowledgeSearchHit>();
   let searchPerformed = false;
@@ -453,8 +454,9 @@ export function createKnowledgeToolSession(input: {
   const submit: AgentTool<typeof SubmitParams, KnowledgeSubmitDetails> = {
     name: 'submit_knowledge_answer',
     label: '提交知识答案',
-    description:
-      '提交唯一候选终态。answered 必须给出答案和本轮检索过的升序 chunkId；证据不足时提交 insufficient_evidence。平台会独立验证。',
+    description: input.requiresGroundedExtractiveAnswer
+      ? '提交唯一候选终态。answered 的每个事实性句子必须逐字复用所引 excerpt 中的完整原句，不得删改限定、关系、否定、条件、数额、日期或版本；citationChunkIds 必须来自本轮检索且升序。证据不足时提交 insufficient_evidence。平台会独立验证。'
+      : '提交唯一候选终态。answered 必须给出答案和本轮检索过的升序 chunkId；证据不足时提交 insufficient_evidence。平台会独立验证。',
     parameters: SubmitParams,
     async execute(
       _toolCallId: string,
