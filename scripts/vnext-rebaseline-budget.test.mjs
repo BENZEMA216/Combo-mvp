@@ -34,6 +34,19 @@ function entry(path, changedLines = 1) {
   return { path, additions: changedLines, deletions: 0, changedLines };
 }
 
+const authoringBillingRecoveryFiles = Object.freeze([
+  'apps/authoring/src/__tests__/billing-handler.test.ts',
+  'apps/authoring/src/__tests__/billing-repo.test.ts',
+  'apps/authoring/src/__tests__/billing-service.test.ts',
+  'apps/authoring/src/__tests__/billing.pg.test.ts',
+  'apps/authoring/src/modules/billing/README.md',
+  'apps/authoring/src/modules/billing/handlers.ts',
+  'apps/authoring/src/modules/billing/repo.ts',
+  'apps/authoring/src/modules/billing/routes.ts',
+  'apps/authoring/src/modules/billing/service.ts',
+  'apps/authoring/src/modules/billing/types.ts',
+]);
+
 function validProductSource() {
   return [
     '# Combo 产品基线',
@@ -420,6 +433,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
         ...allowedKnowledgeAuthoringFiles,
         ...allowedPublisherAuthoringFiles,
         ...allowedReleaseAuthoringFiles,
+        ...authoringBillingRecoveryFiles,
       ]),
     ].sort(),
   );
@@ -553,6 +567,7 @@ test('Agent Package Release scope opens only its named Authoring module and exac
         ...allowedKnowledgeAuthoringFiles,
         ...allowedPublisherAuthoringFiles,
         ...allowedReleaseAuthoringFiles,
+        ...authoringBillingRecoveryFiles,
       ]),
     ].sort(),
   );
@@ -574,6 +589,93 @@ test('Agent Package Release scope opens only its named Authoring module and exac
       /outside the R1-R3 rebuild scope/,
     );
   }
+});
+
+test('Authoring billing recovery scope opens only its ten exact tracked paths', () => {
+  assert.equal(authoringBillingRecoveryFiles.length, 10);
+  assert.deepEqual(authoringBillingRecoveryFiles, [...authoringBillingRecoveryFiles].sort());
+
+  for (const path of authoringBillingRecoveryFiles) {
+    assert.equal(contract.allowedFiles.filter((candidate) => candidate === path).length, 1, path);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
+      false,
+      path,
+    );
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
+  assert.equal(
+    assessPullRequest(
+      contract,
+      authoringBillingRecoveryFiles.map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
+  );
+
+  assert.equal(
+    authoringBillingRecoveryFiles.includes('apps/authoring/src/__tests__/routes.test.ts'),
+    false,
+  );
+  assert.equal(
+    contract.allowedFiles.filter((path) => path === 'apps/authoring/src/__tests__/routes.test.ts')
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter((path) =>
+      path.startsWith('apps/authoring/src/modules/billing'),
+    ),
+    [],
+  );
+
+  for (const path of [
+    'apps/authoring/src/__tests__/billing-handler.test.tsx',
+    'apps/authoring/src/__tests__/billing-repo.test.ts.bak',
+    'apps/authoring/src/__tests__/billing-service.tests.ts',
+    'apps/authoring/src/__tests__/billing-pg.test.ts',
+    'apps/authoring/src/__tests__/billing-reconcile.test.ts',
+    'apps/authoring/src/modules/Billing/service.ts',
+    'apps/authoring/src/modules/billing-other/service.ts',
+    'apps/authoring/src/modules/billing/index.ts',
+    'apps/authoring/src/modules/billing/reconcile.ts',
+    'apps/authoring/src/modules/billing/submodule/service.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+  }
+
+  assert.equal(assessPullRequest(contract, [entry(contractPath)]).mode, 'GOVERNANCE_ONLY');
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry(contractPath),
+        entry('apps/authoring/src/modules/billing/service.ts'),
+      ]),
+    /governance-only/,
+  );
+
+  const legacySource = readFileSync(join(repo, legacyContractPath), 'utf8');
+  assert.equal(
+    previousTrancheLock.contractSha256,
+    'e0ef9bfa1674c83d3dc8437db63e274f4e8b14810b44ca31bdb56949c4107792',
+  );
+  assert.equal(
+    createHash('sha256').update(legacySource).digest('hex'),
+    previousTrancheLock.contractSha256,
+  );
+  const contractBeforeRecovery = structuredClone(contract);
+  contractBeforeRecovery.allowedFiles = contractBeforeRecovery.allowedFiles.filter(
+    (path) => !authoringBillingRecoveryFiles.includes(path),
+  );
+  assert.equal(
+    createHash('sha256')
+      .update(`${JSON.stringify(contractBeforeRecovery, null, 2)}\n`)
+      .digest('hex'),
+    'f7f2c7bc3803ebe7516074b76fe8b31661bb55e4178dd723c116abe7274c10d5',
+  );
 });
 
 test('Agent Package Publisher Test scope opens only exact config and render wiring files', () => {
