@@ -432,6 +432,21 @@ describe('knowledge run-turn high-risk boundaries', () => {
       answer: 'API 需要在明天发布。',
       excerpt: 'API 需要在明天发布。',
     },
+    {
+      question: '1 是什么意思？',
+      answer: '第 1 次需要充值。',
+      excerpt: '第 1 次需要充值。',
+    },
+    {
+      question: '2 表示什么？',
+      answer: '第 2 次需要充值。',
+      excerpt: '第 2 次需要充值。',
+    },
+    {
+      question: '10 呢？',
+      answer: '前 10 次需要充值。',
+      excerpt: '前 10 次需要充值。',
+    },
   ])(
     'rejects an exact but irrelevant source sentence: $answer',
     ({ question, answer, excerpt }) => {

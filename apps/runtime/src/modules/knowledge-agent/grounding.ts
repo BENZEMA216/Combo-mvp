@@ -78,6 +78,8 @@ const GENERIC_HAN_TOPIC_PHRASES = Object.freeze([
 ]);
 const GENERIC_LITERAL_TOPIC_TOKENS = new Set(['api', 'http', 'https']);
 const YEAR_LITERAL_PATTERN = /^(?:19|20)\d{2}$/u;
+const LATIN_LITERAL_PATTERN = /\p{Script=Latin}/u;
+const ASCII_INTEGER_LITERAL_PATTERN = /^\d+$/u;
 
 interface LexicalFeature {
   key: string;
@@ -339,10 +341,16 @@ function anchorMatches(
 }
 
 function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
+  if (
+    anchor.kind !== 'literal' ||
+    GENERIC_LITERAL_TOPIC_TOKENS.has(anchor.text) ||
+    YEAR_LITERAL_PATTERN.test(anchor.text)
+  ) {
+    return false;
+  }
   return (
-    anchor.kind === 'literal' &&
-    !GENERIC_LITERAL_TOPIC_TOKENS.has(anchor.text) &&
-    !YEAR_LITERAL_PATTERN.test(anchor.text)
+    LATIN_LITERAL_PATTERN.test(anchor.text) ||
+    (ASCII_INTEGER_LITERAL_PATTERN.test(anchor.text) && anchor.text.length >= 3)
   );
 }
 

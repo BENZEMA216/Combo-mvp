@@ -5,7 +5,7 @@
 ## 唯一产品真源
 
 - `resolver.ts` 先核对 Runtime source SHA、发布者、Capability、Release 和 Package 白名单，再用 Registry 中的 exact `(releaseId, packageDigest)` 解析 Package；同一文件还提供单次候选提交、v1 精确 oracle 和 v2 平台验证。
-- `grounding.ts` 为中文内容提供汉字二元组、三元组和完整拉丁字母或数字 token 的确定性检索，并让长文本 excerpt 围绕实际命中。检索索引可用 NFKC 做召回；v2 计费验证单独使用 NFC，要求每个答案句保持原句的内部空白、句末标点和有序完整 token，并与某个引用 excerpt 的完整陈述句逐字相等。可结算句还必须有陈述式终止标点及明确谓语或关系信号，不接受 Markdown 标题/列表或名词型片段。平台同时要求每个答案句覆盖一个去除问法与泛化词后的中文主题锚点，或覆盖一个不是通用协议名或四位年份的完整技术 token；答案还必须包含问题之外的文本信息，每条引用直接支持至少一个句子。FAQ 问句/仅回显问题的标题、单个年份或 API token、跨句借 token 都不能触发结算。通过只表示固定 Package 文本提供了直接支持并与问题有确定性文本关联，不证明来源本身的事实真值。
+- `grounding.ts` 为中文内容提供汉字二元组、三元组和完整拉丁字母或数字 token 的确定性检索，并让长文本 excerpt 围绕实际命中。检索索引可用 NFKC 做召回；v2 计费验证单独使用 NFC，要求每个答案句保持原句的内部空白、句末标点和有序完整 token，并与某个引用 excerpt 的完整陈述句逐字相等。可结算句还必须有陈述式终止标点及明确谓语或关系信号，不接受 Markdown 标题/列表或名词型片段。平台同时要求每个答案句覆盖一个去除问法与泛化词后的中文主题锚点，或覆盖一个含拉丁字母且不是 API/HTTP/HTTPS 的完整 token，或覆盖一个至少三位且不是四位年份的纯数字 token；答案还必须包含问题之外的文本信息，每条引用直接支持至少一个句子。FAQ 问句/仅回显问题的标题、短数字、单个年份或 API token、跨句借 token 都不能触发结算。通过只表示固定 Package 文本提供了直接支持并与问题有确定性文本关联，不证明来源本身的事实真值。
 - 对象 key 只由 Package digest 和 manifest path 推导。知识必须是 Package inventory 中的 `skills/knowledge/references/knowledge-bundle.json`，不接受 latest、自由 storage key 或独立 Bundle selector。
 - manifest、AGENT.md、SKILL.md 和 Bundle 都在有界读取后核对 byte length 与 digest；UTF-8 错误、Registry 漂移、owner/scope 错配一律失败关闭。
 - Session 创建时一次冻结 Release、Package 和知识资源绑定。后续 Turn 只信 Session 真值，请求中的解析结果只做 exact assertion。
