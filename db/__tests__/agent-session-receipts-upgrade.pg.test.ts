@@ -274,7 +274,8 @@ pgDescribe('Registry 0017 to receipts 0018 upgrade on PostgreSQL 16', () => {
           'SELECT filename FROM schema_migrations ORDER BY filename',
         )
       ).rows.map(({ filename }) => filename);
-      expect(planMigrations(migrationFiles, applied, migration0018).pending).toEqual([]);
+      const sourceThrough0018 = migrationFiles.slice(0, migrationFiles.indexOf(migration0018) + 1);
+      expect(planMigrations(sourceThrough0018, applied, migration0018).pending).toEqual([]);
     } finally {
       if (upgrade) await upgrade.end().catch(() => undefined);
       if (databaseCreated) {
