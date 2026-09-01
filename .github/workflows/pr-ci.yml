@@ -220,10 +220,114 @@ jobs:
           retention-days: 14
           overwrite: true
 
+  integration_pg_redis:
+    name: CI / PostgreSQL + Redis integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MERGE_SHA: ${{ github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agora
+          POSTGRES_PASSWORD: agora
+          POSTGRES_DB: agora
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U agora"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis_hot:
+        image: redis:7
+        ports: ['6380:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the checked-out merge identity
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == pull_request ]]
+          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$MERGE_SHA" ]]
+          [[ "$(git rev-parse HEAD^1)" == "$BASE_SHA" ]]
+          [[ "$(git rev-parse HEAD^2)" == "$HEAD_SHA" ]]
+          git diff --quiet
+          git diff --cached --quiet
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Runtime workspace dependencies first
+        run: pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/shared build
+
+      - name: Prepare the isolated PostgreSQL schema
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_API_PASSWORD: ci-api-role-password
+          POSTGRES_WORKER_PASSWORD: ci-worker-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+        run: pnpm -F @cb/db migrate
+
+      - name: Record exact machine results for remaining infrastructure suites
+        env:
+          APPLICATION_ROLE_PG_TEST: '1'
+          AUTH_PG_TEST: '1'
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_API_PASSWORD: ci-api-role-password
+          POSTGRES_WORKER_PASSWORD: ci-worker-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          RUNTIME_TERMINAL_FENCE_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          RUNTIME_TERMINAL_FENCE_REDIS_URL: redis://localhost:6380
+        run: >-
+          node scripts/test-truth.mjs run-group
+          --source PR_INTEGRATION
+          --target PR
+          --candidate "$MERGE_SHA"
+          --base "$BASE_SHA"
+          --head "$HEAD_SHA"
+          --results-dir "$RUNNER_TEMP/test-truth/integration"
+
+      - name: Upload normalized integration-suite evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-test-truth-integration-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/test-truth/integration/*.result.json
+            ${{ runner.temp }}/test-truth/integration/*.machine.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
   quality:
     name: CI / quality
     if: always()
-    needs: [source_quality, billing_pg]
+    needs: [source_quality, billing_pg, integration_pg_redis]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -232,6 +336,7 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       SOURCE_RESULT: ${{ needs.source_quality.result }}
       INFRA_RESULT: ${{ needs.billing_pg.result }}
+      INTEGRATION_RESULT: ${{ needs.integration_pg_redis.result }}
     steps:
       - name: Check out the exact pull request merge source
         uses: actions/checkout@v4
@@ -271,6 +376,13 @@ jobs:
           name: combo-test-truth-infra-${{ github.run_id }}
           path: ${{ runner.temp }}/test-truth-input/infra
 
+      - name: Download remaining integration-suite evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: combo-test-truth-integration-${{ github.run_id }}
+          path: ${{ runner.temp }}/test-truth-input/integration
+
       - name: Build the truthful PR report
         run: >-
           node scripts/test-truth.mjs aggregate
@@ -279,6 +391,7 @@ jobs:
           --head "$HEAD_SHA"
           --source-result "$SOURCE_RESULT"
           --infra-result "$INFRA_RESULT"
+          --integration-result "$INTEGRATION_RESULT"
           --results-dir "$RUNNER_TEMP/test-truth-input"
           --output "$RUNNER_TEMP/test-truth-gate/report.json"
           --summary "$RUNNER_TEMP/test-truth-gate/summary.md"

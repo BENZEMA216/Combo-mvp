@@ -32,6 +32,15 @@ import {
   writeJson,
 } from './test-truth-core.mjs';
 
+export const requiredStepMinimumTestCounts = Object.freeze({
+  'TS-CONTRACT-011': Object.freeze([9, 7, 18]),
+  'TS-CONTRACT-DB-001': Object.freeze([5]),
+  'TS-UNIT-011': Object.freeze([18]),
+  'TS-ADAPTER-LOCAL-001': Object.freeze([11, 11]),
+  'TS-INFRA-REAL-PR-001': Object.freeze([3, 22, 1, 9, 1, 11, 12]),
+  'TS-INFRA-REAL-PR-002': Object.freeze([9, 14, 6, 5]),
+});
+
 export {
   acceptancePath,
   classifyInventoryBoundary,
@@ -88,6 +97,11 @@ function validateCounts(counts, label) {
 
 function validatePassingSteps(result, suite, candidate, machineReports) {
   invariant(Array.isArray(result.steps), `${suite.id} steps invalid`);
+  const minimumTestCounts = requiredStepMinimumTestCounts[suite.id];
+  invariant(
+    Array.isArray(minimumTestCounts) && minimumTestCounts.length === suite.runner.steps.length,
+    `${suite.id} required step minimum-test-count policy missing`,
+  );
   invariant(
     result.steps.length === suite.runner.steps.length,
     `${suite.id} PASS step inventory mismatch`,
@@ -213,6 +227,10 @@ function validatePassingSteps(result, suite, candidate, machineReports) {
           `${label} collected file executed zero tests: ${file}`,
         );
       }
+      invariant(
+        stepResult.counts.tests >= minimumTestCounts[index],
+        `${label} requires at least ${minimumTestCounts[index]} tests, collected ${stepResult.counts.tests}`,
+      );
       for (const testCase of stepResult.testCases) {
         exactKeys(testCase, ['id', 'file', 'name', 'status', 'durationMs'], `${label} test case`);
         invariant(testCase.status === 'PASS', `${label} PASS contains a non-PASS test case`);
@@ -474,7 +492,11 @@ export function buildAggregate({
 }) {
   validateCandidate(candidate);
   invariant(machineReports instanceof Map, 'machineReports must be a Map');
-  exactKeys(jobResults, ['sourceQuality', 'billingPostgresql'], 'jobResults');
+  exactKeys(
+    jobResults,
+    ['sourceQuality', 'billingPostgresql', 'postgresqlRedisIntegration'],
+    'jobResults',
+  );
   for (const [job, result] of Object.entries(jobResults)) {
     invariant(
       ['success', 'failure', 'cancelled', 'skipped'].includes(result),
@@ -516,7 +538,11 @@ export function buildAggregate({
         : synthesizedSuite(suite, 'NOT_RUN', 'NOT_SCHEDULED_FOR_PR');
     }
     const dependencyResult =
-      suite.resultSource === 'PR_SOURCE' ? jobResults.sourceQuality : jobResults.billingPostgresql;
+      {
+        PR_SOURCE: jobResults.sourceQuality,
+        PR_INFRA: jobResults.billingPostgresql,
+        PR_INTEGRATION: jobResults.postgresqlRedisIntegration,
+      }[suite.resultSource] ?? 'skipped';
     const producer = bySuite.get(suite.id);
     if (dependencyResult !== 'success') {
       if (producer) {
@@ -726,8 +752,8 @@ function main() {
   if (command === 'run-group') {
     const source = requiredOption(options, 'source');
     invariant(
-      source === 'PR_SOURCE' || source === 'PR_INFRA',
-      '--source must be PR_SOURCE or PR_INFRA',
+      source === 'PR_SOURCE' || source === 'PR_INFRA' || source === 'PR_INTEGRATION',
+      '--source must be PR_SOURCE, PR_INFRA, or PR_INTEGRATION',
     );
     const target = requiredOption(options, 'target');
     invariant(target === 'PR', 'only the PR target is implemented');
@@ -772,6 +798,7 @@ function main() {
       jobResults: {
         sourceQuality: requiredOption(options, 'source-result'),
         billingPostgresql: requiredOption(options, 'infra-result'),
+        postgresqlRedisIntegration: requiredOption(options, 'integration-result'),
       },
       candidate,
       acceptance,

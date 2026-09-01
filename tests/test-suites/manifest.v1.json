@@ -356,11 +356,11 @@
       ]
     },
     {
-      "id": "TS-INFRA-REAL-MAIN-002",
-      "name": "Post-merge PostgreSQL and Redis integrations",
+      "id": "TS-INFRA-REAL-PR-002",
+      "name": "Remaining pre-merge PostgreSQL and Redis integrations",
       "layer": "INFRA_REAL",
       "implementation": "AVAILABLE",
-      "resultSource": "MAIN_INTEGRATION",
+      "resultSource": "PR_INTEGRATION",
       "acceptance": {
         "relationship": "SUPPORTING",
         "journeyIds": [],
@@ -377,18 +377,6 @@
       "runner": {
         "kind": "STEPS",
         "steps": [
-          {
-            "kind": "COMMAND",
-            "cwd": ".",
-            "argv": ["bash", "scripts/integration/db-migrate.sh"],
-            "requiredEnvNames": [
-              "DATABASE_URL",
-              "POSTGRES_API_PASSWORD",
-              "POSTGRES_RUNTIME_PASSWORD",
-              "POSTGRES_WORKER_PASSWORD"
-            ],
-            "timeoutSeconds": 1200
-          },
           {
             "kind": "VITEST",
             "cwd": "db",
@@ -412,33 +400,38 @@
           {
             "kind": "VITEST",
             "cwd": "apps/runtime",
-            "argv": [
-              "src/__tests__/session-consistency.integration.test.ts",
-              "src/__tests__/terminal-fence.integration.test.ts"
-            ],
+            "argv": ["src/__tests__/terminal-fence.integration.test.ts"],
             "requiredEnvNames": [
               "RUNTIME_TERMINAL_FENCE_DATABASE_URL",
               "RUNTIME_TERMINAL_FENCE_REDIS_URL"
             ],
             "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "apps/runtime",
+            "argv": ["src/__tests__/session-consistency.integration.test.ts"],
+            "requiredEnvNames": ["RUNTIME_TERMINAL_FENCE_DATABASE_URL"],
+            "timeoutSeconds": 600
           }
         ]
       },
       "defaults": {
-        "pr": "NOT_SCHEDULED",
+        "pr": "RUN_REQUIRED",
         "main": "RUN_REQUIRED",
         "manual": "AVAILABLE"
       },
       "proves": [
         {
-          "id": "CLAIM-MAIN-INFRA-INTEGRATIONS",
-          "statement": "The remaining selected PostgreSQL and Redis integration contracts passed on the tested main candidate."
+          "id": "CLAIM-PR-INFRA-INTEGRATIONS",
+          "statement": "The selected authentication, application-role, terminal-fence, and session-consistency contracts passed against ephemeral PostgreSQL 16 and Redis 7 on the exact pull request candidate."
         }
       ],
       "doesNotProve": [
         "A browser Agent journey works.",
-        "The real Codex Desktop Host works.",
-        "These suites ran before merge."
+        "A deployed environment or cross-user journey works.",
+        "The dual-Redis queue/cache policy shell assertions ran.",
+        "The real Codex Desktop Host works."
       ]
     },
     {

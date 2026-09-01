@@ -13,6 +13,7 @@ import {
   normalizeVitestReport,
   parseManifest,
   renderSummary,
+  requiredStepMinimumTestCounts,
   repoRoot,
   validateRepositoryManifest,
 } from './test-truth.mjs';
@@ -80,13 +81,17 @@ function passResult(suite) {
         ? step.argv.map((argument) => (step.cwd === '.' ? argument : `${step.cwd}/${argument}`))
         : []
     ).sort();
-    const testCases = files.map((file, testIndex) => ({
-      id: `${step.kind === 'NODE_TEST' ? 'node' : 'vitest'}:${file}:fixture ${testIndex}`,
-      file,
-      name: `fixture ${testIndex}`,
-      status: 'PASS',
-      durationMs: 1,
-    }));
+    const minimumTestCount = requiredStepMinimumTestCounts[suite.id]?.[index] ?? files.length;
+    const testCases = Array.from({ length: minimumTestCount }, (_, testIndex) => {
+      const file = files[testIndex % files.length];
+      return {
+        id: `${step.kind === 'NODE_TEST' ? 'node' : 'vitest'}:${file}:fixture ${testIndex}`,
+        file,
+        name: `fixture ${testIndex}`,
+        status: 'PASS',
+        durationMs: 1,
+      };
+    });
     const stepCounts = {
       tests: testCases.length,
       passed: testCases.length,
@@ -175,7 +180,11 @@ function aggregate(overrides = {}) {
     manifestSha256,
     results,
     machineReports,
-    jobResults: { sourceQuality: 'success', billingPostgresql: 'success' },
+    jobResults: {
+      sourceQuality: 'success',
+      billingPostgresql: 'success',
+      postgresqlRedisIntegration: 'success',
+    },
     candidate,
     acceptance,
     coverage,
@@ -258,6 +267,24 @@ test('suite selectors and semantic claims cannot drift beyond their machine poli
       ['__tests__/pending-usage-recovery-upgrade.pg.test.ts'],
     ],
     'database evidence must retain the proven non-interfering groups from db-migrate.sh',
+  );
+
+  const remainingInfrastructure = manifest.suites.find(
+    (suite) => suite.id === 'TS-INFRA-REAL-PR-002',
+  );
+  assert.equal(remainingInfrastructure.resultSource, 'PR_INTEGRATION');
+  assert.equal(remainingInfrastructure.defaults.pr, 'RUN_REQUIRED');
+  assert.deepEqual(
+    remainingInfrastructure.runner.steps
+      .filter((step) => step.kind === 'VITEST')
+      .map((step) => step.argv),
+    [
+      ['__tests__/application-database-roles.pg.test.ts'],
+      ['src/__tests__/account-auth.pg.test.ts'],
+      ['src/__tests__/terminal-fence.integration.test.ts'],
+      ['src/__tests__/session-consistency.integration.test.ts'],
+    ],
+    'remaining infrastructure evidence must retain all four exact machine selectors',
   );
 
   const uncovered = structuredClone(manifest);
@@ -576,7 +603,7 @@ describe('native Node suite event compatibility', () => {
   });
 });
 
-test('an aggregate passes only with exact candidate-bound results from both required jobs', () => {
+test('an aggregate passes only with exact candidate-bound results from all required jobs', () => {
   const report = aggregate();
   assert.equal(report.decision, 'PASS');
   assert.deepEqual(
@@ -587,6 +614,7 @@ test('an aggregate passes only with exact candidate-bound results from both requ
       'TS-UNIT-011',
       'TS-ADAPTER-LOCAL-001',
       'TS-INFRA-REAL-PR-001',
+      'TS-INFRA-REAL-PR-002',
     ],
   );
   assert.equal(
@@ -610,7 +638,11 @@ test('a malformed or internally inconsistent acceptance ledger is INVALID and fa
   partial.gates = partial.gates.slice(0, 2);
   const report = aggregate({
     acceptance: partial,
-    jobResults: { sourceQuality: 'failure', billingPostgresql: 'success' },
+    jobResults: {
+      sourceQuality: 'failure',
+      billingPostgresql: 'success',
+      postgresqlRedisIntegration: 'success',
+    },
   });
   assert.equal(report.decision, 'FAIL');
   assert.equal(report.productAcceptance.productStatus, 'INVALID');
@@ -688,11 +720,12 @@ test('missing, blocked, mismatched, and unscheduled producer results fail the ag
 
   const emptySelectedFile = requiredResults();
   const emptyFileStep = emptySelectedFile[0].steps[0];
+  const removedTestCases = emptyFileStep.testCases.length - 1;
   emptyFileStep.testCases = emptyFileStep.testCases.slice(0, 1);
-  emptyFileStep.counts.tests -= 1;
-  emptyFileStep.counts.passed -= 1;
-  emptySelectedFile[0].counts.tests -= 1;
-  emptySelectedFile[0].counts.passed -= 1;
+  emptyFileStep.counts.tests -= removedTestCases;
+  emptyFileStep.counts.passed -= removedTestCases;
+  emptySelectedFile[0].counts.tests -= removedTestCases;
+  emptySelectedFile[0].counts.passed -= removedTestCases;
   const emptyFileReports = machineReportsFor(emptySelectedFile);
   emptyFileStep.machineReportSha256 = emptyFileReports.get(emptyFileStep.machineReportRef).sha256;
   const emptyFileReport = aggregate({
@@ -702,10 +735,69 @@ test('missing, blocked, mismatched, and unscheduled producer results fail the ag
   assert.equal(emptyFileReport.decision, 'FAIL');
   assert.match(emptyFileReport.errors.join('\n'), /collected file executed zero tests/);
 
+  const reducedCaseInventory = requiredResults();
+  const remainingInfrastructure = reducedCaseInventory.find(
+    (result) => result.suiteId === 'TS-INFRA-REAL-PR-002',
+  );
+  const reducedStep = remainingInfrastructure.steps[0];
+  reducedStep.testCases.pop();
+  reducedStep.counts.tests -= 1;
+  reducedStep.counts.passed -= 1;
+  remainingInfrastructure.counts.tests -= 1;
+  remainingInfrastructure.counts.passed -= 1;
+  const reducedReports = machineReportsFor(reducedCaseInventory);
+  reducedStep.machineReportSha256 = reducedReports.get(reducedStep.machineReportRef).sha256;
+  const reducedReport = aggregate({
+    results: reducedCaseInventory,
+    machineReports: reducedReports,
+  });
+  assert.equal(reducedReport.decision, 'FAIL');
+  assert.match(reducedReport.errors.join('\n'), /requires at least 9 tests, collected 8/);
+
+  const expandedCaseInventory = requiredResults();
+  const expandedInfrastructure = expandedCaseInventory.find(
+    (result) => result.suiteId === 'TS-INFRA-REAL-PR-002',
+  );
+  const expandedStep = expandedInfrastructure.steps[0];
+  expandedStep.testCases.push({
+    id: `vitest:${expandedStep.collectedFiles[0]}:new candidate case`,
+    file: expandedStep.collectedFiles[0],
+    name: 'new candidate case',
+    status: 'PASS',
+    durationMs: 1,
+  });
+  expandedStep.counts.tests += 1;
+  expandedStep.counts.passed += 1;
+  expandedInfrastructure.counts.tests += 1;
+  expandedInfrastructure.counts.passed += 1;
+  const expandedReports = machineReportsFor(expandedCaseInventory);
+  expandedStep.machineReportSha256 = expandedReports.get(expandedStep.machineReportRef).sha256;
+  assert.equal(
+    aggregate({ results: expandedCaseInventory, machineReports: expandedReports }).decision,
+    'PASS',
+  );
+
+  const failedIntegration = aggregate({
+    jobResults: {
+      sourceQuality: 'success',
+      billingPostgresql: 'success',
+      postgresqlRedisIntegration: 'failure',
+    },
+  });
+  assert.equal(failedIntegration.decision, 'FAIL');
+  assert.deepEqual(
+    failedIntegration.suites.find((suite) => suite.suiteId === 'TS-INFRA-REAL-PR-002').reasonCodes,
+    ['DEPENDENCY_JOB_FAILURE'],
+  );
+
   assert.throws(
     () =>
       aggregate({
-        jobResults: { sourceQuality: 'success', billingPostgresql: 'not-a-job-result' },
+        jobResults: {
+          sourceQuality: 'success',
+          billingPostgresql: 'not-a-job-result',
+          postgresqlRedisIntegration: 'success',
+        },
       }),
     /jobResults\.billingPostgresql invalid/,
   );

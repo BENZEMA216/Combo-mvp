@@ -115,6 +115,7 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(maintenanceModeBootstrap.paths.includes(contractPath), false);
   assert.equal(policyPaths.includes(legacyContractPath), true);
   assert.equal(policyPaths.includes(contractPath), true);
+  assert.equal(policyPaths.includes('docs/deployment-topology.md'), true);
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
   assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
@@ -125,14 +126,19 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(source, `${JSON.stringify(contract, null, 2)}\n`);
 });
 
-test('the PR quality context aggregates source and PostgreSQL truth evidence', () => {
+test('the PR quality context aggregates source, PostgreSQL, and Redis truth evidence', () => {
   const pullRequestWorkflow = readFileSync(join(repo, '.github/workflows/pr-ci.yml'), 'utf8');
   const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
   assert.match(pullRequestWorkflow, /fetch-depth: 0/);
   assert.match(pullRequestWorkflow, /run: pnpm test:fast/);
   assert.match(pullRequestWorkflow, /source_quality:/);
-  assert.match(pullRequestWorkflow, /needs: \[source_quality, billing_pg\]/);
+  assert.match(pullRequestWorkflow, /needs: \[source_quality, billing_pg, integration_pg_redis\]/);
   assert.match(pullRequestWorkflow, /name: CI \/ quality/);
+  assert.match(pullRequestWorkflow, /--source PR_INTEGRATION/);
+  assert.match(pullRequestWorkflow, /run: pnpm -F @cb\/db migrate/);
+  assert.doesNotMatch(pullRequestWorkflow, /EXPECTED_MIGRATION_HEAD/);
+  assert.match(pullRequestWorkflow, /--integration-result "\$INTEGRATION_RESULT"/);
+  assert.match(pullRequestWorkflow, /combo-test-truth-integration-\$\{\{ github\.run_id \}\}/);
   assert.match(pullRequestWorkflow, /node scripts\/test-truth\.mjs aggregate/);
   assert.match(pullRequestWorkflow, /retention-days: 14/);
   assert.match(
@@ -392,7 +398,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
     ...allowedKnowledgeAuthoringFiles,
     ...allowedKnowledgeInfraFiles,
-    ...allowedControlFiles,
+    ...allowedControlFiles.filter((path) => path !== 'docs/deployment-topology.md'),
   ].map((path) => entry(path));
 
   assert.equal(policyPaths.includes('.github/workflows/pr-ci.yml'), true);
@@ -412,6 +418,14 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     );
   }
   assert.equal(assessPullRequest(contract, knowledgeAgentTestSlice).mode, 'PRODUCT');
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        ...knowledgeAgentTestSlice,
+        entry('docs/deployment-topology.md'),
+      ]),
+    /governance-only/,
+  );
   assert.equal(assessPullRequest(contract, [entry('infra/README.md')]).mode, 'PRODUCT');
   assert.deepEqual(
     contract.allowedFiles.filter(
