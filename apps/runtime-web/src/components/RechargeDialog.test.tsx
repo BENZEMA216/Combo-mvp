@@ -772,11 +772,16 @@ describe('RecoveryRechargeDialog', () => {
     mocks.refetchRecoveryOrder.mockResolvedValue({ data: failed, error: null });
     const replacementIntent = '77777777-7777-4777-8777-777777777777';
     vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(replacementIntent);
-    mocks.createRecoveryOrder.mockResolvedValue(
-      recoveryOrder(initial, replacementIntent, 'pending', {
-        paymentAction: { kind: 'qr_code', url: 'https://cashier.test/replacement' },
-      }),
-    );
+    const replacement = recoveryOrder(initial, replacementIntent, 'pending', {
+      paymentAction: { kind: 'qr_code', url: 'https://cashier.test/replacement' },
+    });
+    mocks.createRecoveryOrder.mockResolvedValue(replacement);
+    mocks.refetchRecoveryOrder
+      .mockResolvedValueOnce({ data: failed, error: null })
+      .mockImplementationOnce(async () => {
+        mocks.recoveryOrder = replacement;
+        return { data: replacement, error: null };
+      });
     const onRefresh = vi.fn();
 
     function Harness() {
@@ -814,6 +819,76 @@ describe('RecoveryRechargeDialog', () => {
       onRefresh.mock.invocationCallOrder[0]!,
     );
     expect(await screen.findByRole('img', { name: '乐收赢充值付款二维码' })).toBeInTheDocument();
+  });
+
+  it('lets an authoritative failed order replace a local pending snapshot and enables replacement', async () => {
+    const initial = pendingRecovery();
+    const localPending = recoveryOrder(initial, initial.activeRechargeIntentId, 'pending', {
+      paymentAction: { kind: 'qr_code', url: 'https://cashier.test/local-pending' },
+    });
+    const replacementIntent = '77777777-7777-4777-8777-777777777777';
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(replacementIntent);
+    mocks.createRecoveryOrder
+      .mockResolvedValueOnce(localPending)
+      .mockResolvedValueOnce(recoveryOrder(initial, replacementIntent, 'pending'));
+    const onRefreshRecovery = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce({ ...initial, activeRechargeIntentId: replacementIntent });
+    const props = {
+      recovery: initial,
+      onClose: vi.fn(),
+      onCredited: vi.fn(async () => undefined),
+      onRefreshRecovery,
+      onAbandon: vi.fn(async () => undefined),
+    };
+    const { rerender } = render(<RecoveryRechargeDialog {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '按冻结价格创建充值订单' }));
+    expect(await screen.findByRole('img', { name: '乐收赢充值付款二维码' })).toBeInTheDocument();
+    const failed = recoveryOrder(initial, initial.activeRechargeIntentId, 'failed');
+    mocks.recoveryOrder = failed;
+    mocks.refetchRecoveryOrder
+      .mockResolvedValueOnce({ data: failed, error: null })
+      .mockResolvedValueOnce({
+        data: recoveryOrder(initial, replacementIntent, 'pending'),
+        error: null,
+      });
+    rerender(<RecoveryRechargeDialog {...props} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '新建一笔充值' }));
+    await waitFor(() =>
+      expect(mocks.createRecoveryOrder).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rechargeIntentId: replacementIntent }),
+      ),
+    );
+  });
+
+  it('shows replacement when authoritative reconciliation stops after a local pending snapshot', async () => {
+    const initial = pendingRecovery();
+    mocks.createRecoveryOrder.mockResolvedValue(
+      recoveryOrder(initial, initial.activeRechargeIntentId, 'pending', {
+        paymentAction: { kind: 'qr_code', url: 'https://cashier.test/local-pending' },
+      }),
+    );
+    const props = {
+      recovery: initial,
+      onClose: vi.fn(),
+      onCredited: vi.fn(async () => undefined),
+      onRefreshRecovery: vi.fn(async () => initial),
+      onAbandon: vi.fn(async () => undefined),
+    };
+    const { rerender } = render(<RecoveryRechargeDialog {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '按冻结价格创建充值订单' }));
+    expect(await screen.findByRole('img', { name: '乐收赢充值付款二维码' })).toBeInTheDocument();
+    mocks.recoveryOrder = recoveryOrder(initial, initial.activeRechargeIntentId, 'pending', {
+      reconciliationActive: false,
+    });
+    rerender(<RecoveryRechargeDialog {...props} />);
+
+    expect(await screen.findByText('这笔订单已停止主动查单')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '新建一笔充值' })).toBeEnabled();
   });
 
   it('resumes the credited old intent once even when the server points at a replacement', async () => {

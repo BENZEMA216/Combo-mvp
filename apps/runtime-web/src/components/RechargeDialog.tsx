@@ -453,11 +453,8 @@ export function RecoveryRechargeDialog({
 
   const queriedOrder = orderQ.data ?? null;
   const order =
-    queriedOrder?.status === 'credited'
-      ? queriedOrder
-      : createdOrder?.rechargeIntentId === recovery.activeRechargeIntentId
-        ? createdOrder
-        : queriedOrder;
+    queriedOrder ??
+    (createdOrder?.rechargeIntentId === recovery.activeRechargeIntentId ? createdOrder : null);
   const trustedOrder = order && recoveryOrderMatches(order, recovery) ? order : null;
   const orderMismatch = order !== null && trustedOrder === null;
 
@@ -532,6 +529,12 @@ export function RecoveryRechargeDialog({
         refreshed.activeRechargeIntentId !== rechargeIntentId
       ) {
         throw new Error('recovery mismatch');
+      }
+      if (queriedOrder) {
+        const latest = await orderQ.refetch();
+        if (latest.error || !latest.data || !recoveryOrderMatches(latest.data, refreshed)) {
+          throw new Error('order refresh failed');
+        }
       }
       setCreatedOrder(next);
     } catch (cause) {

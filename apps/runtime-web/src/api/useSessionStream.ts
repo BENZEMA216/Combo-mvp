@@ -537,7 +537,12 @@ export function useSessionStream(
 
   const submitMessage = async (
     text: string,
-    resume?: { creditedIntentId: string; usageId: string; serverRecovery?: true },
+    resume?: {
+      creditedIntentId: string;
+      usageId: string;
+      serverRecovery?: true;
+      signal?: AbortSignal;
+    },
   ): Promise<MessageView> => {
     const trimmed = text.trim();
     if (!sessionId) throw new Error('会话还没有准备好，请稍后重试。');
@@ -602,7 +607,9 @@ export function useSessionStream(
     sendInFlightRef.current = { sessionId: requestSessionId, token: requestToken };
     dispatch({ kind: 'turn-submitting' });
     try {
-      const accepted = await sendSessionMessage(requestSessionId, trimmed, usageId);
+      const accepted = resume?.signal
+        ? await sendSessionMessage(requestSessionId, trimmed, usageId, resume.signal)
+        : await sendSessionMessage(requestSessionId, trimmed, usageId);
       const { message } = accepted;
       const turnId = message.turnId;
       if (!turnId) {
@@ -824,7 +831,7 @@ export function useSessionStream(
         }
         await coordinateRecoveryResume(
           exact.usageId,
-          async (lockedRecovery) => {
+          async (lockedRecovery, { signal }) => {
             if (
               !pendingRecoveryMatchesBinding(lockedRecovery, requestSessionId, binding) ||
               lockedRecovery.usageId !== exact.usageId ||
@@ -837,6 +844,7 @@ export function useSessionStream(
               creditedIntentId,
               usageId: lockedRecovery.usageId,
               serverRecovery: true,
+              signal,
             });
           },
           { signal: resumeAbortController.signal },

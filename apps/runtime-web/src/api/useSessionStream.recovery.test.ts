@@ -88,7 +88,7 @@ beforeEach(() => {
   coordinateMock.mockReset();
   exactRecoveryMock.mockReset();
   coordinateMock.mockImplementation(async (usageId, action) =>
-    action(await exactRecoveryMock(usageId)),
+    action(await exactRecoveryMock(usageId), { signal: new AbortController().signal }),
   );
   resolveRecoveryMock.mockReset();
   resolveRecoveryMock.mockResolvedValue(null);
@@ -241,8 +241,36 @@ describe('knowledge recovery uses server truth', () => {
     expect(orderByRecoveryMock).toHaveBeenCalledWith(recovery.usageId);
     expect(coordinateMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenCalledTimes(1);
-    expect(sendMock).toHaveBeenCalledWith(SESSION_ID, recovery.requestText, recovery.usageId);
+    expect(sendMock).toHaveBeenCalledWith(
+      SESSION_ID,
+      recovery.requestText,
+      recovery.usageId,
+      expect.anything(),
+    );
     expect(result.current.pendingRecovery).toBeNull();
+  });
+
+  it('keeps exact server recovery visible when bounded resume fails closed', async () => {
+    const recovery = recoveryView(OLD_CREDITED_INTENT, 'server-owned bounded resume');
+    resolveRecoveryMock.mockResolvedValue(recovery);
+    exactRecoveryMock.mockResolvedValue(recovery);
+    orderByRecoveryMock.mockResolvedValue(
+      recoveryOrder(recovery.usageId, OLD_CREDITED_INTENT, 'credited'),
+    );
+    coordinateMock.mockRejectedValueOnce(new Error('原任务恢复超时，服务端恢复状态保持不变。'));
+    const { result } = renderHook(() => useSessionStream(SESSION_ID, DETAIL), {
+      wrapper: wrapper(),
+    });
+    await vi.waitFor(() => expect(result.current.pendingRecovery).toEqual(recovery));
+
+    await act(async () => {
+      await expect(result.current.resumeAfterRecharge(OLD_CREDITED_INTENT)).rejects.toThrow(
+        '原任务恢复超时',
+      );
+    });
+
+    expect(result.current.pendingRecovery).toEqual(recovery);
+    expect(result.current.recoveryDialogOpen).toBe(true);
   });
 
   it('keeps recovery visible on abandon 409 and clears it only after success', async () => {

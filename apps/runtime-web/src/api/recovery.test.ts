@@ -295,7 +295,10 @@ describe('pending usage recovery server truth', () => {
 
     expect(request).toHaveBeenCalled();
     expect(businessPost).toHaveBeenCalledTimes(1);
-    expect(businessPost).toHaveBeenCalledWith(recovery);
+    expect(businessPost).toHaveBeenCalledWith(
+      recovery,
+      expect.objectContaining({ signal: expect.anything() }),
+    );
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
@@ -335,6 +338,97 @@ describe('pending usage recovery server truth', () => {
     await rejected;
     expect(businessPost).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds a hung business POST from one deadline acquired inside the browser lock', async () => {
+    vi.useFakeTimers();
+    installSerialBrowserLock();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, { data: { recovery }, meta: { traceId: 'locked-exact' } }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    let actionSignal: AbortSignal | undefined;
+    const businessPost = vi.fn(
+      (
+        _lockedRecovery: PendingUsageRecoveryView,
+        context?: { signal: AbortSignal },
+      ): Promise<void> => {
+        const signal = context?.signal;
+        actionSignal = signal;
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+
+    const operation = coordinateRecoveryResume(
+      '66666666-6666-4666-8666-666666666666',
+      businessPost,
+      { terminalWaitMs: 50 },
+    );
+    let outcome = 'pending';
+    void operation.then(
+      () => {
+        outcome = 'resolved';
+      },
+      () => {
+        outcome = 'rejected';
+      },
+    );
+    await vi.advanceTimersByTimeAsync(51);
+
+    expect(outcome).toBe('rejected');
+    expect(actionSignal?.aborted).toBe(true);
+    expect(businessPost).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts a hung business POST and releases the browser lock without another POST', async () => {
+    installSerialBrowserLock();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, { data: { recovery }, meta: { traceId: 'locked-exact' } }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    let markActionStarted!: () => void;
+    const actionStarted = new Promise<void>((resolve) => {
+      markActionStarted = resolve;
+    });
+    let actionSignal: AbortSignal | undefined;
+    const businessPost = vi.fn(
+      (
+        _lockedRecovery: PendingUsageRecoveryView,
+        context?: { signal: AbortSignal },
+      ): Promise<void> => {
+        const signal = context?.signal;
+        actionSignal = signal;
+        markActionStarted();
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+    );
+
+    const operation = coordinateRecoveryResume(
+      '77777777-7777-4777-8777-777777777777',
+      businessPost,
+      { signal: controller.signal },
+    );
+    await actionStarted;
+    controller.abort();
+
+    await expect(operation).rejects.toThrow('已取消');
+    expect(actionSignal?.aborted).toBe(true);
+    expect(businessPost).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('aborts a hung terminal read while preserving the admitted server recovery', async () => {

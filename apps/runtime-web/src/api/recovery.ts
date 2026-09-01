@@ -21,6 +21,10 @@ interface RecoveryResumeOptions {
   terminalWaitMs?: number;
 }
 
+interface RecoveryResumeContext {
+  signal: AbortSignal;
+}
+
 function recoveryProtocolError(): Error {
   return new Error('待恢复任务与服务端状态不一致，请刷新页面后重试。');
 }
@@ -44,9 +48,14 @@ export async function listPendingUsageRecoveries(
   return parseList(await apiGet<unknown>(`/runtime/pending-usage-recoveries${query}`));
 }
 
-export async function getPendingUsageRecovery(usageId: string): Promise<PendingUsageRecoveryView> {
+export async function getPendingUsageRecovery(
+  usageId: string,
+  signal?: AbortSignal,
+): Promise<PendingUsageRecoveryView> {
   return parseExact(
-    await apiGet<unknown>(`/runtime/pending-usage-recoveries/${encodeURIComponent(usageId)}`),
+    await apiGet<unknown>(`/runtime/pending-usage-recoveries/${encodeURIComponent(usageId)}`, {
+      signal,
+    }),
   );
 }
 
@@ -104,31 +113,25 @@ export function pendingRecoveryMatchesBinding(
 
 async function underBrowserResumeLock(
   usageId: string,
-  action: (recovery: PendingUsageRecoveryView) => Promise<void>,
+  action: (recovery: PendingUsageRecoveryView, context: RecoveryResumeContext) => Promise<void>,
   options: RecoveryResumeOptions,
 ): Promise<void> {
   const terminalPollIntervalMs =
     options.terminalPollIntervalMs ?? RECOVERY_TERMINAL_POLL_INTERVAL_MS;
   const terminalWaitMs = options.terminalWaitMs ?? RECOVERY_TERMINAL_WAIT_MS;
-  const aborted = (): Error => new Error('原任务终态确认已取消，服务端恢复状态保持不变。');
-  const bounded = async <T>(operation: Promise<T>, deadline: number): Promise<T> => {
-    if (options.signal?.aborted) throw aborted();
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('原任务终态确认超时，服务端恢复状态保持不变。');
+  const aborted = (): Error => new Error('原任务恢复已取消，服务端恢复状态保持不变。');
+  const timedOut = (): Error => new Error('原任务恢复超时，服务端恢复状态保持不变。');
+  const abortable = async <T>(operation: Promise<T>, signal: AbortSignal): Promise<T> => {
+    if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : aborted();
     return await new Promise<T>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        cleanup();
-        reject(new Error('原任务终态确认超时，服务端恢复状态保持不变。'));
-      }, remaining);
       const onAbort = () => {
         cleanup();
-        reject(aborted());
+        reject(signal.reason instanceof Error ? signal.reason : aborted());
       };
       const cleanup = () => {
-        window.clearTimeout(timeout);
-        options.signal?.removeEventListener('abort', onAbort);
+        signal.removeEventListener('abort', onAbort);
       };
-      options.signal?.addEventListener('abort', onAbort, { once: true });
+      signal.addEventListener('abort', onAbort, { once: true });
       operation.then(
         (value) => {
           cleanup();
@@ -141,38 +144,51 @@ async function underBrowserResumeLock(
       );
     });
   };
-  const waitToPoll = async (deadline: number): Promise<void> => {
+  const waitToPoll = async (signal: AbortSignal): Promise<void> => {
     if (terminalPollIntervalMs <= 0) return;
-    await bounded(
+    await abortable(
       new Promise<void>((resolve) => {
         window.setTimeout(resolve, terminalPollIntervalMs);
       }),
-      deadline,
+      signal,
     );
   };
   const execute = async (): Promise<void> => {
-    // Re-read inside the cross-tab lock. If another tab already accepted the same usage, the
-    // server row is gone and this tab performs no business POST. Browser storage is never truth.
-    let recovery: PendingUsageRecoveryView;
+    const controller = new AbortController();
+    const cancel = () => controller.abort(aborted());
+    if (options.signal?.aborted) cancel();
+    else options.signal?.addEventListener('abort', cancel, { once: true });
+    const timeout = window.setTimeout(() => controller.abort(timedOut()), terminalWaitMs);
     try {
-      recovery = await getPendingUsageRecovery(usageId);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) return;
-      throw error;
-    }
-    await action(recovery);
-    // Runtime acknowledges admission with 202 while the recovery remains active until the Turn
-    // reaches a receipt-backed terminal. Keep the cross-tab lock across that window; otherwise a
-    // waiting tab would observe the still-active row and send a second replay POST.
-    const deadline = Date.now() + terminalWaitMs;
-    for (;;) {
+      // The one lock-owned deadline covers the authoritative preflight, POST, and terminal poll.
+      let recovery: PendingUsageRecoveryView;
       try {
-        await bounded(getPendingUsageRecovery(usageId), deadline);
+        recovery = await abortable(
+          getPendingUsageRecovery(usageId, controller.signal),
+          controller.signal,
+        );
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return;
-        throw new Error('无法确认原任务终态，服务端恢复状态保持不变。', { cause: error });
+        throw error;
       }
-      await waitToPoll(deadline);
+      if (controller.signal.aborted) {
+        throw controller.signal.reason instanceof Error ? controller.signal.reason : aborted();
+      }
+      await abortable(action(recovery, { signal: controller.signal }), controller.signal);
+      for (;;) {
+        try {
+          await abortable(getPendingUsageRecovery(usageId, controller.signal), controller.signal);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 404) return;
+          throw new Error('无法确认原任务终态，服务端恢复状态保持不变。', {
+            cause: error,
+          });
+        }
+        await waitToPoll(controller.signal);
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', cancel);
     }
   };
   const locks = typeof navigator === 'undefined' ? undefined : navigator.locks;
@@ -193,7 +209,7 @@ async function underBrowserResumeLock(
  */
 export async function coordinateRecoveryResume(
   usageId: string,
-  action: (recovery: PendingUsageRecoveryView) => Promise<void>,
+  action: (recovery: PendingUsageRecoveryView, context: RecoveryResumeContext) => Promise<void>,
   options: RecoveryResumeOptions = {},
 ): Promise<void> {
   const existing = inProcessResumes.get(usageId);

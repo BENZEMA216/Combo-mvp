@@ -169,11 +169,13 @@ export function sendSessionMessage(
   sessionId: string,
   text: string,
   usageId: string,
+  signal?: AbortSignal,
 ): Promise<SendSessionMessageResult> {
-  return apiPost<SendSessionMessageResult>(`/runtime/sessions/${sessionId}/messages`, {
-    text,
-    usageId,
-  });
+  return apiPost<SendSessionMessageResult>(
+    `/runtime/sessions/${sessionId}/messages`,
+    { text, usageId },
+    { signal },
+  );
 }
 
 /** 打断当前轮（无进行中的轮 → interrupted=false，幂等）。 */
