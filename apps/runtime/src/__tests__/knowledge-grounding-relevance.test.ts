@@ -142,6 +142,7 @@ describe('knowledge grounding adversarial relevance', () => {
       question: '用户需要支付多少？',
       answer: '用户需要支付 100 元的说明需要审核。',
     },
+    { question: '用户如何支付服务费？', answer: '用户支付服务费。' },
   ])('rejects a short action used as an object or nominal: $answer', (fixture) => {
     expectRejected(fixture);
   });
@@ -150,6 +151,17 @@ describe('knowledge grounding adversarial relevance', () => {
     { question: '价格是多少？', answer: '价格是很多。' },
     { question: '退款材料需要多少？', answer: '退款材料需要很多。' },
     { question: '登录方式是哪种？', answer: '登录方式是很多。' },
+    { question: '登录方式是哪种？', answer: '登录方式是多种。' },
+    { question: '登录方式是哪种？', answer: '登录方式是若干种。' },
+    { question: '登录方式是哪种？', answer: '登录方式是非常多。' },
+    { question: '登录方式是哪种？', answer: '登录方式是某种。' },
+    { question: '登录方式是哪种？', answer: '登录方式是很多选项。' },
+    { question: '登录方式是哪种？', answer: '登录方式是任意选项。' },
+    { question: '登录方式是哪种？', answer: '登录方式是很多登录方式。' },
+    { question: '登录方式是哪种？', answer: '登录方式是任意一种选项。' },
+    { question: '登录方式是哪种？', answer: '登录方式是许多可选方式。' },
+    { question: '登录方式是哪种？', answer: '登录方式是两种。' },
+    { question: '登录方式是哪种？', answer: '登录方式是数种选项。' },
   ])('rejects an untyped value for a trailing quantity or choice slot: $answer', (fixture) => {
     expectRejected(fixture);
   });
@@ -159,9 +171,15 @@ describe('knowledge grounding adversarial relevance', () => {
     { question: '退款材料需要多少？', answer: '退款材料需要 2 份。' },
     { question: '登录方式是哪种？', answer: '登录方式是验证码。' },
     { question: '用户需要支付多少？', answer: '用户需要支付 100 元。' },
-  ])('accepts a typed value for a trailing quantity or choice slot: $answer', (fixture) => {
-    expectAccepted(fixture);
-  });
+    { question: '用户如何支付？', answer: '用户支付 100 元服务费并完成订单。' },
+    { question: '用户如何支付服务费？', answer: '用户支付 100 元服务费并完成订单。' },
+    { question: '用户需要支付多少服务费？', answer: '用户需要支付 100 元服务费。' },
+  ])(
+    'accepts a typed value for a trailing quantity or choice slot: $question -> $answer',
+    (fixture) => {
+      expectAccepted(fixture);
+    },
+  );
 
   it.each([
     { question: '用户如何支付？', answer: '据称用户支付 100 元并完成订单。' },

@@ -2,7 +2,6 @@ import type {
   CreatorKnowledgeBundle,
   CreatorKnowledgeChunk,
 } from '@cb/creator-agent-protocol/knowledge-bundle';
-
 const EXCERPT_MAX_CODE_POINTS = 1_200;
 const HAN_PATTERN = /\p{Script=Han}+/gu;
 const LITERAL_PATTERN = /[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
@@ -18,10 +17,12 @@ const QUESTION_CLAUSE_PATTERN = /[^，,。；;！？!?\n]+/gu;
 const ANSWER_SUBCLAUSE_PATTERN = /[^，,]+/gu;
 const QUESTION_QUANTITY_SLOT = '\u{e000}';
 const QUESTION_CHOICE_SLOT = '\u{e001}';
-const QUESTION_VALUE_SLOT_SPLIT_PATTERN = /([\u{e000}\u{e001}])/u;
+const QUESTION_OPTIONAL_QUANTITY_SLOT = '\u{e002}';
+const QUESTION_VALUE_SLOT_SPLIT_PATTERN = /([\u{e000}\u{e001}\u{e002}])/u;
 const QUESTION_QUANTITY_VALUE_PATTERN =
   /^(?:\p{N}+|[零〇一二两三四五六七八九十百千万亿]+)(?:[\p{Script=Latin}][\p{Script=Latin}\p{N}]*|个|份|次|种|项|名|位|家|条|台|套|本|张|件|笔|元|天|年|月|人)?$/u;
-const QUESTION_UNTYPED_CHOICE_PATTERN = /^(?:很多|许多|多个|若干|一些|不少|任意)$/u;
+const QUESTION_UNTYPED_CHOICE_PATTERN =
+  /^(?:(?:很|非常|比较|相当|太)多|许多|多个|多种|多项|多类|若干|一些|不少|任意|某种|某个|某项|某类|某些|各种|各类|好几|其他|其余|未知|不确定|(?:第)?(?:\p{N}+|[零〇一二两三四五六七八九十百千万亿]+)(?:种|个|项|类)|数(?:种|个|项|类)|多样|海量|大量|少量|少数|多数|全部|所有|任一|任选|随便|不定|不详|不清楚|无法确定|视情况|看情况)/u;
 const QUESTION_SKELETON_ATOM_PATTERN =
   /\p{Script=Han}+|[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
 const HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES = Object.freeze([
@@ -270,7 +271,7 @@ const SUBSTANTIVE_HAN_FUNCTION_PHRASES = Object.freeze([
   '之',
 ]);
 export const GROUNDED_ANSWER_STRUCTURE_POLICY =
-  '不完整的前置上下文分句必须与后续疑问分句组成同一连通骨架；每个连通骨架必须完整出现在同一个答案逗号分句内，其中的数量或选择问句槽位必须由同一分句内的有界非空值填充；真正的多个完整问题才可由不同答案句分别支持；拉丁字母或数字限定只约束它所属的问题和答案句，不得跨问题补齐。';
+  '不完整的前置上下文分句必须与后续疑问分句组成同一连通骨架；每个连通骨架必须完整出现在同一个答案逗号分句内；只有带主语的短动作与其直接宾语之间可以原位插入一个格式明确的数量值，其他部分仍须连续；显式数量或选择问句槽位必须由同一分句内的有界非空值填充；真正的多个完整问题才可由不同答案句分别支持；拉丁字母或数字限定只约束它所属的问题和答案句，不得跨问题补齐。';
 const SUBSTANTIVE_DEMONSTRATIVE_RUN_PATTERN =
   /(?<![\p{Script=Han}\p{N}])(?:另一个|上述|前述|这些|这个|该等|某个|某些|同一|相同|这种|那种|那个|那些|另一|本|该|此|其|这|那)\p{Script=Han}*/gu;
 
@@ -297,11 +298,7 @@ function setFeature(features: Map<string, LexicalFeature>, feature: LexicalFeatu
   if (!prior || prior.weight < feature.weight) features.set(feature.key, feature);
 }
 
-/**
- * Chinese words are not whitespace-delimited, so retrieval uses overlapping Han bigrams/trigrams.
- * Latin and numeric material remains a whole token for stable search scoring. Billable validation
- * below deliberately uses a narrower NFC-preserving representation instead of this NFKC index.
- */
+// Retrieval is NFKC/fuzzy; billable validation below is NFC/extractive.
 function lexicalFeatures(value: string): Map<string, LexicalFeature> {
   const text = normalized(value);
   const features = new Map<string, LexicalFeature>();
@@ -426,30 +423,25 @@ interface ExtractiveSentence {
   body: string;
   literalTokens: readonly string[];
 }
-
 interface RelevanceAnchor {
   key: string;
   kind: 'han' | 'literal';
   text: string;
 }
-
 interface QuestionTopicGroup {
   text: string;
   predicateContext: 'none' | 'action' | 'standalone';
 }
-
 interface StrippedQuestionClause {
   text: string;
   removedStructuralOperator: boolean;
   removedQuestionShell: boolean;
 }
-
 interface QuestionObligation {
   pattern: string;
   topicGroups: readonly QuestionTopicGroup[];
   literalQualifiers: ReadonlyMap<string, RelevanceAnchor>;
 }
-
 function validationText(value: string): string {
   return value.normalize('NFC');
 }
@@ -459,7 +451,6 @@ function literalTokenSequence(value: string): readonly string[] {
     [...validationText(value).matchAll(LITERAL_PATTERN)].map((match) => match[0]),
   );
 }
-
 function extractiveSentences(value: string): ExtractiveSentence[] {
   const text = validationText(value);
   const rawUnits = [...text.matchAll(SENTENCE_UNIT_PATTERN)].map((match) => match[0]);
@@ -476,7 +467,6 @@ function extractiveSentences(value: string): ExtractiveSentence[] {
   }
   return sentences;
 }
-
 function hasQuestionSideContent(value: string): boolean {
   return RELATION_SIDE_HAN_PATTERN.test(value) || RELATION_SIDE_LITERAL_PATTERN.test(value);
 }
@@ -486,7 +476,6 @@ function hasTrailingQuestionShell(value: string): boolean {
     (phrase) => value.endsWith(phrase) && hasQuestionSideContent(value.slice(0, -phrase.length)),
   );
 }
-
 function isInterrogativeSentence(sentence: ExtractiveSentence, question: string): boolean {
   const terminator = sentence.canonical.match(SENTENCE_TERMINATOR_PATTERN)?.[0] ?? '';
   const body = validationText(sentence.body)
@@ -510,7 +499,6 @@ function isInterrogativeSentence(sentence: ExtractiveSentence, question: string)
     )
   );
 }
-
 function isDeclarativeProposition(sentence: ExtractiveSentence): boolean {
   const terminator = sentence.canonical.match(SENTENCE_TERMINATOR_PATTERN)?.[0] ?? '';
   const isNominalFragment =
@@ -661,7 +649,9 @@ function connectedSkeletonPatternText(value: string): string {
   return value
     .split(QUESTION_VALUE_SLOT_SPLIT_PATTERN)
     .map((part) =>
-      part === QUESTION_QUANTITY_SLOT || part === QUESTION_CHOICE_SLOT
+      part === QUESTION_QUANTITY_SLOT ||
+      part === QUESTION_CHOICE_SLOT ||
+      part === QUESTION_OPTIONAL_QUANTITY_SLOT
         ? part
         : connectedSkeletonText(part),
     )
@@ -712,8 +702,9 @@ function answerConnectedSubclauses(
 }
 
 function validQuestionSlotFill(slot: string, fill: string): boolean {
+  if (slot === QUESTION_OPTIONAL_QUANTITY_SLOT && fill === '') return true;
   if (fill === '') return false;
-  if (slot === QUESTION_QUANTITY_SLOT) return QUESTION_QUANTITY_VALUE_PATTERN.test(fill);
+  if (slot !== QUESTION_CHOICE_SLOT) return QUESTION_QUANTITY_VALUE_PATTERN.test(fill);
   return (
     Array.from(fill).length <= 32 &&
     !QUESTION_UNTYPED_CHOICE_PATTERN.test(fill) &&
@@ -725,14 +716,18 @@ function validQuestionSlotFill(slot: string, fill: string): boolean {
 }
 
 function matchesConnectedSkeleton(pattern: string, target: string): boolean {
-  if (!pattern.includes(QUESTION_QUANTITY_SLOT) && !pattern.includes(QUESTION_CHOICE_SLOT)) {
+  if (!QUESTION_VALUE_SLOT_SPLIT_PATTERN.test(pattern)) {
     return target.includes(pattern);
   }
   const parts = pattern.split(QUESTION_VALUE_SLOT_SPLIT_PATTERN).filter((part) => part !== '');
   let cursor = 0;
   let pendingSlot: string | null = null;
   for (const part of parts) {
-    if (part === QUESTION_QUANTITY_SLOT || part === QUESTION_CHOICE_SLOT) {
+    if (
+      part === QUESTION_QUANTITY_SLOT ||
+      part === QUESTION_CHOICE_SLOT ||
+      part === QUESTION_OPTIONAL_QUANTITY_SLOT
+    ) {
       if (pendingSlot !== null) return false;
       pendingSlot = part;
       continue;
@@ -789,6 +784,12 @@ function questionTopicGroupsFromText(
   const compact = text.replace(USER_WHITESPACE_PATTERN, '');
   for (const match of compact.matchAll(HAN_PATTERN)) {
     if (Array.from(match[0]).length < 2) continue;
+    const split = removedStructuralOperator ? splitInteriorQuestionAction(match[0]) : null;
+    if (split) {
+      groups.push({ text: split[0], predicateContext: 'action' });
+      groups.push({ text: split[1], predicateContext: 'none' });
+      continue;
+    }
     const actionContext =
       SHORT_TOPIC_ACTIONS.has(match[0]) ||
       (removedStructuralOperator &&
@@ -811,13 +812,34 @@ function literalQualifiers(value: string): ReadonlyMap<string, RelevanceAnchor> 
   return anchors;
 }
 
+function splitInteriorQuestionAction(value: string): readonly [string, string] | null {
+  for (const action of SHORT_TOPIC_ACTIONS) {
+    const index = value.indexOf(action);
+    const end = index + action.length;
+    if (index > 0 && end < value.length) return [value.slice(0, end), value.slice(end)];
+  }
+  return null;
+}
+
 function questionObligations(value: string): readonly QuestionObligation[] | null {
   const parsed = parsedQuestionObligations(value);
   if (parsed === null) return null;
   const obligations: QuestionObligation[] = [];
   for (const { text, removedStructuralOperator } of parsed) {
-    const pattern = connectedSkeletonPatternText(text);
-    if (pattern.replaceAll(QUESTION_QUANTITY_SLOT, '').replaceAll(QUESTION_CHOICE_SLOT, '') === '')
+    const directPattern = connectedSkeletonPatternText(text);
+    const split =
+      removedStructuralOperator && !QUESTION_VALUE_SLOT_SPLIT_PATTERN.test(directPattern)
+        ? splitInteriorQuestionAction(directPattern)
+        : null;
+    const pattern = split
+      ? `${split[0]}${QUESTION_OPTIONAL_QUANTITY_SLOT}${split[1]}`
+      : directPattern;
+    if (
+      pattern
+        .replaceAll(QUESTION_QUANTITY_SLOT, '')
+        .replaceAll(QUESTION_CHOICE_SLOT, '')
+        .replaceAll(QUESTION_OPTIONAL_QUANTITY_SLOT, '') === ''
+    )
       continue;
     obligations.push(
       Object.freeze({
@@ -829,17 +851,12 @@ function questionObligations(value: string): readonly QuestionObligation[] | nul
   }
   return Object.freeze(obligations);
 }
-
 function questionTopicGroups(value: string): readonly QuestionTopicGroup[] | null {
-  // User whitespace is not a semantic boundary. Each complete question becomes one obligation;
-  // an incomplete context clause is carried into the following interrogative clause instead of
-  // becoming a separate topic that another answer sentence could subsidize.
   const obligations = questionObligations(value);
   return obligations === null
     ? null
     : Object.freeze(obligations.flatMap((obligation) => obligation.topicGroups));
 }
-
 function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
   if (
     anchor.kind !== 'literal' ||
@@ -894,7 +911,16 @@ function hasNominalizedActionContinuation(target: string, end: number): boolean 
     if (index >= 0) boundary = Math.min(boundary, index);
   }
   const local = suffix.slice(0, boundary);
-  return HAN_NOMINAL_FRAGMENT_SUFFIXES.some((phrase) => local.includes(phrase));
+  return HAN_NOMINAL_FRAGMENT_SUFFIXES.some((phrase) => {
+    const index = local.indexOf(phrase);
+    if (index < 0) return false;
+    const following = local.slice(index + phrase.length).trimStart();
+    return (
+      local.slice(0, index).trimEnd().endsWith('的') ||
+      following === '' ||
+      HAN_DECLARATIVE_PREDICATE_PATTERN.test(following)
+    );
+  });
 }
 
 function actionGroupHasSubject(group: string): boolean {
@@ -1049,7 +1075,9 @@ function sentenceSupportsObligation(
   const strictTopicGroups = obligation.topicGroups.map((group) => group.text);
   const hasTypedValueSlot =
     obligation.pattern.includes(QUESTION_QUANTITY_SLOT) ||
-    obligation.pattern.includes(QUESTION_CHOICE_SLOT);
+    obligation.pattern.includes(QUESTION_CHOICE_SLOT) ||
+    obligation.pattern.includes(QUESTION_OPTIONAL_QUANTITY_SLOT);
+  const hasRequiredTypedValueSlot = !obligation.pattern.includes(QUESTION_OPTIONAL_QUANTITY_SLOT);
   const matchingSubclauses = answerConnectedSubclauses(sentence).filter((subclause) =>
     matchesConnectedSkeleton(obligation.pattern, subclause.skeleton),
   );
@@ -1076,7 +1104,7 @@ function sentenceSupportsObligation(
   return (
     directSubclause &&
     hasPredicateOutsideTopicSpan(sentence, strictTopicGroups) &&
-    (hasTypedValueSlot ||
+    ((hasRequiredTypedValueSlot && hasTypedValueSlot) ||
       hasSubstantiveInformationGain(sentence, strictTopicGroups, allQuestionAnchors))
   );
 }
@@ -1101,7 +1129,6 @@ function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSen
 function sentenceSupportKey(sentence: ExtractiveSentence): string {
   return JSON.stringify([sentence.canonical, sentence.literalTokens]);
 }
-
 function citedSentenceSupport(
   hits: readonly GroundedKnowledgeSearchHit[],
 ): ReadonlyMap<string, ReadonlySet<string>> {
@@ -1110,8 +1137,6 @@ function citedSentenceSupport(
     const sentences = extractiveSentences(hit.excerpt);
     for (let index = 0; index < sentences.length; index += 1) {
       const sentence = sentences[index]!;
-      // Retrieval marks an excerpt cut with an ellipsis. Boundary fragments are not full source
-      // sentences and therefore cannot be used as billable extractive evidence.
       if (
         (index === 0 && hit.excerpt.startsWith('…')) ||
         (index === sentences.length - 1 && hit.excerpt.endsWith('…'))
@@ -1126,24 +1151,6 @@ function citedSentenceSupport(
   }
   return support;
 }
-
-/**
- * Conservative Test-only extractive guard. Every declarative answer sentence must NFC-match one
- * complete cited sentence, including its internal whitespace, terminal punctuation, and ordered
- * Latin/numeric tokens. The proposition gate recognizes the full declarative grammar; the narrower
- * topic parser removes only a longest clause-trailing question shell, terminal question particle,
- * clause-leading demonstrative scaffold, or at most one structurally bounded interrogative
- * operator. Entity/title internals, nominal properties, contentful actions, relations, polarity,
- * conditions, and temporal qualifiers remain exact; this Beta deliberately does not infer premise
- * corrections or relation equivalence. Every residual Han group must occur as one complete
- * contiguous substring across the answer, every short action/state occurrence keeps its predicate
- * context, every sentence adds question-external substantive information, and each sentence keeps
- * every literal qualifier from the one question obligation it supports.
- * With no Han group, one discriminating literal plus all literal qualifiers are required; a
- * one-code-point Latin token, short number, lone year, or API token remains insufficient. Passing
- * only proves direct textual support and query relevance in the fixed Package; it does not prove
- * that the source itself is factually true.
- */
 export function hasGroundedLexicalSupport(input: {
   question: string;
   answer: string;
@@ -1181,6 +1188,5 @@ export function hasGroundedLexicalSupport(input: {
     for (const chunkId of chunkIds) supportingChunkIds.add(chunkId);
   }
 
-  // Every listed citation must directly support at least one answer sentence; labels never count.
   return citedHits.every((hit) => supportingChunkIds.has(hit.chunkId));
 }
