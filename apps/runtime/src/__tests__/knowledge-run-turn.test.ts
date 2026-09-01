@@ -480,6 +480,56 @@ describe('knowledge run-turn high-risk boundaries', () => {
       answer: '该服务支持火星天气。',
       excerpt: '该服务支持火星天气。',
     },
+    {
+      question: '支付宝登录方式是什么？',
+      answer: '微信登录方式必须使用验证码。',
+      excerpt: '微信登录方式必须使用验证码。',
+    },
+    {
+      question: '华为登录方式是什么？',
+      answer: '支付宝登录方式必须使用验证码。',
+      excerpt: '支付宝登录方式必须使用验证码。',
+    },
+    {
+      question: '退款时效是什么？',
+      answer: '退款金额是 100 元。',
+      excerpt: '退款金额是 100 元。',
+    },
+    {
+      question: '退款金额是多少？',
+      answer: '退款时效是七天。',
+      excerpt: '退款时效是七天。',
+    },
+    {
+      question: '2026 年退款规则是什么？',
+      answer: '退款规则在 2025 年生效。',
+      excerpt: '退款规则在 2025 年生效。',
+    },
+    {
+      question: '2026 年退款规则是什么？',
+      answer: '2026 年退款规则已经生效。退款规则在 2025 年生效。',
+      excerpt: '2026 年退款规则已经生效。退款规则在 2025 年生效。',
+    },
+    {
+      question: '支付宝是什么？',
+      answer: '支付必须在订单有效期内完成。',
+      excerpt: '支付必须在订单有效期内完成。',
+    },
+    {
+      question: 'HTTP 402 是什么意思？',
+      answer: 'HTTPS 402 表示需要充值。',
+      excerpt: 'HTTPS 402 表示需要充值。',
+    },
+    {
+      question: 'API v2 是什么？',
+      answer: 'SDK v2 使用新的验证策略。',
+      excerpt: 'SDK v2 使用新的验证策略。',
+    },
+    {
+      question: 'HTTP 402 是什么意思？',
+      answer: 'HTTP 402 表示旧协议。HTTPS 402 表示需要充值。',
+      excerpt: 'HTTP 402 表示旧协议。HTTPS 402 表示需要充值。',
+    },
   ])(
     'rejects an exact but irrelevant source sentence: $answer',
     ({ question, answer, excerpt }) => {
@@ -602,6 +652,66 @@ describe('knowledge run-turn high-risk boundaries', () => {
       question: '该服务的退款规则是什么？',
       answer: '退款可以在七天内申请。',
       excerpt: '退款可以在七天内申请。',
+    },
+    {
+      question: '华为是什么？',
+      answer: '华为是全球技术公司。',
+      excerpt: '华为是全球技术公司。',
+    },
+    {
+      question: '行为规则是什么？',
+      answer: '行为必须符合安全政策。',
+      excerpt: '行为必须符合安全政策。',
+    },
+    {
+      question: '支付规则是什么？',
+      answer: '支付必须在订单有效期内完成。',
+      excerpt: '支付必须在订单有效期内完成。',
+    },
+    {
+      question: '如何支付？',
+      answer: '支付可以使用银行卡完成。',
+      excerpt: '支付可以使用银行卡完成。',
+    },
+    {
+      question: '返回值是什么？',
+      answer: '返回值是 402。',
+      excerpt: '返回值是 402。',
+    },
+    {
+      question: '支付宝登录方式是什么？',
+      answer: '支付宝登录方式必须使用验证码。',
+      excerpt: '支付宝登录方式必须使用验证码。',
+    },
+    {
+      question: '支 付 宝 登 录 方 式 是 什 么？',
+      answer: '支付宝登录方式必须使用验证码。',
+      excerpt: '支付宝登录方式必须使用验证码。',
+    },
+    {
+      question: '使用说明是什么？',
+      answer: '使用需要先完成登录。',
+      excerpt: '使用需要先完成登录。',
+    },
+    {
+      question: '提示词是什么？',
+      answer: '提示词必须包含明确任务。',
+      excerpt: '提示词必须包含明确任务。',
+    },
+    {
+      question: '什么时候生效？',
+      answer: '退款政策在今天生效。',
+      excerpt: '退款政策在今天生效。',
+    },
+    {
+      question: '如何开启？',
+      answer: '开启需要管理员确认。',
+      excerpt: '开启需要管理员确认。',
+    },
+    {
+      question: '如何关闭？',
+      answer: '关闭必须先保存数据。',
+      excerpt: '关闭必须先保存数据。',
     },
     {
       question: '费用是多少？',

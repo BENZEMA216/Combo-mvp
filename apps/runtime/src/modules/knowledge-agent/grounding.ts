@@ -9,9 +9,11 @@ const LITERAL_PATTERN = /[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{
 const SENTENCE_UNIT_PATTERN = /[^。！？!?；;\n]+(?:[。！？!?；;\n]+|$)/gu;
 const SENTENCE_TERMINATOR_PATTERN = /[。！？!?；;\n]+$/u;
 const EDGE_HORIZONTAL_WHITESPACE_PATTERN = /^[\p{Zs}\t\r]+|[\p{Zs}\t\r]+$/gu;
+const USER_WHITESPACE_PATTERN = /\s+/gu;
 const INTERROGATIVE_TERMINATOR_PATTERN = /[?？]/u;
 const DECLARATIVE_TERMINATOR_PATTERN = /[。；;！!]/u;
 const MARKDOWN_BLOCK_PREFIX_PATTERN = /^(?:#{1,6}|[-*+]\s|\d{1,9}[.)、]\s|>\s?)/u;
+const HAN_EDGE_GRAMMATICAL_PARTICLE_PATTERN = /^的+|的+$/gu;
 const INTERROGATIVE_PHRASE_PATTERN =
   /请问|如何|为什么|为何|怎么回事|怎么|怎样|什么|多少|哪些|哪个|哪一个|哪种|哪家|哪里|哪儿|谁|何时|什么时候|是不是|有没有|能不能|可不可以|是否|能否|可否|几(?:个|次|种|天|年|月|元)|吗$|呢$/u;
 const HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES = Object.freeze([
@@ -67,11 +69,7 @@ const HAN_DECLARATIVE_ARGUMENT_PREDICATE_PHRASES = Object.freeze([
   ...HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES,
   ...HAN_ACTION_ARGUMENT_PREDICATE_PHRASES,
 ]);
-const HAN_DECLARATIVE_PREDICATE_PHRASES = Object.freeze([
-  ...HAN_DECLARATIVE_ARGUMENT_PREDICATE_PHRASES,
-  ...HAN_STANDALONE_PREDICATE_PHRASES,
-  '为',
-]);
+const HAN_TOPIC_MASK_RELATION_PHRASES = Object.freeze([...HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES]);
 const HAN_NOMINAL_FRAGMENT_SUFFIXES = Object.freeze([
   '说明',
   '申请',
@@ -176,7 +174,7 @@ const QUESTION_TOPIC_MASK_PHRASES = Object.freeze(
     ...new Set([
       ...QUESTION_FORM_MASK_PHRASES,
       ...GENERIC_HAN_TOPIC_PHRASES,
-      ...HAN_DECLARATIVE_PREDICATE_PHRASES,
+      ...HAN_TOPIC_MASK_RELATION_PHRASES,
     ]),
   ].sort((left, right) => right.length - left.length || left.localeCompare(right)),
 );
@@ -408,23 +406,12 @@ function maskPhrasesToFixedPoint(value: string, phrases: readonly string[]): str
   }
 }
 
-function questionRelevanceText(value: string, topical: boolean): string {
+function questionRelevanceText(value: string): string {
   const text = validationText(value).toLocaleLowerCase('und');
-  return maskPhrasesToFixedPoint(
-    text,
-    topical ? QUESTION_TOPIC_MASK_PHRASES : QUESTION_FORM_MASK_PHRASES,
-  );
+  return maskPhrasesToFixedPoint(text, QUESTION_FORM_MASK_PHRASES);
 }
 
-function relevanceAnchors(
-  value: string,
-  mode: 'answer' | 'question' | 'question-topic',
-): Map<string, RelevanceAnchor> {
-  const text =
-    mode === 'answer'
-      ? validationText(value).toLocaleLowerCase('und')
-      : questionRelevanceText(value, mode === 'question-topic');
-  const anchors = new Map<string, RelevanceAnchor>();
+function setHanRelevanceAnchors(anchors: Map<string, RelevanceAnchor>, text: string): void {
   for (const match of text.matchAll(HAN_PATTERN)) {
     const points = Array.from(match[0]);
     for (const size of [2, 3] as const) {
@@ -435,6 +422,9 @@ function relevanceAnchors(
       }
     }
   }
+}
+
+function setLiteralRelevanceAnchors(anchors: Map<string, RelevanceAnchor>, text: string): void {
   for (const match of text.matchAll(LITERAL_PATTERN)) {
     const anchor = {
       key: `literal:${match[0]}`,
@@ -443,14 +433,45 @@ function relevanceAnchors(
     };
     anchors.set(anchor.key, anchor);
   }
+}
+
+function relevanceAnchors(
+  value: string,
+  mode: 'answer' | 'question',
+): Map<string, RelevanceAnchor> {
+  const text =
+    mode === 'answer'
+      ? validationText(value).toLocaleLowerCase('und')
+      : questionRelevanceText(value);
+  const anchors = new Map<string, RelevanceAnchor>();
+  setHanRelevanceAnchors(anchors, text);
+  setLiteralRelevanceAnchors(anchors, text);
   return anchors;
 }
 
-function anchorMatches(
-  query: ReadonlyMap<string, RelevanceAnchor>,
-  target: ReadonlyMap<string, RelevanceAnchor>,
-): RelevanceAnchor[] {
-  return [...query.values()].filter((anchor) => target.has(anchor.key));
+function questionTopicGroups(value: string): readonly ReadonlyMap<string, RelevanceAnchor>[] {
+  // User whitespace is not a semantic boundary, but every masked platform-grammar phrase inserts
+  // one. Topic masking is deliberately narrower than declarative grammar: contentful actions such
+  // as `支付`, `使用`, and `返回`, plus standalone states such as `生效`, remain topics. Only
+  // clausal/modal/copular relations become boundaries.
+  const compact = validationText(value)
+    .toLocaleLowerCase('und')
+    .replace(USER_WHITESPACE_PATTERN, '');
+  const text = maskPhrasesToFixedPoint(compact, QUESTION_TOPIC_MASK_PHRASES);
+  const groups: Map<string, RelevanceAnchor>[] = [];
+  for (const match of text.matchAll(HAN_PATTERN)) {
+    const anchors = new Map<string, RelevanceAnchor>();
+    const topic = match[0].replace(HAN_EDGE_GRAMMATICAL_PARTICLE_PATTERN, '');
+    setHanRelevanceAnchors(anchors, topic);
+    if (anchors.size > 0) groups.push(anchors);
+  }
+  return groups;
+}
+
+function questionLiteralQualifiers(value: string): ReadonlyMap<string, RelevanceAnchor> {
+  const anchors = new Map<string, RelevanceAnchor>();
+  setLiteralRelevanceAnchors(anchors, validationText(value).toLocaleLowerCase('und'));
+  return anchors;
 }
 
 function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
@@ -467,16 +488,30 @@ function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
   );
 }
 
-function hasTopicalCoverage(
-  queryTopics: ReadonlyMap<string, RelevanceAnchor>,
+function hasTopicGroupCoverage(
+  group: ReadonlyMap<string, RelevanceAnchor>,
   target: ReadonlyMap<string, RelevanceAnchor>,
 ): boolean {
-  const matches = anchorMatches(queryTopics, target);
-  if ([...queryTopics.values()].some((anchor) => anchor.kind === 'han')) {
-    return matches.some((anchor) => anchor.kind === 'han');
-  }
-  const literalMatches = matches.filter((anchor) => anchor.kind === 'literal');
-  return literalMatches.some(literalAnchorIsDiscriminating);
+  let matched = 0;
+  for (const key of group.keys()) matched += Number(target.has(key));
+  if (group.size <= 3) return matched === group.size;
+  return matched * 4 >= group.size;
+}
+
+function hasDiscriminatingLiteralCoverage(
+  queryLiterals: ReadonlyMap<string, RelevanceAnchor>,
+  target: ReadonlyMap<string, RelevanceAnchor>,
+): boolean {
+  return [...queryLiterals.values()].some(
+    (anchor) => literalAnchorIsDiscriminating(anchor) && target.has(anchor.key),
+  );
+}
+
+function hasEveryLiteralQualifier(
+  queryLiterals: ReadonlyMap<string, RelevanceAnchor>,
+  target: ReadonlyMap<string, RelevanceAnchor>,
+): boolean {
+  return [...queryLiterals.keys()].every((key) => target.has(key));
 }
 
 function hasInformationGain(
@@ -487,25 +522,46 @@ function hasInformationGain(
 }
 
 function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSentence[]): boolean {
-  const queryTopics = relevanceAnchors(question, 'question-topic');
-  if (queryTopics.size === 0) return false;
+  const topicGroups = questionTopicGroups(question);
+  const literalQualifiers = questionLiteralQualifiers(question);
   const questionAnchors = relevanceAnchors(question, 'question');
   const answerAnchors = relevanceAnchors(
     sentences.map((sentence) => sentence.body).join('\n'),
     'answer',
   );
+  if (!hasInformationGain(questionAnchors, answerAnchors)) return false;
+
+  if (topicGroups.length === 0) {
+    if (
+      !hasDiscriminatingLiteralCoverage(literalQualifiers, answerAnchors) ||
+      !hasEveryLiteralQualifier(literalQualifiers, answerAnchors)
+    ) {
+      return false;
+    }
+    return sentences.every((sentence) => {
+      const sentenceAnchors = relevanceAnchors(sentence.body, 'answer');
+      return (
+        hasDiscriminatingLiteralCoverage(literalQualifiers, sentenceAnchors) &&
+        hasEveryLiteralQualifier(literalQualifiers, sentenceAnchors) &&
+        hasInformationGain(questionAnchors, sentenceAnchors)
+      );
+    });
+  }
+
   if (
-    !hasTopicalCoverage(queryTopics, answerAnchors) ||
-    !hasInformationGain(questionAnchors, answerAnchors)
+    !topicGroups.every((group) => hasTopicGroupCoverage(group, answerAnchors)) ||
+    !hasEveryLiteralQualifier(literalQualifiers, answerAnchors)
   ) {
     return false;
   }
 
-  // A relevant sentence cannot subsidize an unrelated exact sentence appended to the answer.
+  // Every sentence must cover one topic group and all mixed literal qualifiers. Other sentences
+  // cannot subsidize an unrelated topic or repair a year/version/API drift after the fact.
   return sentences.every((sentence) => {
     const sentenceAnchors = relevanceAnchors(sentence.body, 'answer');
     return (
-      hasTopicalCoverage(queryTopics, sentenceAnchors) &&
+      topicGroups.some((group) => hasTopicGroupCoverage(group, sentenceAnchors)) &&
+      hasEveryLiteralQualifier(literalQualifiers, sentenceAnchors) &&
       hasInformationGain(questionAnchors, sentenceAnchors)
     );
   });
@@ -543,11 +599,15 @@ function citedSentenceSupport(
 /**
  * Conservative Test-only extractive guard. Every declarative answer sentence must NFC-match one
  * complete cited sentence, including its internal whitespace, terminal punctuation, and ordered
- * Latin/numeric tokens. Deterministic topical-anchor coverage masks the same Chinese predicate and
- * nominal grammar used by the proposition gate, so shared relation wording cannot replace an
- * independent topic. A one-code-point Latin token, short number, lone year, or API token is also
- * insufficient. Passing only proves direct textual support and query relevance in the fixed
- * Package; it does not prove that the source itself is factually true.
+ * Latin/numeric tokens. The proposition gate recognizes the full declarative grammar; the narrower
+ * topic mask removes only question/meta/nominal and clausal/modal/copular relations while
+ * preserving contentful actions and standalone states. Two- and three-character Han groups require
+ * every anchor; longer groups need 25% unweighted bigram/trigram coverage across the answer. Every
+ * sentence needs one covered group, and every literal qualifier must appear in every sentence. With
+ * no Han group, one discriminating literal plus all literal qualifiers are required; a
+ * one-code-point Latin token, short number, lone year, or API token remains insufficient. Passing
+ * only proves direct textual support and query relevance in the fixed Package; it does not prove
+ * that the source itself is factually true.
  */
 export function hasGroundedLexicalSupport(input: {
   question: string;
