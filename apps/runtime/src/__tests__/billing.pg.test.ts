@@ -14,9 +14,7 @@ import {
   type UsageRequest,
 } from '../modules/billing/service.js';
 import {
-  KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
   createTurnRunner,
-  type GroundedKnowledgeValidator,
   TurnAdmissionUnavailableError,
 } from '../modules/agent/run-turn.js';
 import {
@@ -36,7 +34,10 @@ import {
 import { toRuntimeDb, withTransaction, type RuntimeDb } from '../platform/infra/db.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
-import type { KnowledgeAgentTestGate } from '../platform/config/env.js';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  type KnowledgeAgentTestGate,
+} from '../platform/config/env.js';
 import {
   knowledgeQuestionDigest,
   type ResolvedKnowledgeAgent,
@@ -275,7 +276,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       agentBinding: binding,
     });
     const question = 'Combo 的免费额度是多少？';
-    const answer = '前三次成功回答免费。';
+    const answer = content;
     const resolved: ResolvedKnowledgeAgent = {
       binding,
       name: '公开知识助手',
@@ -309,7 +310,6 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     usageId = randomUUID(),
     recovery?: {
       validatorPolicyVersion: string;
-      validator: GroundedKnowledgeValidator;
     },
   ) {
     const agent = makeFakeAgentFactory(script);
@@ -322,7 +322,6 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       idleTimeoutMs: 60_000,
       interrupts: createInterruptBus(),
       billingPolicy: policy,
-      ...(recovery ? { groundedKnowledgeValidator: recovery.validator } : {}),
       runtimeSourceSha: RUNTIME_SOURCE_SHA,
       log: silentLog,
     });
@@ -1008,20 +1007,13 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       const chain = await seedKnowledgeChain();
       const usageId = randomUUID();
       await seedPendingKnowledgeRecovery(chain, usageId, validatorPolicyVersion);
-      const groundedValidator = vi.fn<GroundedKnowledgeValidator>(() => ({
-        outcome: 'answered',
-        validationCode: 'accepted',
-        answer: chain.answer,
-        citationChunkIds: [chain.chunkId],
-      }));
       const context = knowledgeRunner(
         chain,
         {},
         { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
         usageId,
         {
-          validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
-          validator: groundedValidator,
+          validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
         },
       );
       try {
@@ -1055,7 +1047,6 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
           },
         ]);
         expect(context.agent.calls).toHaveLength(0);
-        expect(groundedValidator).not.toHaveBeenCalled();
       } finally {
         await context.runner.dispose(AbortSignal.timeout(5_000));
       }
@@ -1078,16 +1069,10 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       ],
     };
     const recoveryUsageId = randomUUID();
-    const groundedValidator = vi.fn<GroundedKnowledgeValidator>(() => ({
-      outcome: 'answered',
-      validationCode: 'accepted',
-      answer: chain.answer,
-      citationChunkIds: [chain.chunkId],
-    }));
     await seedPendingKnowledgeRecovery(
       chain,
       recoveryUsageId,
-      KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+      KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
     );
     const context = knowledgeRunner(
       chain,
@@ -1099,8 +1084,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       },
       recoveryUsageId,
       {
-        validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
-        validator: groundedValidator,
+        validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
       },
     );
     let retryContext: ReturnType<typeof knowledgeRunner> | undefined;
@@ -1205,8 +1189,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
         context.usageId,
         {
-          validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
-          validator: groundedValidator,
+          validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
         },
       );
       const opened = await Promise.all([retryContext.start(), retryContext.start()]);
@@ -1286,17 +1269,6 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       });
       expect(context.agent.calls).toHaveLength(0);
       expect(retryContext.agent.calls).toHaveLength(1);
-      expect(groundedValidator).toHaveBeenCalledTimes(1);
-      const groundedInput = groundedValidator.mock.calls[0]?.[0];
-      expect(groundedInput?.question).toBe(chain.question);
-      expect(groundedInput?.candidate).toEqual({
-        status: 'answered',
-        answer: chain.answer,
-        citationChunkIds: [chain.chunkId],
-      });
-      expect(groundedInput?.exposedHits.map((hit) => hit.chunkId)).toEqual([chain.chunkId]);
-      expect(groundedInput?.resolved.binding).toEqual(chain.binding);
-      expect(groundedInput?.turnSignal.aborted).toBe(false);
       const recoveryTerminal = await runtimeDb.query<{
         request_text: string | null;
         recovery_status: string;
@@ -1359,6 +1331,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     },
     {
       label: 'rejected candidate',
+      grounded: true,
       free: false,
       script: (chain: SeededKnowledgeChain) => ({
         invokeNamedTools: [
@@ -1391,6 +1364,17 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     },
   ])('settles $label and records an immutable receipt', async (candidate) => {
     const chain = await seedKnowledgeChain();
+    if ('grounded' in candidate && candidate.grounded) {
+      chain.gate = {
+        protocol: 'combo.knowledge-agent-runtime-test-gate/2',
+        sourceSha: chain.gate.sourceSha,
+        publisherUserId: chain.gate.publisherUserId,
+        capabilityId: chain.gate.capabilityId,
+        releaseId: chain.gate.releaseId,
+        packageDigest: chain.gate.packageDigest,
+        validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+      };
+    }
     const context = knowledgeRunner(chain, candidate.script(chain), {
       freeUses: candidate.free ? 1 : 0,
       unitPriceCents: 100,
@@ -1400,6 +1384,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       await waitForKnowledgeReceipt(chain.session.id);
       const state = await db.query<KnowledgeStateRow>(
         `SELECT uc.charge_source,
+                uc.validator_policy_version,
                 t.status::text AS turn_status,
                 uc.status::text AS charge_status,
                 uc.execution_outcome::text,
@@ -1425,6 +1410,10 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       );
       expect(state.rows[0]).toEqual({
         charge_source: candidate.free ? 'free' : 'wallet',
+        validator_policy_version:
+          'grounded' in candidate && candidate.grounded
+            ? KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY
+            : 'knowledge-agent-test-validator-v1',
         turn_status: candidate.turnStatus,
         charge_status: candidate.free ? 'completed' : 'released',
         execution_outcome: candidate.outcome,

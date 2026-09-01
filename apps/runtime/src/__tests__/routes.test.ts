@@ -54,9 +54,7 @@ import {
 } from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
 import {
-  KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
   createTurnRunner,
-  type GroundedKnowledgeValidatorInput,
   type TurnRunner,
 } from '../modules/agent/run-turn.js';
 import {
@@ -65,6 +63,8 @@ import {
   resolveKnowledgeAgentPackage,
 } from '../modules/knowledge-agent/resolver.js';
 import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  KNOWLEDGE_AGENT_VALIDATOR_POLICY,
   knowledgeAgentTestGateFromEnv,
   type Env,
   type KnowledgeAgentTestGate,
@@ -1420,7 +1420,7 @@ describe('knowledge Agent handler closed loop', () => {
   const chunkId = `chunk.knowledge.${'8'.repeat(32)}`;
   const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 
-  it('creates a frozen Session, answers once, then projects only verified detail', async () => {
+  it('creates a frozen Session, factory-wires grounded-v2 recovery, then projects only verified detail', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
     const capability = db.seedCapability({
@@ -1537,12 +1537,6 @@ describe('knowledge Agent handler closed loop', () => {
       ],
       finalMessages: [{ role: 'assistant', content: [{ type: 'text', text: '伪造 transcript' }] }],
     });
-    const groundedValidator = vi.fn((_input: GroundedKnowledgeValidatorInput) => ({
-      outcome: 'answered' as const,
-      validationCode: 'accepted' as const,
-      answer,
-      citationChunkIds: [chunkId],
-    }));
     const turns = createTurnRunner({
       db,
       objectStore: store,
@@ -1552,7 +1546,6 @@ describe('knowledge Agent handler closed loop', () => {
       idleTimeoutMs: 60_000,
       interrupts: createInterruptBus(),
       billingPolicy: { freeUses: 3, unitPriceCents: 1 },
-      groundedKnowledgeValidator: groundedValidator,
       runtimeSourceSha: sourceSha,
       log: silentLog,
     });
@@ -1783,26 +1776,6 @@ describe('knowledge Agent handler closed loop', () => {
           body: { text: question, usageId: rechargeUsageId },
         }),
       );
-    const stateBeforePolicyFailures = {
-      turns: db.turns.size,
-      charges: db.usageCharges.size,
-      agentCalls: agent.calls.length,
-    };
-    expect(await recoveryRequest(env)).toMatchObject({
-      statusCode: 503,
-      body: { error: { action: 'retry' } },
-    });
-    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
-      request_text: question,
-      recovery_status: 'active',
-      validator_policy_version: 'knowledge-agent-test-validator-v1',
-    });
-    expect({
-      turns: db.turns.size,
-      charges: db.usageCharges.size,
-      agentCalls: agent.calls.length,
-    }).toEqual(stateBeforePolicyFailures);
-
     if (!pending) throw new Error('missing pending recovery fixture');
     const frozenBinding = {
       productKind: 'knowledge_agent_test' as const,
@@ -1835,6 +1808,27 @@ describe('knowledge Agent handler closed loop', () => {
         knowledge: { binding: frozenBinding, validatorPolicyVersion },
       });
     };
+    setFrozenValidatorPolicy(KNOWLEDGE_AGENT_VALIDATOR_POLICY);
+    const stateBeforePolicyFailures = {
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    };
+    expect(await recoveryRequest(env)).toMatchObject({
+      statusCode: 503,
+      body: { error: { action: 'retry' } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: question,
+      recovery_status: 'active',
+      validator_policy_version: KNOWLEDGE_AGENT_VALIDATOR_POLICY,
+    });
+    expect({
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforePolicyFailures);
+
     setFrozenValidatorPolicy('knowledge-agent-unknown-validator-v9');
     expect(await recoveryRequest(env)).toMatchObject({
       statusCode: 503,
@@ -1851,20 +1845,15 @@ describe('knowledge Agent handler closed loop', () => {
       agentCalls: agent.calls.length,
     }).toEqual(stateBeforePolicyFailures);
 
-    expect(KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2).toBe('knowledge-agent-grounded-validator-v2');
-    setFrozenValidatorPolicy(KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2);
+    expect(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY).toBe(
+      'knowledge-agent-grounded-validator-v2',
+    );
+    setFrozenValidatorPolicy(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY);
     const driftedGate: KnowledgeAgentTestGate = {
       ...gate,
       capabilityId: '00000000-0000-4000-8000-000000000199',
       releaseId: `release.agent-package.${'b'.repeat(32)}`,
       packageDigest: `sha256:${'c'.repeat(64)}`,
-      cases: [
-        {
-          questionDigest: knowledgeQuestionDigest(question),
-          answer: '当前环境中不得用于恢复的答案。',
-          citationChunkIds: [chunkId],
-        },
-      ],
     };
     const driftedEnv = {
       ...env,
@@ -1888,7 +1877,7 @@ describe('knowledge Agent handler closed loop', () => {
         rechargeIntentId: rechargeUsageId,
       },
     });
-    expect(groundedValidator).not.toHaveBeenCalled();
+    expect(agent.calls).toHaveLength(stateBeforePolicyFailures.agentCalls);
 
     const account = db.billingAccounts.get(consumer);
     if (!account) throw new Error('missing consumer billing account');
@@ -1898,17 +1887,19 @@ describe('knowledge Agent handler closed loop', () => {
     expect(accepted).toMatchObject({ statusCode: 202, body: { data: { replayed: false } } });
     expect(replay).toMatchObject({ statusCode: 202, body: { data: { replayed: true } } });
     await waitFor(() => db.agentUsageReceipts.size === 4);
-    expect(groundedValidator).toHaveBeenCalledTimes(1);
-    const groundedInput = groundedValidator.mock.calls[0]?.[0];
-    expect(groundedInput?.question).toBe(question);
-    expect(groundedInput?.candidate).toEqual({
-      status: 'answered',
-      answer,
-      citationChunkIds: [chunkId],
-    });
-    expect(groundedInput?.exposedHits.map((hit) => hit.chunkId)).toEqual([chunkId]);
-    expect(groundedInput?.resolved.binding).toEqual(frozenBinding);
-    expect(groundedInput?.turnSignal.aborted).toBe(false);
+    expect(
+      [...db.agentUsageReceipts.values()].filter(
+        (receipt) => receipt.usage_id === rechargeUsageId,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        validator_policy_version: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+        execution_outcome: 'answered',
+        validation_code: 'accepted',
+        response_message_id: expect.any(String),
+        citation_chunk_ids: [chunkId],
+      }),
+    ]);
     expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
       request_text: null,
       recovery_status: 'accepted',
@@ -1993,10 +1984,10 @@ describe('knowledge Agent handler closed loop', () => {
         text: question,
         knowledge: {
           binding: frozenBinding,
-          validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+          validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
         },
       }),
-      validator_policy_version: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+      validator_policy_version: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
       active_recharge_intent_id: commitRaceUsageId,
       recovery_status: 'active',
       terminal_turn_id: null,
@@ -2004,7 +1995,6 @@ describe('knowledge Agent handler closed loop', () => {
     });
     account.balance_cents = 1n;
     const modelCallsBeforeCommitRace = agent.calls.length;
-    const validatorCallsBeforeCommitRace = groundedValidator.mock.calls.length;
     const originalQuery = db.query.bind(db);
     let loseAdmissionCommitResponse = false;
     let admissionCommitResponseLost = false;
@@ -2081,7 +2071,6 @@ describe('knowledge Agent handler closed loop', () => {
       db.query = originalQuery;
     }
     expect(agent.calls).toHaveLength(modelCallsBeforeCommitRace);
-    expect(groundedValidator).toHaveBeenCalledTimes(validatorCallsBeforeCommitRace);
     expect(
       [...db.usageCharges.values()].filter(
         (charge) => charge.usage_id === commitRaceUsageId && charge.status === 'released',
@@ -2110,7 +2099,6 @@ describe('knowledge Agent handler closed loop', () => {
       body: { data: { replayed: true } },
     });
     expect(agent.calls).toHaveLength(modelCallsBeforeCommitRace);
-    expect(groundedValidator).toHaveBeenCalledTimes(validatorCallsBeforeCommitRace);
 
     const cancelSessionId = '00000000-0000-4000-8000-000000000109';
     const cancelUsageId = '00000000-0000-4000-8000-000000000110';

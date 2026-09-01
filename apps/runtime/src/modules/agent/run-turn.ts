@@ -2,7 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import { EventType } from '@ag-ui/core';
 import { knowledgeBindingsEqual, type CapabilityDefinition, type SessionMode } from '@cb/shared';
-import type { KnowledgeAgentTestGate } from '../../platform/config/env.js';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  type KnowledgeAgentTestGate,
+} from '../../platform/config/env.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import type { RuntimeObjectStore } from '../../platform/infra/object-store.js';
 import type { PublishedStreamEvent, SessionEventBus } from '../../platform/infra/event-bus.js';
@@ -44,6 +47,7 @@ import {
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
 import {
   createKnowledgeToolSession,
+  validateGroundedKnowledgeCandidate,
   validateKnowledgeCandidate,
   type KnowledgeAnswerCandidate,
   type KnowledgeAgentTool,
@@ -97,9 +101,6 @@ export class TurnAgentUnavailableError extends Error {
     this.name = 'TurnAgentUnavailableError';
   }
 }
-
-export const KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2 =
-  'knowledge-agent-grounded-validator-v2' as const;
 
 export interface GroundedKnowledgeValidatorInput {
   question: string;
@@ -195,8 +196,6 @@ export interface TurnRunnerDeps {
   turnAdmissionDatabaseTimeoutMs?: number;
   turnAdmissionDeadlineMs?: number;
   billingPolicy?: UsageBillingPolicy;
-  /** Grounded-v2 implementation supplied by the immutable reasoning release. */
-  groundedKnowledgeValidator?: GroundedKnowledgeValidator;
   /** Exact Runtime release identity used by ownerless recovery paths. */
   runtimeSourceSha?: string;
   log: TurnLogger;
@@ -345,7 +344,6 @@ function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
 export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   const sandbox = deps.sandbox ?? createDisabledSandboxBackend();
   const billing = createUsageBillingService(deps.billingPolicy ?? DEFAULT_USAGE_BILLING_POLICY);
-  const groundedKnowledgeValidator = deps.groundedKnowledgeValidator;
   interface ActiveTurn {
     controller: AbortController;
     runId: string;
@@ -707,6 +705,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     runId: string;
     knowledge: NonNullable<Parameters<TurnRunner['startTurn']>[0]['knowledge']>;
     validator: GroundedKnowledgeValidator;
+    requiresGroundedExtractiveAnswer: boolean;
     log: TurnLogger;
   }): Promise<void> {
     const { sessionId, controller, log, runId } = args;
@@ -794,8 +793,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     const toolSession = createKnowledgeToolSession({
       knowledge: args.knowledge.resolved.knowledge,
       turnSignal: controller.signal,
-      requiresGroundedExtractiveAnswer:
-        args.knowledge.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2',
+      requiresGroundedExtractiveAnswer: args.requiresGroundedExtractiveAnswer,
     });
     let agent: TurnAgent;
     try {
@@ -810,8 +808,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           name: args.knowledge.resolved.name,
           description: args.knowledge.resolved.description,
           instructions: args.knowledge.resolved.instructions,
-          requiresGroundedExtractiveAnswer:
-            args.knowledge.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2',
+          requiresGroundedExtractiveAnswer: args.requiresGroundedExtractiveAnswer,
         },
       });
     } catch (err) {
@@ -1390,13 +1387,10 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         throw new KnowledgeRecoveryPolicyUnavailableError();
       }
       const recoveryValidator = (validatorPolicyVersion: string): GroundedKnowledgeValidator => {
-        if (
-          validatorPolicyVersion !== KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2 ||
-          !groundedKnowledgeValidator
-        ) {
+        if (validatorPolicyVersion !== KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY) {
           throw new KnowledgeRecoveryPolicyUnavailableError();
         }
-        return groundedKnowledgeValidator;
+        return validateGroundedKnowledgeCandidate;
       };
       let knowledgeValidator: GroundedKnowledgeValidator | undefined = input.knowledge
         ? freshKnowledgeGate
@@ -1409,6 +1403,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               })
           : undefined
         : undefined;
+      let requiresGroundedExtractiveAnswer =
+        freshKnowledgeGate?.protocol === 'combo.knowledge-agent-runtime-test-gate/2';
       const sessionId = input.session.id;
       const runId = randomUUID();
       const controller = new AbortController();
@@ -1604,6 +1600,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                   runId,
                   knowledge: input.knowledge,
                   validator: knowledgeValidator!,
+                  requiresGroundedExtractiveAnswer,
                   log: input.log,
                 });
               } else {
@@ -1673,6 +1670,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                     // insertion, reservation, or model execution. Current gate semantics are
                     // deliberately excluded from this branch.
                     knowledgeValidator = recoveryValidator(lockedRecovery.validatorPolicyVersion);
+                    requiresGroundedExtractiveAnswer = true;
                   }
                   billableUsageRequest = usageRequestForRecovery(lockedRecovery);
                   assertPendingUsageRecoveryBindingMatches(
@@ -1903,6 +1901,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 runId,
                 knowledge: input.knowledge,
                 validator: knowledgeValidator!,
+                requiresGroundedExtractiveAnswer,
                 log: input.log,
               })
             : executeTurn({

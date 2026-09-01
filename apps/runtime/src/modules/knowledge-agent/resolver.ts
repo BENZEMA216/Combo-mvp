@@ -599,6 +599,51 @@ export function knowledgeQuestionDigest(question: string): `sha256:${string}` {
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
+/** Immutable grounded-v2 validation shared by fresh Test turns and frozen recovery. */
+export function validateGroundedKnowledgeCandidate(input: {
+  question: string;
+  candidate: KnowledgeAnswerCandidate | null;
+  exposedHits: readonly KnowledgeSearchHit[];
+}): KnowledgeValidation {
+  if (input.candidate === null) {
+    return Object.freeze({
+      outcome: 'failed',
+      validationCode: 'protocol_invalid',
+      answer: null,
+      citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  if (input.candidate.status === 'insufficient_evidence') {
+    return Object.freeze({
+      outcome: 'insufficient_evidence',
+      validationCode: 'insufficient_evidence',
+      answer: INSUFFICIENT_EVIDENCE_ANSWER,
+      citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  if (
+    !hasGroundedLexicalSupport({
+      question: input.question,
+      answer: input.candidate.answer,
+      citationChunkIds: input.candidate.citationChunkIds,
+      exposedHits: input.exposedHits,
+    })
+  ) {
+    return Object.freeze({
+      outcome: 'failed',
+      validationCode: 'rejected',
+      answer: null,
+      citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  return Object.freeze({
+    outcome: 'answered',
+    validationCode: 'accepted',
+    answer: input.candidate.answer,
+    citationChunkIds: Object.freeze([...input.candidate.citationChunkIds]),
+  });
+}
+
 /** Platform-owned Test validation. Package instructions never configure acceptance. */
 export function validateKnowledgeCandidate(input: {
   gate: KnowledgeAgentTestGate;
@@ -623,15 +668,7 @@ export function validateKnowledgeCandidate(input: {
     });
   }
   if (input.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2') {
-    const accepted =
-      input.gate.validatorPolicyVersion === KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY &&
-      hasGroundedLexicalSupport({
-        question: input.question,
-        answer: input.candidate.answer,
-        citationChunkIds: input.candidate.citationChunkIds,
-        exposedHits: input.exposedHits,
-      });
-    if (!accepted) {
+    if (input.gate.validatorPolicyVersion !== KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY) {
       return Object.freeze({
         outcome: 'failed',
         validationCode: 'rejected',
@@ -639,12 +676,7 @@ export function validateKnowledgeCandidate(input: {
         citationChunkIds: EMPTY_CITATIONS,
       });
     }
-    return Object.freeze({
-      outcome: 'answered',
-      validationCode: 'accepted',
-      answer: input.candidate.answer,
-      citationChunkIds: Object.freeze([...input.candidate.citationChunkIds]),
-    });
+    return validateGroundedKnowledgeCandidate(input);
   }
   const expected = input.gate.cases.find(
     (candidate) => candidate.questionDigest === knowledgeQuestionDigest(input.question),
