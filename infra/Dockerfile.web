@@ -6,7 +6,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfi
 COPY packages ./packages
 COPY apps ./apps
 COPY scripts/web-asset-manifest.mjs ./scripts/web-asset-manifest.mjs
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 # 同镜像同时构建创作者中心（web）与试用端（runtime-web，base=/try/）静态产物。
 RUN pnpm -F @cb/shared build && pnpm -F @cb/web build && pnpm -F @cb/runtime-web build && \
     node scripts/web-asset-manifest.mjs create \
