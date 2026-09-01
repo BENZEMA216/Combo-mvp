@@ -14,6 +14,9 @@ const INTERROGATIVE_TERMINATOR_PATTERN = /[?？]/u;
 const DECLARATIVE_TERMINATOR_PATTERN = /[。；;！!]/u;
 const MARKDOWN_BLOCK_PREFIX_PATTERN = /^(?:#{1,6}|[-*+]\s|\d{1,9}[.)、]\s|>\s?)/u;
 const QUESTION_CLAUSE_PATTERN = /[^，,。；;！？!?\n]+/gu;
+const ANSWER_SUBCLAUSE_PATTERN = /[^，,]+/gu;
+const QUESTION_SKELETON_ATOM_PATTERN =
+  /\p{Script=Han}+|[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
 const HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES = Object.freeze([
   '定义为',
   '意味着',
@@ -182,10 +185,10 @@ const LATIN_INFORMATION_GAIN_NOISE_PATTERN =
   /^(?:a|an|and|are|as|at|but|by|can|for|from|has|have|in|include|includes|is|it|itself|mean|means|must|of|on|or|provide|provides|require|requires|return|returns|self|should|support|supports|the|to|use|uses|was|were|will|with)$/iu;
 const HAN_PREFIX_PATTERN = /^\p{Script=Han}/u;
 const LEADING_SEMANTIC_NEGATION_PATTERN = /[不没未无非莫]$/u;
-const SOLE_SHORT_TOPIC_ACTIONS = new Set([
-  ...HAN_ACTION_ARGUMENT_PREDICATE_PHRASES,
-  ...HAN_STANDALONE_PREDICATE_PHRASES,
-]);
+const LOCAL_SCOPE_MISMATCH_PATTERN =
+  /(?:不|没|未|无|非|莫|可能|也许|或许|大概|恐怕|拒绝|禁止|否认)/u;
+const SHORT_TOPIC_ACTIONS = new Set(HAN_ACTION_ARGUMENT_PREDICATE_PHRASES);
+const SHORT_TOPIC_STANDALONES = new Set(HAN_STANDALONE_PREDICATE_PHRASES);
 const DECLARATIVE_CONTINUATION_PHRASES = Object.freeze(
   [
     ...new Set([
@@ -238,6 +241,23 @@ const SUBSTANTIVE_HAN_NOISE_PHRASES = Object.freeze([
   '本身',
   '自身',
 ]);
+const SUBSTANTIVE_HAN_FUNCTION_PHRASES = Object.freeze([
+  '关于',
+  '对于',
+  '针对',
+  '以及',
+  '并且',
+  '而且',
+  '或者',
+  '的',
+  '与',
+  '和',
+  '及',
+  '或',
+  '之',
+]);
+const SUBSTANTIVE_DEMONSTRATIVE_RUN_PATTERN =
+  /(?<![\p{Script=Han}\p{N}])(?:另一个|上述|前述|这些|这个|该等|某个|某些|同一|相同|这种|那种|那个|那些|另一|本|该|此|其|这|那)\p{Script=Han}*/gu;
 
 interface LexicalFeature {
   key: string;
@@ -400,12 +420,13 @@ interface RelevanceAnchor {
 
 interface QuestionTopicGroup {
   text: string;
-  requiresPredicateContext: boolean;
+  predicateContext: 'none' | 'action' | 'standalone';
 }
 
 interface StrippedQuestionClause {
   text: string;
   removedStructuralOperator: boolean;
+  removedQuestionShell: boolean;
 }
 
 function validationText(value: string): string {
@@ -522,7 +543,9 @@ function structuralQuestionOperatorMatches(
 }
 
 function stripQuestionClauseShell(value: string): StrippedQuestionClause | null {
-  let text = stripTerminalQuestionParticle(value).trimEnd();
+  const withoutTerminalParticle = stripTerminalQuestionParticle(value);
+  const removedTerminalParticle = withoutTerminalParticle !== value;
+  let text = withoutTerminalParticle.trimEnd();
   const suffix = QUESTION_TRAILING_SHELL_PHRASES.find(
     (phrase) => text.endsWith(phrase) && hasQuestionSideContent(text.slice(0, -phrase.length)),
   );
@@ -534,7 +557,9 @@ function stripQuestionClauseShell(value: string): StrippedQuestionClause | null 
       break;
     }
   }
-  if (usedSuffix) return { text, removedStructuralOperator: false };
+  if (usedSuffix) {
+    return { text, removedStructuralOperator: false, removedQuestionShell: true };
+  }
 
   const operators = structuralQuestionOperatorMatches(text);
   if (operators.length > 1) return null;
@@ -542,7 +567,61 @@ function stripQuestionClauseShell(value: string): StrippedQuestionClause | null 
   if (operator) {
     text = `${text.slice(0, operator.index)}${text.slice(operator.index + operator.phrase.length)}`;
   }
-  return { text, removedStructuralOperator: operator !== undefined };
+  return {
+    text,
+    removedStructuralOperator: operator !== undefined,
+    removedQuestionShell: removedTerminalParticle || operator !== undefined,
+  };
+}
+
+function connectedSkeletonText(value: string): string {
+  return [
+    ...validationText(value).toLocaleLowerCase('und').matchAll(QUESTION_SKELETON_ATOM_PATTERN),
+  ]
+    .map((match) => match[0])
+    .join('');
+}
+
+function questionConnectedSkeletons(value: string): readonly string[] | null {
+  const compact = validationText(value)
+    .toLocaleLowerCase('und')
+    .replace(USER_WHITESPACE_PATTERN, '');
+  const skeletons: string[] = [];
+  let pendingContext = '';
+  for (const clauseMatch of compact.matchAll(QUESTION_CLAUSE_PATTERN)) {
+    const shelled = stripQuestionClauseShell(clauseMatch[0]);
+    if (shelled === null) return null;
+    const skeleton = connectedSkeletonText(shelled.text);
+    if (skeleton === '') continue;
+    if (shelled.removedQuestionShell) {
+      skeletons.push(`${pendingContext}${skeleton}`);
+      pendingContext = '';
+    } else {
+      pendingContext += skeleton;
+    }
+  }
+  if (pendingContext !== '') skeletons.push(pendingContext);
+  return skeletons;
+}
+
+function answerConnectedSubclauses(sentences: readonly ExtractiveSentence[]): readonly string[] {
+  return sentences.flatMap((sentence) =>
+    [...sentence.body.matchAll(ANSWER_SUBCLAUSE_PATTERN)]
+      .map((match) => connectedSkeletonText(match[0]))
+      .filter((value) => value !== ''),
+  );
+}
+
+function hasConnectedQuestionSkeletonCoverage(
+  question: string,
+  sentences: readonly ExtractiveSentence[],
+): boolean {
+  const skeletons = questionConnectedSkeletons(question);
+  if (skeletons === null || skeletons.length === 0) return false;
+  const answerSubclauses = answerConnectedSubclauses(sentences);
+  return skeletons.every((skeleton) =>
+    answerSubclauses.some((subclause) => subclause.includes(skeleton)),
+  );
 }
 
 function setHanRelevanceAnchors(anchors: Map<string, RelevanceAnchor>, text: string): void {
@@ -591,12 +670,17 @@ function questionTopicGroups(value: string): readonly QuestionTopicGroup[] | nul
     if (shelled === null) return null;
     for (const match of shelled.text.matchAll(HAN_PATTERN)) {
       if (Array.from(match[0]).length < 2) continue;
+      const actionContext =
+        SHORT_TOPIC_ACTIONS.has(match[0]) ||
+        (shelled.removedStructuralOperator &&
+          [...SHORT_TOPIC_ACTIONS].some((phrase) => match[0].endsWith(phrase)));
+      const standaloneContext =
+        SHORT_TOPIC_STANDALONES.has(match[0]) ||
+        (shelled.removedStructuralOperator &&
+          [...SHORT_TOPIC_STANDALONES].some((phrase) => match[0].endsWith(phrase)));
       groups.push({
         text: match[0],
-        requiresPredicateContext:
-          SOLE_SHORT_TOPIC_ACTIONS.has(match[0]) ||
-          (shelled.removedStructuralOperator &&
-            [...SOLE_SHORT_TOPIC_ACTIONS].some((phrase) => match[0].endsWith(phrase))),
+        predicateContext: actionContext ? 'action' : standaloneContext ? 'standalone' : 'none',
       });
     }
   }
@@ -623,9 +707,10 @@ function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
   );
 }
 
-function hasDeclarativeContinuation(target: string, end: number): boolean {
+function hasDeclarativeContinuation(target: string, end: number, allowTerminal: boolean): boolean {
   const suffix = target.slice(end).trimStart();
-  if (suffix === '' || !HAN_PREFIX_PATTERN.test(suffix)) return true;
+  if (suffix === '') return allowTerminal;
+  if (!HAN_PREFIX_PATTERN.test(suffix)) return true;
   return (
     DECLARATIVE_CONTINUATION_PHRASES.some((phrase) => suffix.startsWith(phrase)) ||
     CLAUSE_CONTINUATION_PHRASES.some(
@@ -634,10 +719,16 @@ function hasDeclarativeContinuation(target: string, end: number): boolean {
   );
 }
 
+function localSubclausePrefix(target: string, end: number): string {
+  const prefix = target.slice(0, end);
+  const boundary = Math.max(prefix.lastIndexOf('，'), prefix.lastIndexOf(','));
+  return prefix.slice(boundary + 1);
+}
+
 function hasTopicGroupCoverage(
   group: string,
   target: string,
-  requireShortActionContext: boolean,
+  predicateContext: QuestionTopicGroup['predicateContext'],
 ): boolean {
   const groupStartsWithPredicate = TOPIC_PREFIX_PREDICATE_PHRASES.some((phrase) =>
     group.startsWith(phrase),
@@ -646,12 +737,20 @@ function hasTopicGroupCoverage(
   while (fromIndex <= target.length - group.length) {
     const index = target.indexOf(group, fromIndex);
     if (index < 0) return false;
+    const localPrefix = localSubclausePrefix(target, index);
     const hasUnsupportedPrefix =
-      groupStartsWithPredicate && LEADING_SEMANTIC_NEGATION_PATTERN.test(target.slice(0, index));
-    if (
-      !hasUnsupportedPrefix &&
-      (!requireShortActionContext || hasDeclarativeContinuation(target, index + group.length))
-    ) {
+      groupStartsWithPredicate &&
+      (LEADING_SEMANTIC_NEGATION_PATTERN.test(localPrefix) ||
+        LOCAL_SCOPE_MISMATCH_PATTERN.test(localPrefix));
+    const hasRequiredPredicateContext =
+      predicateContext === 'none' ||
+      hasDeclarativeContinuation(target, index + group.length, predicateContext === 'standalone');
+    const hasPriorPredicate =
+      predicateContext === 'action' &&
+      (DECLARATIVE_CONTINUATION_PHRASES.some((phrase) => localPrefix.trimEnd().endsWith(phrase)) ||
+        HAN_DECLARATIVE_PREDICATE_PATTERN.test(localPrefix) ||
+        LATIN_DECLARATIVE_PREDICATE_PATTERN.test(localPrefix));
+    if (!hasUnsupportedPrefix && !hasPriorPredicate && hasRequiredPredicateContext) {
       return true;
     }
     fromIndex = index + 1;
@@ -704,6 +803,8 @@ function hasSubstantiveHanContent(
     ...HAN_STANDALONE_PREDICATE_PHRASES,
   ]);
   text = maskPhrasesToFixedPoint(text, SUBSTANTIVE_HAN_NOISE_PHRASES);
+  text = text.replace(SUBSTANTIVE_DEMONSTRATIVE_RUN_PATTERN, ' ');
+  text = maskPhrasesToFixedPoint(text, SUBSTANTIVE_HAN_FUNCTION_PHRASES);
   return [...text.matchAll(HAN_PATTERN)].some((match) => {
     const residualAnchors = new Map<string, RelevanceAnchor>();
     setHanRelevanceAnchors(residualAnchors, match[0]);
@@ -744,6 +845,7 @@ function hasPredicateOutsideTopicSpan(
 }
 
 function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSentence[]): boolean {
+  if (!hasConnectedQuestionSkeletonCoverage(question, sentences)) return false;
   const topicGroups = questionTopicGroups(question);
   if (topicGroups === null) return false;
   const strictTopicGroups = topicGroups.map((group) => group.text);
@@ -775,7 +877,7 @@ function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSen
   if (
     !topicGroups.every((group) =>
       sentenceTexts.some((sentence) =>
-        hasTopicGroupCoverage(group.text, sentence, group.requiresPredicateContext),
+        hasTopicGroupCoverage(group.text, sentence, group.predicateContext),
       ),
     ) ||
     !hasEveryLiteralQualifier(literalQualifiers, answerAnchors)
@@ -789,7 +891,7 @@ function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSen
     const sentenceAnchors = relevanceAnchors(sentence.body);
     return (
       topicGroups.some((group) =>
-        hasTopicGroupCoverage(group.text, sentenceTexts[index]!, group.requiresPredicateContext),
+        hasTopicGroupCoverage(group.text, sentenceTexts[index]!, group.predicateContext),
       ) &&
       hasEveryLiteralQualifier(literalQualifiers, sentenceAnchors) &&
       hasPredicateOutsideTopicSpan(sentence, strictTopicGroups) &&
