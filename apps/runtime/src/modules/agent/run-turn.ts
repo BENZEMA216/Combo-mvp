@@ -78,7 +78,9 @@ export interface TurnAgentInput {
   tools: RuntimeAgentTool[];
   promptText: string;
   hasExistingStudioArtifact: boolean;
-  knowledge?: Pick<ResolvedKnowledgeAgent, 'name' | 'description' | 'instructions'>;
+  knowledge?: Pick<ResolvedKnowledgeAgent, 'name' | 'description' | 'instructions'> & {
+    requiresGroundedExtractiveAnswer: boolean;
+  };
 }
 export interface TurnAgent {
   subscribeTextDelta(fn: (delta: string) => void): () => void;
@@ -792,6 +794,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     const toolSession = createKnowledgeToolSession({
       knowledge: args.knowledge.resolved.knowledge,
       turnSignal: controller.signal,
+      requiresGroundedExtractiveAnswer:
+        args.knowledge.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2',
     });
     let agent: TurnAgent;
     try {
@@ -802,7 +806,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         tools: toolSession.tools,
         promptText: args.text,
         hasExistingStudioArtifact: false,
-        knowledge: args.knowledge.resolved,
+        knowledge: {
+          name: args.knowledge.resolved.name,
+          description: args.knowledge.resolved.description,
+          instructions: args.knowledge.resolved.instructions,
+          requiresGroundedExtractiveAnswer:
+            args.knowledge.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2',
+        },
       });
     } catch (err) {
       log.error({ err }, 'knowledge agent factory failed');
