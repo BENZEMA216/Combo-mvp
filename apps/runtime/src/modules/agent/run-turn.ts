@@ -45,7 +45,10 @@ import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
 import {
   createKnowledgeToolSession,
   validateKnowledgeCandidate,
+  type KnowledgeAnswerCandidate,
   type KnowledgeAgentTool,
+  type KnowledgeSearchHit,
+  type KnowledgeValidation,
   type ResolvedKnowledgeAgent,
 } from '../knowledge-agent/resolver.js';
 import { finishKnowledgeTurn, sweepExpiredKnowledgeTurns } from '../knowledge-agent/resolver.js';
@@ -90,6 +93,27 @@ export class TurnAgentUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'TurnAgentUnavailableError';
+  }
+}
+
+export const KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2 =
+  'knowledge-agent-grounded-validator-v2' as const;
+
+export interface GroundedKnowledgeValidatorInput {
+  question: string;
+  candidate: KnowledgeAnswerCandidate | null;
+  exposedHits: readonly KnowledgeSearchHit[];
+  resolved: ResolvedKnowledgeAgent;
+  turnSignal: AbortSignal;
+}
+export type GroundedKnowledgeValidator = (
+  input: GroundedKnowledgeValidatorInput,
+) => KnowledgeValidation | Promise<KnowledgeValidation>;
+
+export class KnowledgeRecoveryPolicyUnavailableError extends Error {
+  constructor() {
+    super('pending knowledge recovery validator policy is unavailable');
+    this.name = 'KnowledgeRecoveryPolicyUnavailableError';
   }
 }
 
@@ -169,6 +193,8 @@ export interface TurnRunnerDeps {
   turnAdmissionDatabaseTimeoutMs?: number;
   turnAdmissionDeadlineMs?: number;
   billingPolicy?: UsageBillingPolicy;
+  /** Grounded-v2 implementation supplied by the immutable reasoning release. */
+  groundedKnowledgeValidator?: GroundedKnowledgeValidator;
   /** Exact Runtime release identity used by ownerless recovery paths. */
   runtimeSourceSha?: string;
   log: TurnLogger;
@@ -191,7 +217,10 @@ export interface TurnRunner {
     capabilityOwnerUserId: string;
     knowledge?: {
       resolved: ResolvedKnowledgeAgent;
-      gate: KnowledgeAgentTestGate;
+      /** Present only for fresh controlled-Test v1 admission. */
+      gate?: KnowledgeAgentTestGate;
+      /** Present only when an active recovery was selected from its frozen database row. */
+      validatorPolicyVersion?: string;
       runtimeSourceSha: string;
     };
     log: TurnLogger;
@@ -314,6 +343,7 @@ function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
 export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   const sandbox = deps.sandbox ?? createDisabledSandboxBackend();
   const billing = createUsageBillingService(deps.billingPolicy ?? DEFAULT_USAGE_BILLING_POLICY);
+  const groundedKnowledgeValidator = deps.groundedKnowledgeValidator;
   interface ActiveTurn {
     controller: AbortController;
     runId: string;
@@ -674,6 +704,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     controller: AbortController;
     runId: string;
     knowledge: NonNullable<Parameters<TurnRunner['startTurn']>[0]['knowledge']>;
+    validator: GroundedKnowledgeValidator;
     log: TurnLogger;
   }): Promise<void> {
     const { sessionId, controller, log, runId } = args;
@@ -880,12 +911,29 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       return;
     }
 
-    const validation = validateKnowledgeCandidate({
-      gate: args.knowledge.gate,
-      question: args.text,
-      candidate: toolSession.candidate(),
-      exposedHits: toolSession.exposedHits(),
-    });
+    let validation: KnowledgeValidation;
+    try {
+      validation = await args.validator({
+        question: args.text,
+        candidate: toolSession.candidate(),
+        exposedHits: toolSession.exposedHits(),
+        resolved: args.knowledge.resolved,
+        turnSignal: controller.signal,
+      });
+    } catch {
+      log.error({ runId }, 'knowledge validator failed');
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: {
+          code: 'TURN_KNOWLEDGE_VALIDATOR_UNAVAILABLE',
+          message: '知识验证暂时不可用。',
+        },
+      });
+      return;
+    }
     await finish({
       outcome: validation.outcome,
       validationCode: validation.validationCode,
@@ -1323,6 +1371,34 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   return {
     async startTurn(input) {
       if (disposing) throw new Error('turn runner is shutting down');
+      const freshKnowledgeGate = input.knowledge?.gate;
+      const frozenValidatorPolicyVersion = input.knowledge?.validatorPolicyVersion;
+      if (
+        input.knowledge &&
+        (freshKnowledgeGate === undefined) === (frozenValidatorPolicyVersion === undefined)
+      ) {
+        throw new KnowledgeRecoveryPolicyUnavailableError();
+      }
+      const recoveryValidator = (validatorPolicyVersion: string): GroundedKnowledgeValidator => {
+        if (
+          validatorPolicyVersion !== KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2 ||
+          !groundedKnowledgeValidator
+        ) {
+          throw new KnowledgeRecoveryPolicyUnavailableError();
+        }
+        return groundedKnowledgeValidator;
+      };
+      let knowledgeValidator: GroundedKnowledgeValidator | undefined = input.knowledge
+        ? freshKnowledgeGate
+          ? ({ question, candidate, exposedHits }) =>
+              validateKnowledgeCandidate({
+                gate: freshKnowledgeGate,
+                question,
+                candidate,
+                exposedHits,
+              })
+          : undefined
+        : undefined;
       const sessionId = input.session.id;
       const runId = randomUUID();
       const controller = new AbortController();
@@ -1356,7 +1432,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           ? {
               knowledge: {
                 binding: input.knowledge.resolved.binding,
-                validatorPolicyVersion: input.knowledge.gate.validatorPolicyVersion,
+                validatorPolicyVersion:
+                  freshKnowledgeGate?.validatorPolicyVersion ?? frozenValidatorPolicyVersion!,
               },
             }
           : {}),
@@ -1379,6 +1456,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       const admissionSignal = AbortSignal.any([transactionController.signal, admissionDeadline]);
       type CommitConfirmation =
         | { kind: 'committed'; outcome: Extract<OpenTurnOutcome, { kind: 'started' }> }
+        | { kind: 'terminal' }
         | { kind: 'absent' }
         | { kind: 'unknown' };
       const usageRequestForRecovery = (recovery: PendingUsageRecoveryRecord): UsageRequest => {
@@ -1427,6 +1505,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             const lockedSession = await lockActiveSession(tx, sessionId, input.session.ownerUserId);
             if (!lockedSession) return null;
             await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+            // Establish that this process's admission COMMIT actually created the
+            // exact running Turn before trusting any independently-created pending
+            // row. This is a non-locking read under the already-held Session lock,
+            // so the terminal lock order remains pending -> Turn/charge.
+            if ((await getRunningTurnId(tx, sessionId)) !== runId) {
+              return null;
+            }
             const pending = input.knowledge
               ? await findPendingUsageRecovery(
                   tx,
@@ -1442,7 +1527,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 expectedRecovery(pending.freeLimitSnapshot, confirmedUsageRequest),
               );
               if (pending.recoveryStatus !== 'active') {
-                throw new PendingUsageRecoveryConflictError();
+                return { kind: 'terminal' as const };
               }
             }
             const charge = await findUsageCharge(
@@ -1455,8 +1540,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               charge.turnId !== runId ||
               charge.sessionId !== sessionId ||
               charge.status !== 'reserved' ||
-              charge.requestFingerprint !== usageRequestFingerprint(confirmedUsageRequest) ||
-              (await getRunningTurnId(tx, sessionId)) !== runId
+              charge.requestFingerprint !== usageRequestFingerprint(confirmedUsageRequest)
             ) {
               return null;
             }
@@ -1474,11 +1558,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             timeoutMs: TURN_OWNERSHIP_CONFIRMATION_DATABASE_TIMEOUT_MS,
           },
         ).catch(() => undefined);
-        return confirmed
-          ? { kind: 'committed', outcome: confirmed }
-          : confirmed === null
-            ? { kind: 'absent' }
-            : { kind: 'unknown' };
+        return confirmed?.kind === 'terminal'
+          ? confirmed
+          : confirmed
+            ? { kind: 'committed', outcome: confirmed }
+            : confirmed === null
+              ? { kind: 'absent' }
+              : { kind: 'unknown' };
       };
       const scheduleCommitRecovery = (): void => {
         retainActiveForRecovery = true;
@@ -1507,6 +1593,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                   controller,
                   runId,
                   knowledge: input.knowledge,
+                  validator: knowledgeValidator!,
                   log: input.log,
                 });
               } else {
@@ -1524,7 +1611,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               }
               return;
             }
-            if (confirmation.kind === 'absent') return;
+            if (confirmation.kind === 'absent' || confirmation.kind === 'terminal') return;
             await waitForDelay(retryDelayMs, disposalController.signal);
             retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
           }
@@ -1571,6 +1658,12 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                   true,
                 );
                 if (lockedRecovery) {
+                  if (lockedRecovery.recoveryStatus === 'active') {
+                    // Frozen recovery policy dispatch happens before usage preparation, Turn
+                    // insertion, reservation, or model execution. Current gate semantics are
+                    // deliberately excluded from this branch.
+                    knowledgeValidator = recoveryValidator(lockedRecovery.validatorPolicyVersion);
+                  }
                   billableUsageRequest = usageRequestForRecovery(lockedRecovery);
                   assertPendingUsageRecoveryBindingMatches(
                     lockedRecovery,
@@ -1582,6 +1675,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                       expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
                     );
                   }
+                } else if (frozenValidatorPolicyVersion !== undefined) {
+                  throw new KnowledgeRecoveryPolicyUnavailableError();
                 }
               }
               admissionStage = 'usage_prepare';
@@ -1656,6 +1751,9 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                   lockedRecovery,
                   expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
                 );
+              }
+              if (input.knowledge && !knowledgeValidator) {
+                throw new KnowledgeRecoveryPolicyUnavailableError();
               }
               admissionStage = 'turn_insert';
               await createTurn(tx, { id: runId, sessionId });
@@ -1794,6 +1892,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 controller,
                 runId,
                 knowledge: input.knowledge,
+                validator: knowledgeValidator!,
                 log: input.log,
               })
             : executeTurn({

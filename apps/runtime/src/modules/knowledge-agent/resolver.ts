@@ -8,7 +8,10 @@ import {
   parseCreatorAgentPackageManifest,
   type CreatorAgentPackageFile,
 } from '@cb/creator-agent-protocol/agent-package';
-import type { CreatorAgentPackageCapability } from '@cb/creator-agent-protocol/agent-package-capability';
+import {
+  createCreatorAgentPackageCapability,
+  type CreatorAgentPackageCapability,
+} from '@cb/creator-agent-protocol/agent-package-capability';
 import { CREATOR_AGENT_PACKAGE_RELEASE_PROTOCOL } from '@cb/creator-agent-protocol/agent-package-release';
 import {
   CREATOR_KNOWLEDGE_BUNDLE_MAX_BYTES,
@@ -185,22 +188,20 @@ async function readExactFile(
   if (!exactFileMatches(bytes, file)) throw new KnowledgeAgentResolutionError('invalid_package');
   return bytes;
 }
-/**
- * Resolves the exact controlled-Test Package. Registry and the frozen digest select bytes; the
- * mutable Capability row contributes only access metadata and must exactly match the gate owner.
- */
-export async function resolveKnowledgeAgentPackage(input: {
+interface SelectedKnowledgeAgentPackageInput {
   db: Queryable;
   objectStore: RuntimeObjectStore;
   capability: CapabilitySummary;
   projection: CreatorAgentPackageCapability;
-  gate: KnowledgeAgentTestGate | null;
+  publisherUserId: string;
+  expectedBinding?: KnowledgeAgentBinding;
   signal?: AbortSignal;
-}): Promise<ResolvedKnowledgeAgent> {
-  if (!gateMatches(input.gate, input.capability, input.projection)) {
-    throw new KnowledgeAgentResolutionError('closed');
-  }
+}
 
+/** Registry and the selected immutable Release choose bytes; Capability contributes access owner. */
+async function resolveSelectedKnowledgeAgentPackage(
+  input: SelectedKnowledgeAgentPackageInput,
+): Promise<ResolvedKnowledgeAgent> {
   let registry;
   try {
     registry = await input.db.query<RegistryReleaseRow>(
@@ -223,7 +224,7 @@ export async function resolveKnowledgeAgentPackage(input: {
     row.release_id !== input.projection.release.releaseId ||
     row.package_digest !== input.projection.release.packageDigest ||
     row.owner_user_id !== input.capability.ownerUserId ||
-    row.owner_user_id !== input.gate.publisherUserId ||
+    row.owner_user_id !== input.publisherUserId ||
     row.release_protocol !== CREATOR_AGENT_PACKAGE_RELEASE_PROTOCOL ||
     row.release_scope !== 'controlled_test' ||
     row.package_protocol !== CREATOR_AGENT_PACKAGE_PROTOCOL
@@ -277,6 +278,9 @@ export async function resolveKnowledgeAgentPackage(input: {
         resourceDigest: resource.digest,
       },
     });
+    if (input.expectedBinding && !knowledgeBindingsEqual(binding, input.expectedBinding)) {
+      throw new KnowledgeAgentResolutionError('invalid_package');
+    }
     return Object.freeze({
       binding,
       name: manifest.name,
@@ -288,6 +292,61 @@ export async function resolveKnowledgeAgentPackage(input: {
     if (error instanceof KnowledgeAgentResolutionError) throw error;
     throw new KnowledgeAgentResolutionError('invalid_package');
   }
+}
+
+/**
+ * Resolves a fresh controlled-Test request selected by the current exact-SHA environment gate.
+ */
+export async function resolveKnowledgeAgentPackage(input: {
+  db: Queryable;
+  objectStore: RuntimeObjectStore;
+  capability: CapabilitySummary;
+  projection: CreatorAgentPackageCapability;
+  gate: KnowledgeAgentTestGate | null;
+  signal?: AbortSignal;
+}): Promise<ResolvedKnowledgeAgent> {
+  if (!gateMatches(input.gate, input.capability, input.projection)) {
+    throw new KnowledgeAgentResolutionError('closed');
+  }
+  return resolveSelectedKnowledgeAgentPackage({
+    db: input.db,
+    objectStore: input.objectStore,
+    capability: input.capability,
+    projection: input.projection,
+    publisherUserId: input.gate.publisherUserId,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+}
+
+/**
+ * Resolves an active recovery solely from its database-frozen binding. A mutable environment gate
+ * is intentionally not accepted by this API and therefore cannot retarget Package bytes.
+ */
+export async function resolveFrozenKnowledgeAgentPackage(input: {
+  db: Queryable;
+  objectStore: RuntimeObjectStore;
+  capability: CapabilitySummary;
+  binding: KnowledgeAgentBinding;
+  signal?: AbortSignal;
+}): Promise<ResolvedKnowledgeAgent> {
+  const parsed = KnowledgeAgentBindingSchema.safeParse(input.binding);
+  if (!parsed.success || parsed.data.capability.id !== input.capability.id) {
+    throw new KnowledgeAgentResolutionError('closed');
+  }
+  const projection = createCreatorAgentPackageCapability({
+    version: 2,
+    protocol: parsed.data.capability.protocol,
+    release: parsed.data.release,
+  });
+  return resolveSelectedKnowledgeAgentPackage({
+    db: input.db,
+    objectStore: input.objectStore,
+    capability: input.capability,
+    projection,
+    publisherUserId: input.capability.ownerUserId,
+    expectedBinding: parsed.data,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
 }
 const SEARCH_LIMIT_DEFAULT = 5;
 const SEARCH_LIMIT_MAX = 8;

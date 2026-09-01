@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { digestCreatorAgentPackageFile } from '@cb/creator-agent-protocol/agent-package';
 import {
   createCreatorKnowledgeBundle,
@@ -9,10 +9,16 @@ import {
 import type { CapabilityDefinition, KnowledgeAgentBinding } from '@cb/shared';
 import {
   createUsageBillingService,
+  usageRequestFingerprint,
   UsageRequestConflictError,
   type UsageRequest,
 } from '../modules/billing/service.js';
-import { createTurnRunner, TurnAdmissionUnavailableError } from '../modules/agent/run-turn.js';
+import {
+  KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+  createTurnRunner,
+  type GroundedKnowledgeValidator,
+  TurnAdmissionUnavailableError,
+} from '../modules/agent/run-turn.js';
 import {
   createTurn,
   finishTurnCas,
@@ -301,6 +307,10 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     script: Parameters<typeof makeFakeAgentFactory>[0],
     policy: { freeUses: number; unitPriceCents: number; version?: string },
     usageId = randomUUID(),
+    recovery?: {
+      validatorPolicyVersion: string;
+      validator: GroundedKnowledgeValidator;
+    },
   ) {
     const agent = makeFakeAgentFactory(script);
     const runner = createTurnRunner({
@@ -312,6 +322,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       idleTimeoutMs: 60_000,
       interrupts: createInterruptBus(),
       billingPolicy: policy,
+      ...(recovery ? { groundedKnowledgeValidator: recovery.validator } : {}),
       runtimeSourceSha: RUNTIME_SOURCE_SHA,
       log: silentLog,
     });
@@ -324,12 +335,57 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         capabilityOwnerUserId: chain.creatorUserId,
         knowledge: {
           resolved: chain.resolved,
-          gate: chain.gate,
+          ...(recovery
+            ? { validatorPolicyVersion: recovery.validatorPolicyVersion }
+            : { gate: chain.gate }),
           runtimeSourceSha: RUNTIME_SOURCE_SHA,
         },
         log: silentLog,
       });
     return { agent, runner, start, usageId };
+  }
+
+  async function seedPendingKnowledgeRecovery(
+    chain: SeededKnowledgeChain,
+    usageId: string,
+    validatorPolicyVersion: string,
+  ): Promise<void> {
+    const requestFingerprint = usageRequestFingerprint({
+      ownerUserId: chain.consumerUserId,
+      capabilityOwnerUserId: chain.creatorUserId,
+      capabilityId: chain.capabilityId,
+      sessionId: chain.session.id,
+      usageId,
+      text: chain.question,
+      knowledge: { binding: chain.binding, validatorPolicyVersion },
+    });
+    await db.query(
+      `INSERT INTO pending_usage_recoveries (
+         owner_user_id, usage_id, session_id, capability_id, request_text,
+         request_fingerprint, product_kind, capability_protocol, release_id,
+         package_digest, release_scope, knowledge_resource_path,
+         knowledge_resource_digest, billing_policy_version, validator_policy_version,
+         unit_price_cents, free_limit_snapshot, active_recharge_intent_id
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, 'knowledge_agent_test', $7, $8, $9,
+         $10, $11, $12, 'runtime-frozen-v1', $13, 101, 1, $2
+       )`,
+      [
+        chain.consumerUserId,
+        usageId,
+        chain.session.id,
+        chain.capabilityId,
+        chain.question,
+        requestFingerprint,
+        chain.binding.capability.protocol,
+        chain.binding.release.releaseId,
+        chain.binding.release.packageDigest,
+        chain.binding.releaseScope,
+        chain.binding.knowledge.resourcePath,
+        chain.binding.knowledge.resourceDigest,
+        validatorPolicyVersion,
+      ],
+    );
   }
 
   const waitForKnowledgeReceipt = (sessionId: string) =>
@@ -943,7 +999,70 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     expect(ledger.rows[0]).toEqual({ debit_count: '1', debit_total: '-100' });
   });
 
-  it('resumes the original knowledge usageId after real PostgreSQL 402 and settles once', async () => {
+  it.each([
+    ['legacy v1', 'knowledge-agent-test-validator-v1'],
+    ['unknown', 'knowledge-agent-unknown-validator-v9'],
+  ])(
+    'fails closed for a real PostgreSQL active recovery with %s before Turn/model/charge',
+    async (_label, validatorPolicyVersion) => {
+      const chain = await seedKnowledgeChain();
+      const usageId = randomUUID();
+      await seedPendingKnowledgeRecovery(chain, usageId, validatorPolicyVersion);
+      const groundedValidator = vi.fn<GroundedKnowledgeValidator>(() => ({
+        outcome: 'answered',
+        validationCode: 'accepted',
+        answer: chain.answer,
+        citationChunkIds: [chain.chunkId],
+      }));
+      const context = knowledgeRunner(
+        chain,
+        {},
+        { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
+        usageId,
+        {
+          validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+          validator: groundedValidator,
+        },
+      );
+      try {
+        await expect(context.start()).rejects.toMatchObject({
+          name: 'KnowledgeRecoveryPolicyUnavailableError',
+        });
+        const state = await runtimeDb.query<{
+          turn_count: string;
+          charge_count: string;
+          request_text: string | null;
+          recovery_status: string;
+          validator_policy_version: string;
+        }>(
+          `SELECT
+             (SELECT count(*)::text FROM turns WHERE session_id = p.session_id) AS turn_count,
+             (SELECT count(*)::text FROM usage_charges WHERE session_id = p.session_id) AS charge_count,
+             p.request_text,
+             p.recovery_status,
+             p.validator_policy_version
+           FROM pending_usage_recoveries p
+          WHERE p.owner_user_id = $1 AND p.usage_id = $2`,
+          [chain.consumerUserId, usageId],
+        );
+        expect(state.rows).toEqual([
+          {
+            turn_count: '0',
+            charge_count: '0',
+            request_text: chain.question,
+            recovery_status: 'active',
+            validator_policy_version: validatorPolicyVersion,
+          },
+        ]);
+        expect(context.agent.calls).toHaveLength(0);
+        expect(groundedValidator).not.toHaveBeenCalled();
+      } finally {
+        await context.runner.dispose(AbortSignal.timeout(5_000));
+      }
+    },
+  );
+
+  it('dispatches frozen grounded-v2 after real PostgreSQL 402 and settles once', async () => {
     const chain = await seedKnowledgeChain();
     const script = {
       invokeNamedTools: [
@@ -958,19 +1077,32 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         },
       ],
     };
-    const blockerSession = await createSession(runtimeDb, {
-      capabilityId: chain.capabilityId,
-      ownerUserId: chain.consumerUserId,
-    });
-    const blocker = await reserveFreeUsage(
-      { ...chain, session: blockerSession },
-      '占用冻结免费额度',
+    const recoveryUsageId = randomUUID();
+    const groundedValidator = vi.fn<GroundedKnowledgeValidator>(() => ({
+      outcome: 'answered',
+      validationCode: 'accepted',
+      answer: chain.answer,
+      citationChunkIds: [chain.chunkId],
+    }));
+    await seedPendingKnowledgeRecovery(
+      chain,
+      recoveryUsageId,
+      KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
     );
-    const context = knowledgeRunner(chain, script, {
-      freeUses: 1,
-      unitPriceCents: 101,
-      version: 'runtime-frozen-v1',
-    });
+    const context = knowledgeRunner(
+      chain,
+      script,
+      {
+        freeUses: 99,
+        unitPriceCents: 999,
+        version: 'runtime-current-v8',
+      },
+      recoveryUsageId,
+      {
+        validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+        validator: groundedValidator,
+      },
+    );
     let retryContext: ReturnType<typeof knowledgeRunner> | undefined;
     try {
       await expect(context.start()).resolves.toEqual({
@@ -1025,20 +1157,11 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
           active_recharge_intent_id: context.usageId,
           recovery_status: 'active',
           billing_policy_version: 'runtime-frozen-v1',
-          validator_policy_version: chain.gate.validatorPolicyVersion,
+          validator_policy_version: 'knowledge-agent-grounded-validator-v2',
           unit_price_cents: '101',
           free_limit_snapshot: 1,
         },
       ]);
-
-      await withTransaction(runtimeDb, async (transaction) => {
-        await lockTurnSession(transaction, blockerSession.id);
-        expect(await lockRunningTurn(transaction, blocker.turnId, blockerSession.id)).toBe(true);
-        expect(await finishTurnCas(transaction, { id: blocker.turnId, status: 'failed' })).toBe(
-          true,
-        );
-        await blocker.billing.releaseUsage(transaction, blocker.turnId);
-      });
 
       const suffix = randomUUID().replaceAll('-', '');
       await withTransaction(db, async (transaction) => {
@@ -1077,16 +1200,14 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       });
 
       retryContext = knowledgeRunner(
-        {
-          ...chain,
-          gate: {
-            ...chain.gate,
-            validatorPolicyVersion: 'current-validator-v9',
-          } as unknown as KnowledgeAgentTestGate,
-        },
+        chain,
         script,
         { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
         context.usageId,
+        {
+          validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+          validator: groundedValidator,
+        },
       );
       const opened = await Promise.all([retryContext.start(), retryContext.start()]);
       expect(opened.map((result) => result.status).sort()).toEqual(['replayed', 'started']);
@@ -1153,7 +1274,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         charge_source: 'wallet',
         execution_outcome: 'answered',
         billing_policy_version: 'runtime-frozen-v1',
-        validator_policy_version: chain.gate.validatorPolicyVersion,
+        validator_policy_version: 'knowledge-agent-grounded-validator-v2',
         unit_price_cents: '101',
         validation_code: 'accepted',
         settled_cents: '101',
@@ -1165,6 +1286,17 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       });
       expect(context.agent.calls).toHaveLength(0);
       expect(retryContext.agent.calls).toHaveLength(1);
+      expect(groundedValidator).toHaveBeenCalledTimes(1);
+      const groundedInput = groundedValidator.mock.calls[0]?.[0];
+      expect(groundedInput?.question).toBe(chain.question);
+      expect(groundedInput?.candidate).toEqual({
+        status: 'answered',
+        answer: chain.answer,
+        citationChunkIds: [chain.chunkId],
+      });
+      expect(groundedInput?.exposedHits.map((hit) => hit.chunkId)).toEqual([chain.chunkId]);
+      expect(groundedInput?.resolved.binding).toEqual(chain.binding);
+      expect(groundedInput?.turnSignal.aborted).toBe(false);
       const recoveryTerminal = await runtimeDb.query<{
         request_text: string | null;
         recovery_status: string;

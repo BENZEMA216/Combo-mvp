@@ -39,6 +39,7 @@ import {
   listPendingUsageRecoveriesHandler,
 } from '../modules/billing/pending-recovery-handlers.js';
 import { sweepExpiredPendingUsageRecoveries } from '../modules/billing/pending-recovery.js';
+import { usageRequestFingerprint } from '../modules/billing/service.js';
 import { createArtifactTool } from '../modules/artifact/tool.js';
 import {
   ARTIFACT_BUCKET,
@@ -52,7 +53,12 @@ import {
   getOrCreateStudioSession,
 } from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
-import { createTurnRunner, type TurnRunner } from '../modules/agent/run-turn.js';
+import {
+  KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+  createTurnRunner,
+  type GroundedKnowledgeValidatorInput,
+  type TurnRunner,
+} from '../modules/agent/run-turn.js';
 import {
   AGENT_PACKAGE_OBJECT_BUCKET,
   agentPackageObjectKey,
@@ -1539,6 +1545,12 @@ describe('knowledge Agent handler closed loop', () => {
       ],
       finalMessages: [{ role: 'assistant', content: [{ type: 'text', text: '伪造 transcript' }] }],
     });
+    const groundedValidator = vi.fn((_input: GroundedKnowledgeValidatorInput) => ({
+      outcome: 'answered' as const,
+      validationCode: 'accepted' as const,
+      answer,
+      citationChunkIds: [chunkId],
+    }));
     const turns = createTurnRunner({
       db,
       objectStore: store,
@@ -1548,6 +1560,7 @@ describe('knowledge Agent handler closed loop', () => {
       idleTimeoutMs: 60_000,
       interrupts: createInterruptBus(),
       billingPolicy: { freeUses: 3, unitPriceCents: 1 },
+      groundedKnowledgeValidator: groundedValidator,
       runtimeSourceSha: sourceSha,
       log: silentLog,
     });
@@ -1761,41 +1774,181 @@ describe('knowledge Agent handler closed loop', () => {
       ).statusCode,
     ).toBe(404);
 
+    const recoveryRequest = (requestEnv: Env) =>
+      call(
+        sendMessageHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env: requestEnv,
+          turns,
+          userId: consumer,
+          params: { id: sessionId },
+          body: { text: question, usageId: rechargeUsageId },
+        }),
+      );
+    const stateBeforePolicyFailures = {
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    };
+    expect(await recoveryRequest(env)).toMatchObject({
+      statusCode: 503,
+      body: { error: { action: 'retry' } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: question,
+      recovery_status: 'active',
+      validator_policy_version: 'knowledge-agent-test-validator-v1',
+    });
+    expect({
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforePolicyFailures);
+
+    if (!pending) throw new Error('missing pending recovery fixture');
+    const frozenBinding = {
+      productKind: 'knowledge_agent_test' as const,
+      capability: {
+        id: pending.capability_id,
+        protocol: pending.capability_protocol as 'combo.agent-package-capability/2',
+      },
+      release: {
+        protocol: 'combo.agent-package-release/1' as const,
+        releaseId: pending.release_id as `release.agent-package.${string}`,
+        packageDigest: pending.package_digest as `sha256:${string}`,
+      },
+      releaseScope: pending.release_scope as 'controlled_test',
+      knowledge: {
+        protocol: 'combo.knowledge-bundle/1' as const,
+        resourcePath:
+          pending.knowledge_resource_path as 'skills/knowledge/references/knowledge-bundle.json',
+        resourceDigest: pending.knowledge_resource_digest as `sha256:${string}`,
+      },
+    };
+    const setFrozenValidatorPolicy = (validatorPolicyVersion: string): void => {
+      pending.validator_policy_version = validatorPolicyVersion;
+      pending.request_fingerprint = usageRequestFingerprint({
+        ownerUserId: consumer,
+        capabilityOwnerUserId: creator,
+        capabilityId,
+        sessionId,
+        usageId: rechargeUsageId,
+        text: question,
+        knowledge: { binding: frozenBinding, validatorPolicyVersion },
+      });
+    };
+    setFrozenValidatorPolicy('knowledge-agent-unknown-validator-v9');
+    expect(await recoveryRequest(env)).toMatchObject({
+      statusCode: 503,
+      body: { error: { action: 'retry' } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: question,
+      recovery_status: 'active',
+      validator_policy_version: 'knowledge-agent-unknown-validator-v9',
+    });
+    expect({
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforePolicyFailures);
+
+    expect(KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2).toBe('knowledge-agent-grounded-validator-v2');
+    setFrozenValidatorPolicy(KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2);
+    const driftedGate: KnowledgeAgentTestGate = {
+      ...gate,
+      capabilityId: '00000000-0000-4000-8000-000000000199',
+      releaseId: `release.agent-package.${'b'.repeat(32)}`,
+      packageDigest: `sha256:${'c'.repeat(64)}`,
+      cases: [
+        {
+          questionDigest: knowledgeQuestionDigest(question),
+          answer: '当前环境中不得用于恢复的答案。',
+          citationChunkIds: [chunkId],
+        },
+      ],
+    };
+    const driftedEnv = {
+      ...env,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(driftedGate),
+    } as Env;
+    const envWithoutKnowledgeGate = {
+      ...env,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: undefined,
+    } as unknown as Env;
+    expect(await recoveryRequest(envWithoutKnowledgeGate)).toMatchObject({
+      statusCode: 402,
+      body: {
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+      },
+    });
+    expect(await recoveryRequest(driftedEnv)).toMatchObject({
+      statusCode: 402,
+      body: {
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+      },
+    });
+    expect(groundedValidator).not.toHaveBeenCalled();
+
     const account = db.billingAccounts.get(consumer);
     if (!account) throw new Error('missing consumer billing account');
     account.balance_cents = 1n;
-    const accepted = await call(
-      sendMessageHandler(),
-      makeReq({
-        db,
-        objectStore: store,
-        env,
-        turns,
-        userId: consumer,
-        params: { id: sessionId },
-        body: { text: question, usageId: rechargeUsageId },
-      }),
-    );
-    const replay = await call(
-      sendMessageHandler(),
-      makeReq({
-        db,
-        objectStore: store,
-        env,
-        turns,
-        userId: consumer,
-        params: { id: sessionId },
-        body: { text: question, usageId: rechargeUsageId },
-      }),
-    );
+    const accepted = await recoveryRequest(driftedEnv);
+    const replay = await recoveryRequest(driftedEnv);
     expect(accepted).toMatchObject({ statusCode: 202, body: { data: { replayed: false } } });
     expect(replay).toMatchObject({ statusCode: 202, body: { data: { replayed: true } } });
     await waitFor(() => db.agentUsageReceipts.size === 4);
+    expect(groundedValidator).toHaveBeenCalledTimes(1);
+    const groundedInput = groundedValidator.mock.calls[0]?.[0];
+    expect(groundedInput?.question).toBe(question);
+    expect(groundedInput?.candidate).toEqual({
+      status: 'answered',
+      answer,
+      citationChunkIds: [chunkId],
+    });
+    expect(groundedInput?.exposedHits.map((hit) => hit.chunkId)).toEqual([chunkId]);
+    expect(groundedInput?.resolved.binding).toEqual(frozenBinding);
+    expect(groundedInput?.turnSignal.aborted).toBe(false);
     expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
       request_text: null,
       recovery_status: 'accepted',
       terminal_turn_id: expect.any(String),
     });
+    const terminalReplayAgent = makeFakeAgentFactory();
+    const terminalReplayTurns = createTurnRunner({
+      db,
+      objectStore: store,
+      bus: createSessionEventBus(),
+      eventLog: new FakeSessionEventLog(),
+      agentFactory: terminalReplayAgent.factory,
+      idleTimeoutMs: 60_000,
+      interrupts: createInterruptBus(),
+      billingPolicy: { freeUses: 99, unitPriceCents: 999 },
+      runtimeSourceSha: sourceSha,
+      log: silentLog,
+    });
+    const terminalReplay = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env: envWithoutKnowledgeGate,
+        turns: terminalReplayTurns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId: rechargeUsageId },
+      }),
+    );
+    expect(terminalReplay).toMatchObject({
+      statusCode: 202,
+      body: { data: { replayed: true } },
+    });
+    expect(terminalReplayAgent.calls).toHaveLength(0);
+    await terminalReplayTurns.dispose();
     expect(
       [...db.usageCharges.values()].filter((charge) => charge.usage_id === rechargeUsageId),
     ).toHaveLength(1);
@@ -1822,10 +1975,149 @@ describe('knowledge Agent handler closed loop', () => {
       ).statusCode,
     ).toBe(404);
 
-    const cancelSessionId = '00000000-0000-4000-8000-000000000109';
-    const cancelUsageId = '00000000-0000-4000-8000-000000000110';
+    // A lost COMMIT response can hand confirmation to the background owner. If an
+    // interrupt terminalizes the exact recovery before its next read, confirmation
+    // must converge once, release the local handle, and never invoke Pi/validation.
+    const commitRaceSessionId = '00000000-0000-4000-8000-000000000113';
+    const commitRaceUsageId = '00000000-0000-4000-8000-000000000114';
     const sourceSession = db.sessions.get(sessionId);
     if (!sourceSession || !pending) throw new Error('missing recovery fixture');
+    db.sessions.set(commitRaceSessionId, { ...sourceSession, id: commitRaceSessionId });
+    db.seedPendingUsageRecovery({
+      ...pending,
+      usage_id: commitRaceUsageId,
+      session_id: commitRaceSessionId,
+      request_text: question,
+      request_fingerprint: usageRequestFingerprint({
+        ownerUserId: consumer,
+        capabilityOwnerUserId: creator,
+        capabilityId,
+        sessionId: commitRaceSessionId,
+        usageId: commitRaceUsageId,
+        text: question,
+        knowledge: {
+          binding: frozenBinding,
+          validatorPolicyVersion: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+        },
+      }),
+      validator_policy_version: KNOWLEDGE_GROUNDED_VALIDATOR_POLICY_V2,
+      active_recharge_intent_id: commitRaceUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    account.balance_cents = 1n;
+    const modelCallsBeforeCommitRace = agent.calls.length;
+    const validatorCallsBeforeCommitRace = groundedValidator.mock.calls.length;
+    const originalQuery = db.query.bind(db);
+    let loseAdmissionCommitResponse = false;
+    let admissionCommitResponseLost = false;
+    let failSynchronousConfirmation = true;
+    let blockBackgroundConfirmation = true;
+    let backgroundConfirmationBlocked = false;
+    let postCommitBeginCount = 0;
+    let releaseBackgroundConfirmation!: () => void;
+    const backgroundConfirmationRelease = new Promise<void>((resolve) => {
+      releaseBackgroundConfirmation = resolve;
+    });
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      if (admissionCommitResponseLost && normalized === 'BEGIN') {
+        postCommitBeginCount += 1;
+        if (failSynchronousConfirmation) {
+          failSynchronousConfirmation = false;
+          throw new Error('redacted synchronous confirmation transport failure');
+        }
+        if (blockBackgroundConfirmation) {
+          blockBackgroundConfirmation = false;
+          backgroundConfirmationBlocked = true;
+          await backgroundConfirmationRelease;
+        }
+      }
+      const result = await originalQuery<R>(sql, params);
+      if (normalized.startsWith('INSERT INTO usage_charges') && params[1] === commitRaceUsageId) {
+        loseAdmissionCommitResponse = true;
+      }
+      if (normalized === 'COMMIT' && loseAdmissionCommitResponse) {
+        loseAdmissionCommitResponse = false;
+        admissionCommitResponseLost = true;
+        throw new Error('redacted knowledge recovery commit response loss');
+      }
+      return result;
+    };
+    let backgroundReleased = false;
+    try {
+      const commitUnknown = await call(
+        sendMessageHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env: envWithoutKnowledgeGate,
+          turns,
+          userId: consumer,
+          params: { id: commitRaceSessionId },
+          body: { text: question, usageId: commitRaceUsageId },
+        }),
+      );
+      expect(commitUnknown).toMatchObject({
+        statusCode: 503,
+        body: { error: { action: 'retry' } },
+      });
+      await waitFor(() => backgroundConfirmationBlocked);
+      expect(await turns.interrupt(commitRaceSessionId)).toBe(true);
+      expect(db.pendingUsageRecoveries.get(`${consumer}:${commitRaceUsageId}`)).toMatchObject({
+        request_text: null,
+        recovery_status: 'abandoned',
+        terminal_turn_id: expect.any(String),
+      });
+      const beginsBeforeBackgroundRelease = postCommitBeginCount;
+      const commitsBeforeBackgroundRelease = db.txLog.filter((entry) => entry === 'COMMIT').length;
+      releaseBackgroundConfirmation();
+      backgroundReleased = true;
+      await waitFor(
+        () =>
+          db.txLog.filter((entry) => entry === 'COMMIT').length > commitsBeforeBackgroundRelease,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(postCommitBeginCount).toBe(beginsBeforeBackgroundRelease);
+    } finally {
+      if (!backgroundReleased) releaseBackgroundConfirmation();
+      db.query = originalQuery;
+    }
+    expect(agent.calls).toHaveLength(modelCallsBeforeCommitRace);
+    expect(groundedValidator).toHaveBeenCalledTimes(validatorCallsBeforeCommitRace);
+    expect(
+      [...db.usageCharges.values()].filter(
+        (charge) => charge.usage_id === commitRaceUsageId && charge.status === 'released',
+      ),
+    ).toHaveLength(1);
+    expect(
+      [...db.agentUsageReceipts.values()].filter(
+        (receipt) =>
+          receipt.usage_id === commitRaceUsageId && receipt.execution_outcome === 'interrupted',
+      ),
+    ).toHaveLength(1);
+    const commitRaceReplay = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env: envWithoutKnowledgeGate,
+        turns,
+        userId: consumer,
+        params: { id: commitRaceSessionId },
+        body: { text: question, usageId: commitRaceUsageId },
+      }),
+    );
+    expect(commitRaceReplay).toMatchObject({
+      statusCode: 202,
+      body: { data: { replayed: true } },
+    });
+    expect(agent.calls).toHaveLength(modelCallsBeforeCommitRace);
+    expect(groundedValidator).toHaveBeenCalledTimes(validatorCallsBeforeCommitRace);
+
+    const cancelSessionId = '00000000-0000-4000-8000-000000000109';
+    const cancelUsageId = '00000000-0000-4000-8000-000000000110';
     db.sessions.set(cancelSessionId, { ...sourceSession, id: cancelSessionId });
     db.seedPendingUsageRecovery({
       ...pending,
@@ -1876,7 +2168,7 @@ describe('knowledge Agent handler closed loop', () => {
       recovery_status: 'abandoned',
     });
     expect(agent.calls).toHaveLength(4);
-    expect(db.agentUsageReceipts.size).toBe(4);
+    expect(db.agentUsageReceipts.size).toBe(5);
     await turns.dispose();
   });
 });
