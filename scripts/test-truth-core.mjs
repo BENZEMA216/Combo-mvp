@@ -102,6 +102,17 @@ const suiteSemanticPolicy = Object.freeze({
       },
     ],
   },
+  'TS-CONTRACT-DB-001': {
+    layer: 'CONTRACT',
+    acceptance: { relationship: 'SUPPORTING', journeyIds: [], acceptanceIds: [] },
+    proves: [
+      {
+        id: 'CLAIM-PENDING-USAGE-RECOVERY-MIGRATION-CONTRACT',
+        statement:
+          'The selected pending-usage recovery migration source invariants passed against the exact candidate tree.',
+      },
+    ],
+  },
   'TS-UNIT-011': {
     layer: 'UNIT_FAKE',
     acceptance: {
@@ -135,7 +146,7 @@ const suiteSemanticPolicy = Object.freeze({
       {
         id: 'CLAIM-PR-POSTGRES-INVARIANTS',
         statement:
-          'The selected Registry, receipt, role, upgrade, and billing invariants passed against ephemeral PostgreSQL 16.',
+          'The selected Registry, receipt, pending-usage recovery, role, upgrade, and billing invariants passed against ephemeral PostgreSQL 16.',
       },
     ],
   },
@@ -178,9 +189,10 @@ const suiteSemanticPolicy = Object.freeze({
 });
 const suiteExecutionPolicyDigests = Object.freeze({
   'TS-CONTRACT-011': '8b5070aca06a5e6dede7deb0f3df44b6c11c25beb7f1fda6d04f0fe94256d7b8',
+  'TS-CONTRACT-DB-001': '432fd6d3a31e80fd66ad8ab6143f762b41825b05d3759731bfe340db94924f29',
   'TS-UNIT-011': 'fe4d387d827a61f05e4c06c50ad6b1b1b9d1f3d316adfd762b2747e1305abb75',
   'TS-ADAPTER-LOCAL-001': 'bfbf919bd1ad68ce316fd307f954c6697a078d0d501fec1472c53b63a2779007',
-  'TS-INFRA-REAL-PR-001': '2acec2b455db7b4fe18fea41e89a4a7ee73b561018a70c2d0194f5be695fdc31',
+  'TS-INFRA-REAL-PR-001': '5e19a7197120b4f5ee3b11cf911a7ec24dc8a1dc58dbd84942dd0bb6768c423c',
   'TS-INFRA-REAL-MAIN-002': 'bb533ba0250b38b134aef544dc0dc2fed99416b749620de856cd6a5c5fa70309',
   'TS-HOST-REAL-001': '8029a02fdb0c332d941fbc3e4cac23acf303eabe1e9bdf0a70e05be8cff056e3',
   'TS-BROWSER-AUTH-001': 'b53be46c1ccc2e86c2dccf86469ca777c3bf134fe470ca9a7028b5e2dc1f4b9a',

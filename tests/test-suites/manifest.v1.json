@@ -75,6 +75,48 @@
       ]
     },
     {
+      "id": "TS-CONTRACT-DB-001",
+      "name": "Pending-usage recovery migration contract",
+      "layer": "CONTRACT",
+      "implementation": "AVAILABLE",
+      "resultSource": "PR_SOURCE",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": [],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": ["db/__tests__/pending-usage-recovery-migration.test.ts"]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/pending-usage-recovery-migration.test.ts"],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "RUN_REQUIRED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-PENDING-USAGE-RECOVERY-MIGRATION-CONTRACT",
+          "statement": "The selected pending-usage recovery migration source invariants passed against the exact candidate tree."
+        }
+      ],
+      "doesNotProve": [
+        "The migration was applied to a real PostgreSQL database.",
+        "The pending-usage recovery user journey works."
+      ]
+    },
+    {
       "id": "TS-UNIT-011",
       "name": "Current-conversation draft unit behavior",
       "layer": "UNIT_FAKE",
@@ -197,7 +239,10 @@
           "db/__tests__/agent-session-receipts-roles.pg.test.ts",
           "db/__tests__/agent-session-receipts-upgrade.pg.test.ts",
           "db/__tests__/agent-session-receipts.pg.test.ts",
-          "db/__tests__/agent-session-response-message.pg.test.ts"
+          "db/__tests__/agent-session-response-message.pg.test.ts",
+          "db/__tests__/pending-usage-recovery-roles.pg.test.ts",
+          "db/__tests__/pending-usage-recovery-upgrade.pg.test.ts",
+          "db/__tests__/pending-usage-recovery.pg.test.ts"
         ]
       },
       "runner": {
@@ -242,6 +287,35 @@
           },
           {
             "kind": "VITEST",
+            "cwd": "db",
+            "argv": [
+              "__tests__/pending-usage-recovery.pg.test.ts",
+              "__tests__/pending-usage-recovery-roles.pg.test.ts"
+            ],
+            "requiredEnvNames": [
+              "DATABASE_URL",
+              "PENDING_USAGE_RECOVERY_PG_TEST",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/pending-usage-recovery-upgrade.pg.test.ts"],
+            "requiredEnvNames": [
+              "DATABASE_URL",
+              "PENDING_USAGE_RECOVERY_UPGRADE_PG_TEST",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
             "cwd": "apps/authoring",
             "argv": ["src/__tests__/billing.pg.test.ts"],
             "requiredEnvNames": [
@@ -272,7 +346,7 @@
       "proves": [
         {
           "id": "CLAIM-PR-POSTGRES-INVARIANTS",
-          "statement": "The selected Registry, receipt, role, upgrade, and billing invariants passed against ephemeral PostgreSQL 16."
+          "statement": "The selected Registry, receipt, pending-usage recovery, role, upgrade, and billing invariants passed against ephemeral PostgreSQL 16."
         }
       ],
       "doesNotProve": [

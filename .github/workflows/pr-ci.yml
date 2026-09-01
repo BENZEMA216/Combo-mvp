@@ -189,6 +189,8 @@ jobs:
           AGENT_PACKAGE_REGISTRY_PG_TEST: '1'
           AGENT_SESSION_RECEIPTS_PG_TEST: '1'
           AGENT_SESSION_RECEIPTS_UPGRADE_PG_TEST: '1'
+          PENDING_USAGE_RECOVERY_PG_TEST: '1'
+          PENDING_USAGE_RECOVERY_UPGRADE_PG_TEST: '1'
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           POSTGRES_API_PASSWORD: ci-api-role-password
           POSTGRES_WORKER_PASSWORD: ci-worker-role-password

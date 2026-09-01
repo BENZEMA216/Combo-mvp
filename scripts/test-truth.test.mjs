@@ -218,7 +218,7 @@ function acceptanceWithEvidence(commit, { allGates = true } = {}) {
 
 test('the committed manifest is normalized and exposes its unclassified boundary', () => {
   assert.equal(manifestSource, `${manifestSource.trimEnd()}\n`);
-  assert.equal(manifest.suites.length, 8);
+  assert.equal(manifest.suites.length, 9);
   const inventory = validateRepositoryManifest(manifest);
   assert.equal(inventory.totalTestFiles >= inventory.classifiedTestFiles, true);
   assert.equal(inventory.baselineUnclassifiedCount > 0, true);
@@ -251,6 +251,11 @@ test('suite selectors and semantic claims cannot drift beyond their machine poli
         '__tests__/agent-session-receipts-roles.pg.test.ts',
       ],
       ['__tests__/agent-session-receipts-upgrade.pg.test.ts'],
+      [
+        '__tests__/pending-usage-recovery.pg.test.ts',
+        '__tests__/pending-usage-recovery-roles.pg.test.ts',
+      ],
+      ['__tests__/pending-usage-recovery-upgrade.pg.test.ts'],
     ],
     'database evidence must retain the proven non-interfering groups from db-migrate.sh',
   );
@@ -576,7 +581,13 @@ test('an aggregate passes only with exact candidate-bound results from both requ
   assert.equal(report.decision, 'PASS');
   assert.deepEqual(
     report.suites.filter((suite) => suite.status === 'PASS').map((suite) => suite.suiteId),
-    ['TS-CONTRACT-011', 'TS-UNIT-011', 'TS-ADAPTER-LOCAL-001', 'TS-INFRA-REAL-PR-001'],
+    [
+      'TS-CONTRACT-011',
+      'TS-CONTRACT-DB-001',
+      'TS-UNIT-011',
+      'TS-ADAPTER-LOCAL-001',
+      'TS-INFRA-REAL-PR-001',
+    ],
   );
   assert.equal(
     report.suites.find((suite) => suite.suiteId === 'TS-HOST-REAL-001').status,
