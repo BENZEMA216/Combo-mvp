@@ -560,11 +560,7 @@ export function RecoveryRechargeDialog({
         throw new Error('order refresh failed');
       }
       if (latest.data.status === 'credited') return;
-      if (
-        latest.data.status !== 'failed' &&
-        latest.data.status !== 'closed' &&
-        latest.data.reconciliationActive !== false
-      ) {
+      if (latest.data.status !== 'failed' && latest.data.status !== 'closed') {
         throw new Error('order is not terminal');
       }
       await createForIntent(crypto.randomUUID());
@@ -700,6 +696,7 @@ export function RecoveryRechargeDialog({
             error={error}
             retrying={replacementPending}
             paymentDisabled={frozenAmountCents === null}
+            allowInactiveReplacement={false}
             resumeState={resumeState}
             resumeError={resumeError}
             onAbandon={() => void abandon()}
@@ -725,6 +722,7 @@ function RechargeOrderProgress({
   error,
   retrying,
   paymentDisabled = false,
+  allowInactiveReplacement = true,
   resumeState,
   resumeError,
   onAbandon,
@@ -737,6 +735,7 @@ function RechargeOrderProgress({
   error: string | null;
   retrying: boolean;
   paymentDisabled?: boolean;
+  allowInactiveReplacement?: boolean;
   resumeState: 'idle' | 'resuming' | 'failed' | 'completed';
   resumeError: string | null;
   onAbandon: () => void;
@@ -801,17 +800,25 @@ function RechargeOrderProgress({
   if (order.reconciliationActive === false) {
     return (
       <div className="rt-recharge-result is-error" role="alert">
-        <strong>这笔订单已停止主动查单</strong>
+        <strong>
+          {allowInactiveReplacement ? '这笔订单已停止主动查单' : '订单状态还没有终结，不能重复下单'}
+        </strong>
         {amount}
-        <span>余额暂未变化；若后续收到可信支付回调，到账仍会自动处理。</span>
-        <button
-          type="button"
-          className="rt-recharge-dialog__primary"
-          disabled={retrying || paymentDisabled}
-          onClick={onRetry}
-        >
-          {retrying ? '正在复核到账状态…' : '新建一笔充值'}
-        </button>
+        <span>
+          {allowInactiveReplacement
+            ? '余额暂未变化；若后续收到可信支付回调，到账仍会自动处理。'
+            : '服务端已停止主动查单；你可以等待可信支付回调，或放弃原任务。'}
+        </span>
+        {allowInactiveReplacement && (
+          <button
+            type="button"
+            className="rt-recharge-dialog__primary"
+            disabled={retrying || paymentDisabled}
+            onClick={onRetry}
+          >
+            {retrying ? '正在复核到账状态…' : '新建一笔充值'}
+          </button>
+        )}
         <button type="button" className="rt-toolbar-pill" onClick={onAbandon}>
           放弃原任务（充值订单仍保留）
         </button>
