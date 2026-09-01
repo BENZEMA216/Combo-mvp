@@ -4,7 +4,6 @@ import { rechargeOrderRefetchInterval } from './billing.js';
 import { readRechargeRequired } from './runtime.js';
 
 const USAGE_ID = '11111111-1111-4111-8111-111111111111';
-const REPLACEMENT_INTENT = '22222222-2222-4222-8222-222222222222';
 
 describe('runtime billing response contracts', () => {
   it('accepts a strict 402 only when it belongs to the submitted usageId', () => {
@@ -23,34 +22,6 @@ describe('runtime billing response contracts', () => {
           ...responseBody,
           rechargeIntentId: '22222222-2222-4222-8222-222222222222',
         }),
-        USAGE_ID,
-      ),
-    ).toBeNull();
-  });
-
-  it('recognizes new recovery identity separately from a server-selected replacement intent', () => {
-    const responseBody = {
-      rechargeRequired: true,
-      recoveryUsageId: USAGE_ID,
-      rechargeIntentId: REPLACEMENT_INTENT,
-      balanceCents: '0',
-      requiredCents: '100',
-    };
-    expect(
-      readRechargeRequired(new ApiError('充值', 402, undefined, responseBody), USAGE_ID),
-    ).toEqual(responseBody);
-    expect(
-      readRechargeRequired(
-        new ApiError('充值', 402, undefined, {
-          ...responseBody,
-          recoveryUsageId: REPLACEMENT_INTENT,
-        }),
-        USAGE_ID,
-      ),
-    ).toBeNull();
-    expect(
-      readRechargeRequired(
-        new ApiError('充值', 402, undefined, { ...responseBody, internal: true }),
         USAGE_ID,
       ),
     ).toBeNull();

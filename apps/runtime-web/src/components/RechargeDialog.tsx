@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import type { PendingUsageRecoveryView, RecoveryRechargeOrderView } from '@cb/shared';
+import {
+  CreateRecoveryRechargeOrderBodySchema,
+  type PendingUsageRecoveryView,
+  type RecoveryRechargeOrderView,
+} from '@cb/shared';
 import type { RechargeRequired } from '../api/runtime.js';
 import {
   useCreateRechargeOrder,
@@ -428,6 +432,14 @@ export function RecoveryRechargeDialog({
   );
   const [resumeError, setResumeError] = useState<string | null>(null);
   const creditedReportedRef = useRef<string | null>(null);
+  const parsedFrozenAmount = CreateRecoveryRechargeOrderBodySchema.shape.amountCents.safeParse(
+    Number(recovery.billing.unitPriceCents),
+  );
+  const frozenAmountCents =
+    parsedFrozenAmount.success &&
+    parsedFrozenAmount.data.toString() === recovery.billing.unitPriceCents
+      ? parsedFrozenAmount.data
+      : null;
 
   useEffect(() => {
     if (
@@ -490,8 +502,7 @@ export function RecoveryRechargeDialog({
   }, [trustedOrder?.paymentAction]);
 
   const createForIntent = async (rechargeIntentId: string): Promise<void> => {
-    const amountCents = Number(recovery.billing.unitPriceCents);
-    if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    if (frozenAmountCents === null) {
       setLocalError('服务端冻结价格无效，已停止付款。');
       return;
     }
@@ -500,7 +511,7 @@ export function RecoveryRechargeDialog({
       const next = await createOrder.mutateAsync({
         recoveryUsageId: recovery.usageId,
         rechargeIntentId,
-        amountCents,
+        amountCents: frozenAmountCents,
         channel: 'qr',
         payType,
       });
@@ -534,6 +545,10 @@ export function RecoveryRechargeDialog({
 
   const replaceTerminalOrder = async (): Promise<void> => {
     if (replacementPending || !trustedOrder) return;
+    if (frozenAmountCents === null) {
+      setLocalError('服务端冻结价格无效，已停止付款。');
+      return;
+    }
     setReplacementPending(true);
     setLocalError(null);
     try {
@@ -577,13 +592,15 @@ export function RecoveryRechargeDialog({
 
   const error =
     localError ??
-    (orderMismatch
-      ? '充值订单与服务端待恢复任务不匹配，已停止付款。'
-      : orderQ.isError
-        ? '充值状态暂时无法确认，已停止付款。'
-        : qrRenderFailed
-          ? '付款二维码生成失败，请关闭窗口后重新打开订单。'
-          : null);
+    (frozenAmountCents === null
+      ? '服务端冻结价格超出安全订单范围，已停止付款。'
+      : orderMismatch
+        ? '充值订单与服务端待恢复任务不匹配，已停止付款。'
+        : orderQ.isError
+          ? '充值状态暂时无法确认，已停止付款。'
+          : qrRenderFailed
+            ? '付款二维码生成失败，请关闭窗口后重新打开订单。'
+            : null);
 
   return (
     <div className="rt-recharge-layer" role="presentation">
@@ -612,7 +629,14 @@ export function RecoveryRechargeDialog({
         </p>
         {!trustedOrder ? (
           <>
-            <fieldset disabled={createOrder.isPending || orderQ.isPending || orderMismatch}>
+            <fieldset
+              disabled={
+                frozenAmountCents === null ||
+                createOrder.isPending ||
+                orderQ.isPending ||
+                orderMismatch
+              }
+            >
               <legend>支付方式</legend>
               <div className="rt-recharge-pay-types" aria-label="支付品牌">
                 <label>
@@ -645,7 +669,11 @@ export function RecoveryRechargeDialog({
               type="button"
               className="rt-recharge-dialog__primary"
               disabled={
-                orderQ.isPending || orderQ.isError || orderMismatch || createOrder.isPending
+                frozenAmountCents === null ||
+                orderQ.isPending ||
+                orderQ.isError ||
+                orderMismatch ||
+                createOrder.isPending
               }
               onClick={() => void createForIntent(recovery.activeRechargeIntentId)}
             >
@@ -668,6 +696,7 @@ export function RecoveryRechargeDialog({
             qrDataUrl={qrDataUrl}
             error={error}
             retrying={replacementPending}
+            paymentDisabled={frozenAmountCents === null}
             resumeState={resumeState}
             resumeError={resumeError}
             onAbandon={() => void abandon()}
@@ -692,6 +721,7 @@ function RechargeOrderProgress({
   qrDataUrl,
   error,
   retrying,
+  paymentDisabled = false,
   resumeState,
   resumeError,
   onAbandon,
@@ -703,6 +733,7 @@ function RechargeOrderProgress({
   qrDataUrl: string | null;
   error: string | null;
   retrying: boolean;
+  paymentDisabled?: boolean;
   resumeState: 'idle' | 'resuming' | 'failed' | 'completed';
   resumeError: string | null;
   onAbandon: () => void;
@@ -727,7 +758,7 @@ function RechargeOrderProgress({
             <button
               type="button"
               className="rt-toolbar-pill"
-              disabled={retrying}
+              disabled={retrying || paymentDisabled}
               onClick={onRechargeAgain}
             >
               余额仍不足？新建一笔充值
@@ -752,7 +783,7 @@ function RechargeOrderProgress({
         <button
           type="button"
           className="rt-recharge-dialog__primary"
-          disabled={retrying}
+          disabled={retrying || paymentDisabled}
           onClick={onRetry}
         >
           {retrying ? '正在复核到账状态…' : '新建一笔充值'}
@@ -773,7 +804,7 @@ function RechargeOrderProgress({
         <button
           type="button"
           className="rt-recharge-dialog__primary"
-          disabled={retrying}
+          disabled={retrying || paymentDisabled}
           onClick={onRetry}
         >
           {retrying ? '正在复核到账状态…' : '新建一笔充值'}

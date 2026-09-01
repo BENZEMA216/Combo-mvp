@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
 import { createCreatorAgentPackageCapability } from '@cb/creator-agent-protocol/agent-package-capability';
 import {
+  CreateRecoveryRechargeOrderBodySchema,
   ErrorCode,
   HOSTED_KNOWLEDGE_AGENT_SLUG,
   HostedKnowledgeAgentDescriptorSchema,
@@ -58,6 +59,15 @@ export async function resolveHostedKnowledgeAgent(input: {
   const gate = knowledgeAgentTestGateFromEnv(input.env);
   if (!gate || gate.protocol !== 'combo.knowledge-agent-runtime-test-gate/2') {
     return { kind: 'not_found' };
+  }
+  // The fixed-price product must be payable by the exact recovery-order contract. Fail before
+  // touching mutable Capability/Package state instead of advertising or starting a dead-end flow.
+  if (
+    !CreateRecoveryRechargeOrderBodySchema.shape.amountCents.safeParse(
+      input.env.RUNTIME_BILLING_UNIT_PRICE_CENTS,
+    ).success
+  ) {
+    return { kind: 'unavailable' };
   }
 
   try {

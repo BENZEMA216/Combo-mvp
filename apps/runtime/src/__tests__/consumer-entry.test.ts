@@ -16,6 +16,13 @@ import {
   CREATOR_KNOWLEDGE_SKILL_PATH,
   serializeCreatorKnowledgeBundle,
 } from '@cb/creator-agent-protocol/knowledge-bundle';
+import {
+  HOSTED_KNOWLEDGE_AGENT_SLUG,
+  HostedKnowledgeAgentDescriptorSchema,
+  KnowledgeCitationExcerptSchema,
+  KnowledgeTurnResultSchema,
+  StartHostedKnowledgeAgentResultSchema,
+} from '@cb/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
@@ -195,6 +202,72 @@ async function call(
 }
 
 describe('fixed hosted consumer knowledge Agent entry', () => {
+  it('keeps the public entry schemas strict and free of internal binding selectors', () => {
+    const descriptor = {
+      slug: HOSTED_KNOWLEDGE_AGENT_SLUG,
+      name: 'Combo 知识助手',
+      summary: '基于已发布知识回答陌生问题。',
+      billing: { currency: 'CNY', unitPriceCents: '1', freeUses: 3 },
+    };
+    expect(HostedKnowledgeAgentDescriptorSchema.safeParse(descriptor).success).toBe(true);
+    for (const internal of [
+      { capabilityId: CAPABILITY_ID },
+      { publisherUserId: CREATOR },
+      { releaseId: `release.agent-package.${'3'.repeat(32)}` },
+      { packageDigest: `sha256:${'2'.repeat(64)}` },
+      { sourceSha: SOURCE_SHA },
+      { gate: 'combo.knowledge-agent-runtime-test-gate/2' },
+      { instructions: 'private prompt' },
+      { objectKey: 'agent-packages/private' },
+    ]) {
+      expect(
+        HostedKnowledgeAgentDescriptorSchema.safeParse({ ...descriptor, ...internal }).success,
+      ).toBe(false);
+    }
+
+    const sessionId = '99999999-9999-4999-8999-999999999999';
+    expect(StartHostedKnowledgeAgentResultSchema.safeParse({ sessionId }).success).toBe(true);
+    expect(
+      StartHostedKnowledgeAgentResultSchema.safeParse({ sessionId, capabilityId: CAPABILITY_ID })
+        .success,
+    ).toBe(false);
+  });
+
+  it('opens at the recovery-order maximum and fails closed above it before Package reads', async () => {
+    const maximum = await candidate();
+    maximum.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = 99_999_999;
+    const descriptor = await call(
+      handler('GET', '/runtime/agents/combo-knowledge'),
+      request(maximum),
+    );
+    expect(descriptor).toMatchObject({
+      statusCode: 200,
+      body: { data: { billing: { unitPriceCents: '99999999' } } },
+    });
+    const started = await call(
+      handler('POST', '/runtime/agents/combo-knowledge/start'),
+      request(maximum, {}),
+    );
+    expect(started.statusCode).toBe(201);
+    expect(maximum.db.sessions.size).toBe(1);
+
+    const overflow = await candidate();
+    overflow.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = 100_000_000;
+    const packageRead = vi.spyOn(overflow.store, 'getObjectBounded');
+    const unavailableDescriptor = await call(
+      handler('GET', '/runtime/agents/combo-knowledge'),
+      request(overflow),
+    );
+    const unavailableStart = await call(
+      handler('POST', '/runtime/agents/combo-knowledge/start'),
+      request(overflow, {}),
+    );
+    expect(unavailableDescriptor.statusCode).toBe(503);
+    expect(unavailableStart.statusCode).toBe(503);
+    expect(overflow.db.sessions.size).toBe(0);
+    expect(packageRead).not.toHaveBeenCalled();
+  });
+
   it('returns a strict Package-backed descriptor without any internal selector or Session write', async () => {
     const current = await candidate();
     const response = await call(
@@ -300,6 +373,70 @@ describe('fixed hosted consumer knowledge Agent entry', () => {
 });
 
 describe('frozen citation excerpt projection', () => {
+  it('accepts the display-only excerpt on a receipt and rejects unsafe or unbounded text', () => {
+    expect(KnowledgeCitationExcerptSchema.safeParse('冻结知识片段。').success).toBe(true);
+    expect(KnowledgeCitationExcerptSchema.safeParse('a'.repeat(2 * 1_024)).success).toBe(true);
+    expect(KnowledgeCitationExcerptSchema.safeParse('a'.repeat(2 * 1_024 + 1)).success).toBe(false);
+    expect(KnowledgeCitationExcerptSchema.safeParse('e\u0301').success).toBe(false);
+    expect(KnowledgeCitationExcerptSchema.safeParse('safe\u202Ehidden').success).toBe(false);
+
+    expect(
+      KnowledgeTurnResultSchema.safeParse({
+        protocol: 'combo.agent-usage-receipt/1',
+        receiptId: '11111111-1111-4111-8111-111111111111',
+        usageId: '22222222-2222-4222-8222-222222222222',
+        turnId: '33333333-3333-4333-8333-333333333333',
+        createdAt: '2026-09-02T10:00:00+08:00',
+        binding: {
+          productKind: 'knowledge_agent_test',
+          capability: { id: CAPABILITY_ID, protocol: 'combo.agent-package-capability/2' },
+          release: {
+            protocol: 'combo.agent-package-release/1',
+            releaseId: `release.agent-package.${'3'.repeat(32)}`,
+            packageDigest: `sha256:${'2'.repeat(64)}`,
+          },
+          releaseScope: 'controlled_test',
+          knowledge: {
+            protocol: 'combo.knowledge-bundle/1',
+            resourcePath: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+            resourceDigest: `sha256:${'4'.repeat(64)}`,
+          },
+        },
+        billing: {
+          policyVersion: 'runtime-usage-v1',
+          source: 'free',
+          currency: 'CNY',
+          unitPriceCents: '1',
+          settledCents: '0',
+          freeLimitSnapshot: 3,
+        },
+        validation: {
+          policyVersion: 'knowledge-agent-grounded-validator-v2',
+          code: 'accepted',
+        },
+        runtime: {
+          environment: 'test',
+          releaseId: `release-${SOURCE_SHA}`,
+          sourceSha: SOURCE_SHA,
+        },
+        outcome: 'answered',
+        answer: {
+          messageId: '44444444-4444-4444-8444-444444444444',
+          text: '冻结知识片段。',
+          responseDigest: `sha256:${'5'.repeat(64)}`,
+        },
+        citations: [
+          {
+            chunkId: `chunk.knowledge.${'1'.repeat(32)}`,
+            sourceId: `source.knowledge.${'2'.repeat(32)}`,
+            displayLabel: '公开规范',
+            excerpt: '冻结知识片段。',
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
   it('returns only an exact code-point-safe prefix within 2 KiB', () => {
     const source = `${'甲'.repeat(700)}末尾不应出现`;
     const excerpt = boundedFrozenCitationExcerpt(source);

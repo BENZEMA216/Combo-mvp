@@ -2,14 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AgentBindingSchema,
-  HOSTED_KNOWLEDGE_AGENT_SLUG,
-  HostedKnowledgeAgentDescriptorSchema,
   INSUFFICIENT_EVIDENCE_ANSWER,
   KnowledgeCentsSchema,
-  KnowledgeCitationExcerptSchema,
   KnowledgeTurnResultSchema,
   SessionDetailSchema,
-  StartHostedKnowledgeAgentResultSchema,
   type KnowledgeAgentBinding,
 } from '../index.js';
 
@@ -277,28 +273,6 @@ describe('knowledge Agent binding contract', () => {
 });
 
 describe('knowledge usage receipt contract', () => {
-  it('accepts only bounded NFC citation excerpts as a display-only frozen chunk projection', () => {
-    expect(KnowledgeCitationExcerptSchema.safeParse('冻结知识片段。').success).toBe(true);
-    expect(KnowledgeCitationExcerptSchema.safeParse('a'.repeat(2 * 1_024)).success).toBe(true);
-    expect(KnowledgeCitationExcerptSchema.safeParse('a'.repeat(2 * 1_024 + 1)).success).toBe(false);
-    expect(KnowledgeCitationExcerptSchema.safeParse('e\u0301').success).toBe(false);
-    expect(KnowledgeCitationExcerptSchema.safeParse('safe\u202Ehidden').success).toBe(false);
-    expect(
-      KnowledgeTurnResultSchema.safeParse(
-        answered({
-          citations: [
-            {
-              chunkId: CHUNK_1,
-              sourceId: SOURCE_1,
-              displayLabel: '公开规范',
-              excerpt: '冻结知识片段。',
-            },
-          ],
-        }),
-      ).success,
-    ).toBe(true);
-  });
-
   it('accepts all four exact terminal outcome branches', () => {
     expect(KnowledgeTurnResultSchema.safeParse(answered()).success).toBe(true);
     expect(KnowledgeTurnResultSchema.safeParse(insufficient()).success).toBe(true);
@@ -542,44 +516,6 @@ describe('knowledge usage receipt contract', () => {
           }),
         ]),
       ).success,
-    ).toBe(false);
-  });
-});
-
-describe('fixed hosted knowledge Agent public entry contract', () => {
-  it('exposes only a stable slug, public copy, and current Test billing', () => {
-    const descriptor = {
-      slug: HOSTED_KNOWLEDGE_AGENT_SLUG,
-      name: 'Combo 知识助手',
-      summary: '基于已发布知识回答陌生问题。',
-      billing: { currency: 'CNY', unitPriceCents: '1', freeUses: 3 },
-    };
-    expect(HostedKnowledgeAgentDescriptorSchema.safeParse(descriptor).success).toBe(true);
-    for (const internal of [
-      { capabilityId: CAPABILITY_ID },
-      { publisherUserId: CAPABILITY_ID_2 },
-      { releaseId: RELEASE_ID },
-      { packageDigest: PACKAGE_DIGEST },
-      { sourceSha: SOURCE_SHA },
-      { gate: 'combo.knowledge-agent-runtime-test-gate/2' },
-      { instructions: 'private prompt' },
-      { objectKey: 'agent-packages/private' },
-    ]) {
-      expect(
-        HostedKnowledgeAgentDescriptorSchema.safeParse({ ...descriptor, ...internal }).success,
-      ).toBe(false);
-    }
-  });
-
-  it('starts with only one canonical Session id and rejects internal binding fields', () => {
-    expect(StartHostedKnowledgeAgentResultSchema.safeParse({ sessionId: SESSION_ID }).success).toBe(
-      true,
-    );
-    expect(
-      StartHostedKnowledgeAgentResultSchema.safeParse({
-        sessionId: SESSION_ID,
-        capabilityId: CAPABILITY_ID,
-      }).success,
     ).toBe(false);
   });
 });

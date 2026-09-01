@@ -1,6 +1,7 @@
 import type { KnowledgeAgentBinding, PendingUsageRecoveryView } from '@cb/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from './client.js';
 import {
   abandonPendingUsageRecovery,
   coordinateRecoveryResume,
@@ -8,11 +9,13 @@ import {
   resolveHostedPendingRecovery,
   resolvePendingRecoveryForSession,
 } from './recovery.js';
+import { readRechargeRequired } from './runtime.js';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const USAGE_ID = '22222222-2222-4222-8222-222222222222';
 const CAPABILITY_ID = '33333333-3333-4333-8333-333333333333';
 const INTENT_ID = '44444444-4444-4444-8444-444444444444';
+const REPLACEMENT_INTENT_ID = '55555555-5555-4555-8555-555555555555';
 
 const binding: KnowledgeAgentBinding = {
   productKind: 'knowledge_agent_test',
@@ -59,6 +62,35 @@ function response(status: number, body: unknown): Response {
   } as Response;
 }
 
+function installSerialBrowserLock(): ReturnType<typeof vi.fn> {
+  let held = Promise.resolve();
+  const request = vi.fn(
+    async (
+      _name: string,
+      optionsOrCallback: LockOptions | (() => Promise<void>),
+      maybeCallback?: () => Promise<void>,
+    ) => {
+      const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
+      const previous = held;
+      let release!: () => void;
+      held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await callback();
+      } finally {
+        release();
+      }
+    },
+  );
+  Object.defineProperty(navigator, 'locks', {
+    configurable: true,
+    value: { request },
+  });
+  return request;
+}
+
 beforeEach(() => {
   const values = new Map<string, string>();
   Object.defineProperty(window, 'localStorage', {
@@ -81,6 +113,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -185,6 +218,34 @@ describe('pending usage recovery server truth', () => {
     expect(pendingRecoveryMatchesBinding(recovery, INTENT_ID, binding)).toBe(false);
   });
 
+  it('recognizes new recovery identity separately from a server-selected replacement intent', () => {
+    const responseBody = {
+      rechargeRequired: true,
+      recoveryUsageId: USAGE_ID,
+      rechargeIntentId: REPLACEMENT_INTENT_ID,
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    expect(
+      readRechargeRequired(new ApiError('充值', 402, undefined, responseBody), USAGE_ID),
+    ).toEqual(responseBody);
+    expect(
+      readRechargeRequired(
+        new ApiError('充值', 402, undefined, {
+          ...responseBody,
+          recoveryUsageId: REPLACEMENT_INTENT_ID,
+        }),
+        USAGE_ID,
+      ),
+    ).toBeNull();
+    expect(
+      readRechargeRequired(
+        new ApiError('充值', 402, undefined, { ...responseBody, internal: true }),
+        USAGE_ID,
+      ),
+    ).toBeNull();
+  });
+
   it('abandons only through the server endpoint and propagates 409 without local success', async () => {
     const fetchMock = vi
       .fn()
@@ -204,36 +265,19 @@ describe('pending usage recovery server truth', () => {
   });
 
   it('deduplicates concurrent StrictMode and multitab resume attempts before the business POST', async () => {
-    let held = Promise.resolve();
-    const request = vi.fn(
-      async (
-        _name: string,
-        optionsOrCallback: LockOptions | (() => Promise<void>),
-        maybeCallback?: () => Promise<void>,
-      ) => {
-        const callback =
-          typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
-        const previous = held;
-        let release!: () => void;
-        held = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        await previous;
-        try {
-          return await callback();
-        } finally {
-          release();
-        }
-      },
-    );
-    Object.defineProperty(navigator, 'locks', {
-      configurable: true,
-      value: { request },
-    });
+    const request = installSerialBrowserLock();
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         response(200, { data: { recovery }, meta: { traceId: 'locked-exact' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, { data: { recovery }, meta: { traceId: 'admitted-still-active' } }),
+      )
+      .mockResolvedValueOnce(
+        response(404, {
+          error: { userMessage: '待恢复任务不存在。', traceId: 'terminal' },
+        }),
       )
       .mockResolvedValueOnce(
         response(404, {
@@ -244,14 +288,81 @@ describe('pending usage recovery server truth', () => {
     const businessPost = vi.fn(async () => undefined);
 
     await Promise.all([
-      coordinateRecoveryResume(USAGE_ID, businessPost),
-      coordinateRecoveryResume(USAGE_ID, businessPost),
+      coordinateRecoveryResume(USAGE_ID, businessPost, { terminalPollIntervalMs: 0 }),
+      coordinateRecoveryResume(USAGE_ID, businessPost, { terminalPollIntervalMs: 0 }),
     ]);
-    await coordinateRecoveryResume(USAGE_ID, businessPost);
+    await coordinateRecoveryResume(USAGE_ID, businessPost, { terminalPollIntervalMs: 0 });
 
     expect(request).toHaveBeenCalled();
     expect(businessPost).toHaveBeenCalledTimes(1);
     expect(businessPost).toHaveBeenCalledWith(recovery);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('fails closed on terminal-read network failure without an additional business POST', async () => {
+    installSerialBrowserLock();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, { data: { recovery }, meta: { traceId: 'locked-exact' } }),
+      )
+      .mockRejectedValueOnce(new Error('offline'));
+    vi.stubGlobal('fetch', fetchMock);
+    const businessPost = vi.fn(async () => undefined);
+
+    await expect(coordinateRecoveryResume(USAGE_ID, businessPost)).rejects.toThrow(
+      '无法确认原任务终态',
+    );
+    expect(businessPost).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds a hung terminal read and sends no additional business POST after admission', async () => {
+    vi.useFakeTimers();
+    installSerialBrowserLock();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, { data: { recovery }, meta: { traceId: 'locked-exact' } }),
+      )
+      .mockImplementationOnce(() => new Promise<Response>(() => undefined));
+    vi.stubGlobal('fetch', fetchMock);
+    const businessPost = vi.fn(async () => undefined);
+
+    const operation = coordinateRecoveryResume(USAGE_ID, businessPost, { terminalWaitMs: 50 });
+    const rejected = expect(operation).rejects.toThrow('无法确认原任务终态');
+    await vi.advanceTimersByTimeAsync(51);
+    await rejected;
+    expect(businessPost).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('aborts a hung terminal read while preserving the admitted server recovery', async () => {
+    installSerialBrowserLock();
+    let markPollStarted!: () => void;
+    const pollStarted = new Promise<void>((resolve) => {
+      markPollStarted = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(200, { data: { recovery }, meta: { traceId: 'locked-exact' } }),
+      )
+      .mockImplementationOnce(() => {
+        markPollStarted();
+        return new Promise<Response>(() => undefined);
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const businessPost = vi.fn(async () => undefined);
+
+    const operation = coordinateRecoveryResume(USAGE_ID, businessPost, {
+      signal: controller.signal,
+    });
+    await pollStarted;
+    controller.abort();
+    await expect(operation).rejects.toThrow('无法确认原任务终态');
+    expect(businessPost).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 

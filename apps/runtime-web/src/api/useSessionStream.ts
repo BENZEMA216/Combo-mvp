@@ -335,6 +335,7 @@ export function useSessionStream(
     creditedIntentId: string;
     promise: Promise<void>;
   } | null>(null);
+  const resumeAbortControllerRef = useRef<AbortController | null>(null);
 
   // Route parameters can change before effects clean up the previous subscription. Keep the
   // generation pointer current during render so an old POST/SSE callback cannot mutate the new
@@ -366,6 +367,8 @@ export function useSessionStream(
   }
 
   useEffect(() => {
+    resumeAbortControllerRef.current?.abort();
+    resumeAbortControllerRef.current = null;
     dispatch({ kind: 'reset' });
     setStreamConnectionFailed(false);
     setRechargeRequired(null);
@@ -382,6 +385,14 @@ export function useSessionStream(
     );
     setPendingRetryAvailable(storedPending !== null);
   }, [sessionId]);
+
+  useEffect(
+    () => () => {
+      resumeAbortControllerRef.current?.abort();
+      resumeAbortControllerRef.current = null;
+    },
+    [],
+  );
 
   const applyServerRecovery = (recovery: PendingUsageRecoveryView | null): void => {
     pendingRecoveryRef.current = recovery;
@@ -631,10 +642,10 @@ export function useSessionStream(
       if (pendingUsageRef.current?.usageId === usageId) pendingUsageRef.current = null;
       if (activeSessionIdRef.current === requestSessionId) setPendingRetryAvailable(false);
       if (activeSessionIdRef.current === requestSessionId) {
-        if (serverRecovery?.usageId === usageId) applyServerRecovery(null);
+        // A server recovery remains visible while the cross-tab coordinator waits for the
+        // receipt-backed terminal. The caller clears it only after exact GET becomes 404.
         setRechargeGate(null);
         setActiveRechargeIntentId(null);
-        setRecoveryDialogOpen(false);
       }
       return message;
     } catch (err: unknown) {
@@ -783,6 +794,8 @@ export function useSessionStream(
     const serverRecovery = pendingRecoveryRef.current;
     if (serverRecovery?.sessionId === sessionId) {
       const requestSessionId = sessionId;
+      const resumeAbortController = new AbortController();
+      resumeAbortControllerRef.current = resumeAbortController;
       const operation = (async (): Promise<void> => {
         const binding = knowledgeBindingRef.current;
         const exact = await getPendingUsageRecovery(serverRecovery.usageId);
@@ -809,21 +822,25 @@ export function useSessionStream(
         ) {
           throw new Error('充值还未确认到账，请稍后重试。');
         }
-        await coordinateRecoveryResume(exact.usageId, async (lockedRecovery) => {
-          if (
-            !pendingRecoveryMatchesBinding(lockedRecovery, requestSessionId, binding) ||
-            lockedRecovery.usageId !== exact.usageId ||
-            lockedRecovery.requestText !== exact.requestText ||
-            lockedRecovery.billing.unitPriceCents !== exact.billing.unitPriceCents
-          ) {
-            throw new Error('锁内待恢复任务与当前会话不匹配，已停止恢复。');
-          }
-          await submitMessage(lockedRecovery.requestText, {
-            creditedIntentId,
-            usageId: lockedRecovery.usageId,
-            serverRecovery: true,
-          });
-        });
+        await coordinateRecoveryResume(
+          exact.usageId,
+          async (lockedRecovery) => {
+            if (
+              !pendingRecoveryMatchesBinding(lockedRecovery, requestSessionId, binding) ||
+              lockedRecovery.usageId !== exact.usageId ||
+              lockedRecovery.requestText !== exact.requestText ||
+              lockedRecovery.billing.unitPriceCents !== exact.billing.unitPriceCents
+            ) {
+              throw new Error('锁内待恢复任务与当前会话不匹配，已停止恢复。');
+            }
+            await submitMessage(lockedRecovery.requestText, {
+              creditedIntentId,
+              usageId: lockedRecovery.usageId,
+              serverRecovery: true,
+            });
+          },
+          { signal: resumeAbortController.signal },
+        );
         if (activeSessionIdRef.current === requestSessionId) {
           applyServerRecovery(null);
           setRecoveryDialogOpen(false);
@@ -835,6 +852,9 @@ export function useSessionStream(
         }
       })();
       const tracked = operation.finally(() => {
+        if (resumeAbortControllerRef.current === resumeAbortController) {
+          resumeAbortControllerRef.current = null;
+        }
         if (resumeInFlightRef.current?.promise === tracked) resumeInFlightRef.current = null;
       });
       resumeInFlightRef.current = {

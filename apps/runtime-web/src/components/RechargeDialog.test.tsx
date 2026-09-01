@@ -682,6 +682,54 @@ describe('RechargeDialog', () => {
 });
 
 describe('RecoveryRechargeDialog', () => {
+  it('creates an exact order at the shared recovery amount maximum', async () => {
+    const recovery = pendingRecovery({
+      billing: { ...pendingRecovery().billing, unitPriceCents: '99999999' },
+    });
+    mocks.createRecoveryOrder.mockResolvedValue(
+      recoveryOrder(recovery, recovery.activeRechargeIntentId, 'pending'),
+    );
+    const onRefreshRecovery = vi.fn(async () => recovery);
+    render(
+      <RecoveryRechargeDialog
+        recovery={recovery}
+        onClose={vi.fn()}
+        onCredited={vi.fn(async () => undefined)}
+        onRefreshRecovery={onRefreshRecovery}
+        onAbandon={vi.fn(async () => undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '按冻结价格创建充值订单' }));
+    await waitFor(() =>
+      expect(mocks.createRecoveryOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 99_999_999 }),
+      ),
+    );
+    expect(onRefreshRecovery).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed above the shared recovery amount maximum without creating an order', () => {
+    const recovery = pendingRecovery({
+      billing: { ...pendingRecovery().billing, unitPriceCents: '100000000' },
+    });
+    const onRefreshRecovery = vi.fn(async () => recovery);
+    render(
+      <RecoveryRechargeDialog
+        recovery={recovery}
+        onClose={vi.fn()}
+        onCredited={vi.fn(async () => undefined)}
+        onRefreshRecovery={onRefreshRecovery}
+        onAbandon={vi.fn(async () => undefined)}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('超出安全订单范围，已停止付款');
+    expect(screen.getByRole('button', { name: '按冻结价格创建充值订单' })).toBeDisabled();
+    expect(mocks.createRecoveryOrder).not.toHaveBeenCalled();
+    expect(onRefreshRecovery).not.toHaveBeenCalled();
+  });
+
   it('creates only the exact frozen-price order with explicit recovery and current intent', async () => {
     const recovery = pendingRecovery();
     const nextOrder = recoveryOrder(recovery, recovery.activeRechargeIntentId, 'pending', {
