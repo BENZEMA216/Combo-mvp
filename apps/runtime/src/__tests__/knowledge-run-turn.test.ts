@@ -232,7 +232,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
     ).toContain('每个连通骨架必须完整出现在同一个答案逗号分句内');
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
-    ).toContain('短动作与其直接宾语之间可以原位插入一个格式明确的数量值');
+    ).toContain('由“如何/怎么/怎样”在原问中精确定位');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',

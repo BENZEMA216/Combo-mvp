@@ -97,7 +97,7 @@ describe('composeSystemPrompt', () => {
     expect(prompt).toContain('关系、否定、条件、时间与限定必须直接对齐');
     expect(prompt).toContain('不完整的前置上下文分句必须与后续疑问分句组成同一连通骨架');
     expect(prompt).toContain('每个连通骨架必须完整出现在同一个答案逗号分句内');
-    expect(prompt).toContain('短动作与其直接宾语之间可以原位插入一个格式明确的数量值');
+    expect(prompt).toContain('由“如何/怎么/怎样”在原问中精确定位');
   });
 
   it('v1 固定 oracle 不注入 v2 整句抽取合同', () => {
