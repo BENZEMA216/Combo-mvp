@@ -7,6 +7,10 @@ WEB_BASE="${WEB_BASE:-http://localhost}"
 
 pass() { printf '\033[1;32m[pass]\033[0m %s\n' "$*"; }
 log() { printf '\033[1;34m[smoke]\033[0m %s\n' "$*"; }
+not_run() {
+  printf '\033[1;33m[not-run]\033[0m %s\n' "$*" >&2
+  exit 2
+}
 fail() {
   printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2
   exit 1
@@ -14,7 +18,7 @@ fail() {
 
 command -v curl >/dev/null 2>&1 || fail '需要 curl'
 if ! curl -fsS -o /dev/null --max-time 5 "${API_BASE}/health" 2>/dev/null; then
-  fail "API（${API_BASE}）不可达，请先运行 scripts/start.sh"
+  not_run "API（${API_BASE}）不可达，冒烟未执行；请先运行 scripts/start.sh"
 fi
 
 log '1/5 检查 liveness'
@@ -56,7 +60,7 @@ if curl -fsS -o /dev/null --max-time 5 "${WEB_BASE}/" 2>/dev/null; then
   [[ "${runtime_status}" == '401' ]] || fail '匿名 runtime 受保护路径未返回 401'
   pass 'Web 可达且 runtime 受保护路径经同源反代返回 401'
 else
-  log 'Web 未起或不可达，跳过可选反代检查'
+  not_run 'Web 未起或不可达，runtime 反代检查未执行'
 fi
 
 pass '冒烟全部通过'

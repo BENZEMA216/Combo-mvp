@@ -125,17 +125,26 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(source, `${JSON.stringify(contract, null, 2)}\n`);
 });
 
-test('the PR quality job retains full history and the budget-bearing test entrypoints', () => {
+test('the PR quality context aggregates source and PostgreSQL truth evidence', () => {
   const pullRequestWorkflow = readFileSync(join(repo, '.github/workflows/pr-ci.yml'), 'utf8');
   const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
   assert.match(pullRequestWorkflow, /fetch-depth: 0/);
   assert.match(pullRequestWorkflow, /run: pnpm test:fast/);
+  assert.match(pullRequestWorkflow, /source_quality:/);
+  assert.match(pullRequestWorkflow, /needs: \[source_quality, billing_pg\]/);
+  assert.match(pullRequestWorkflow, /name: CI \/ quality/);
+  assert.match(pullRequestWorkflow, /node scripts\/test-truth\.mjs aggregate/);
+  assert.match(pullRequestWorkflow, /retention-days: 14/);
   assert.match(
     packageJson.scripts['test:workflow-contracts'],
     /^node scripts\/vnext-rebaseline-budget\.mjs && /,
   );
+  assert.match(packageJson.scripts['test:truth'], /^node scripts\/test-truth\.mjs validate && /);
   assert.match(packageJson.scripts['test:fast'], /pnpm test:workflow-contracts$/);
-  assert.match(packageJson.scripts.test, /pnpm test:workflow-contracts$/);
+  assert.match(packageJson.scripts['test:local'], /pnpm test:workflow-contracts$/);
+  assert.notEqual(packageJson.scripts['test:fast'], packageJson.scripts['test:local']);
+  assert.equal(packageJson.scripts.test, 'pnpm test:local');
+  assert.doesNotMatch(pullRequestWorkflow, /COMBO_RUN_CONTAINER_CONTRACTS/);
 });
 
 test('GitHub pull requests use their base branch and Main checks use the first parent', () => {

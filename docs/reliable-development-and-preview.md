@@ -66,7 +66,9 @@ pnpm typecheck:test
 pnpm test:local
 ```
 
-`test:local` 会运行应用测试、Preview 身份验证器测试和工作树守卫测试，但不运行依赖 Linux/GNU 主机语义的控制面契约；该部分必须由 GitHub Actions 在 Linux 上执行 `pnpm test:fast`。Release build 的 `pnpm test` 也覆盖新增的守卫和验证器。不得为了让 macOS 通过而放宽生产部署脚本。
+`test:local` 会运行全部 workspace 测试、Preview 身份验证器、测试真实性协议和工作树守卫；`test:fast` 排除 `@cb/scripts` workspace 的两个本地 Node 套件，但仍运行同一组 workflow contracts。GitHub Actions 还必须在 Linux 上执行 ShellCheck，并把源码门禁和真实 PostgreSQL 门禁聚合进保留名称 `CI / quality` 的必需检查。Release build 的 `pnpm test` 也覆盖新增的守卫和验证器。不得为了让 macOS 通过而放宽生产部署脚本。
+
+PR 的测试真实性摘要绑定 synthetic merge、base 和 head 三个完整 SHA。摘要中的 `PASS` 只来自可解析且随 artifact 上传的脱敏机器报告，聚合器复核其 SHA-256，并要求至少一次真实执行、零失败、零 cancel/skip/todo；没有运行的 real Codex、浏览器 Agent Journey 和 Desktop UAT 必须保持 `NOT_RUN` 或 `NOT_IMPLEMENTED`。未登记测试继续执行但只能标为 `NO_EVIDENCE_CLAIMS`，其中基线后新增文件会单独计数，不能在产品 PR 内自行升级证据声明。J-011 的只读 acceptance 状态会完整校验五门、证据种类和候选提交后独立显示；在外部签名 evidence adapter 实现前，受跟踪台账只能保持无证据 `BLOCKED`，任何 tracked PASS 或 partial evidence 都显示 `INVALID`。PR 绿灯不会把 `BLOCKED` 改写成完成。
 
 之后运行 `worktree_guard.py check-pr-ready`。工作树不干净、落后 `origin/main`、提交未推送或分支没有正确上游时，不创建 PR。
 
