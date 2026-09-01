@@ -213,7 +213,7 @@ describe('knowledge run-turn high-risk boundaries', () => {
     ).toContain('每个事实性句子必须逐字复用所引 excerpt 中的完整原句');
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
-    ).toContain('不得提交 FAQ 问句或仅回显问题的标题');
+    ).toContain('不得提交 FAQ 问句、Markdown 标题/列表、名词型片段');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',
@@ -444,6 +444,26 @@ describe('knowledge run-turn high-risk boundaries', () => {
   });
 
   it.each([
+    { question: '退款规则是什么？', answer: '# 退款说明' },
+    { question: '退款规则是什么？', answer: '- 退款说明' },
+    { question: '退款规则是什么？', answer: '退款申请。' },
+    { question: 'API 的退款规则是什么？', answer: 'API 退款说明。' },
+    { question: '退款规则是什么？', answer: '# 退款可以在七天内申请。' },
+    { question: '退款规则是什么？', answer: '- 退款可以在七天内申请。' },
+    { question: '退款规则是什么？', answer: '退款使用说明。' },
+    { question: '退款规则是什么？', answer: '退款支持指南。' },
+    { question: '退款规则是什么？', answer: '退款支持。' },
+  ])(
+    'rejects an extractive Markdown title or nominal fragment: $answer',
+    ({ question, answer }) => {
+      expect(validateGroundedFixture({ question, answer, excerpt: answer })).toMatchObject({
+        outcome: 'failed',
+        validationCode: 'rejected',
+      });
+    },
+  );
+
+  it.each([
     {
       question: '价格是多少？',
       answer: '价格是 10 0 元。',
@@ -499,6 +519,11 @@ describe('knowledge run-turn high-risk boundaries', () => {
       question: '退款规则是什么？',
       answer: '退款可以在七天内申请。',
       excerpt: '退款可以在七天内申请。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款申请必须在七天内完成。',
+      excerpt: '退款申请必须在七天内完成。',
     },
     {
       question: '费用是多少？',

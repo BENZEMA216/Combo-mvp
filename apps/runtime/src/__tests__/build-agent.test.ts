@@ -88,8 +88,8 @@ describe('composeSystemPrompt', () => {
     );
     expect(prompt).toContain('每个事实性句子必须逐字复用被引用 excerpt 中的完整原句');
     expect(prompt).toContain('不得删改其中的限定、关系、否定、条件、数额、日期或版本');
-    expect(prompt).toContain('只提交直接回答用户问题的陈述句，并保留原句内部空白和句末标点');
-    expect(prompt).toContain('FAQ 问句、仅回显问题的标题');
+    expect(prompt).toContain('每句必须有陈述式终止标点及明确谓语或关系信号');
+    expect(prompt).toContain('FAQ 问句、Markdown 标题/列表、名词型片段');
     expect(prompt).toContain('单个年份/API token');
   });
 

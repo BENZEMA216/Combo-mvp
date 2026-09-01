@@ -10,8 +10,22 @@ const SENTENCE_UNIT_PATTERN = /[^。！？!?；;\n]+(?:[。！？!?；;\n]+|$)/g
 const SENTENCE_TERMINATOR_PATTERN = /[。！？!?；;\n]+$/u;
 const EDGE_HORIZONTAL_WHITESPACE_PATTERN = /^[\p{Zs}\t\r]+|[\p{Zs}\t\r]+$/gu;
 const INTERROGATIVE_TERMINATOR_PATTERN = /[?？]/u;
+const DECLARATIVE_TERMINATOR_PATTERN = /[。；;！!]/u;
+const MARKDOWN_BLOCK_PREFIX_PATTERN = /^(?:#{1,6}|[-*+]\s|\d{1,9}[.)、]\s|>\s?)/u;
 const INTERROGATIVE_PHRASE_PATTERN =
   /请问|如何|为什么|为何|怎么回事|怎么|怎样|什么|多少|哪些|哪个|哪一个|哪种|哪家|哪里|哪儿|谁|何时|什么时候|是不是|有没有|能不能|可不可以|是否|能否|可否|几(?:个|次|种|天|年|月|元)|吗$|呢$/u;
+const HAN_DECLARATIVE_PREDICATE_PATTERN =
+  /(?:是|可以|能够|应当|应该|必须|需要|无需|不得|不能|不会|没有|属于|等于|高于|低于|超过|少于|多于|位于|基于|用于|使用|返回|表示|意味着|包含|包括|提供|允许|禁止|收取|支付|扣除|释放|提示|支持|适用|视为|称为|分为|设为|改为|定义为)(?=.)|存在|生效|失效|开启|关闭|为(?=[\p{Zs}\t]*[\p{N}\p{Script=Latin}])/u;
+const HAN_CLAUSAL_RELATION_PATTERN =
+  /(?:是|可以|能够|应当|应该|必须|需要|无需|不得|不能|不会|没有|属于|等于|高于|低于|超过|少于|多于|意味着|视为|称为|分为|设为|改为|定义为)(?=.)|存在|生效|失效|为(?=[\p{Zs}\t]*[\p{N}\p{Script=Latin}])/u;
+const HAN_NOMINAL_FRAGMENT_SUFFIX_PATTERN =
+  /(?:说明|申请|流程|规则|指南|政策|功能|方案|步骤|方法|方式|标题|手册|文档|介绍|概述|须知|教程|帮助|服务)$/u;
+const LATIN_DECLARATIVE_PREDICATE_PATTERN =
+  /(?:^|[^\p{Script=Latin}\p{N}_])(?:is|are|was|were|has|have|can|must|should|will|means?|requires?|returns?|uses?|includes?|provides?|allows?|supports?)(?=[^\p{Script=Latin}\p{N}_]+.)/iu;
+const LATIN_CLAUSAL_RELATION_PATTERN =
+  /(?:^|[^\p{Script=Latin}\p{N}_])(?:is|are|was|were|has|have|can|must|should|will)(?=[^\p{Script=Latin}\p{N}_]+.)/iu;
+const LATIN_NOMINAL_FRAGMENT_SUFFIX_PATTERN =
+  /(?:^|[^\p{Script=Latin}\p{N}_])(?:guide|manual|documentation|instructions?|overview|policy|process|workflow|application|title)$/iu;
 const QUESTION_FORM_NOISE_PHRASES = Object.freeze([
   '什么时候',
   '为什么',
@@ -259,6 +273,25 @@ function isInterrogativeSentence(sentence: ExtractiveSentence): boolean {
   );
 }
 
+function isDeclarativeProposition(sentence: ExtractiveSentence): boolean {
+  const terminator = sentence.canonical.match(SENTENCE_TERMINATOR_PATTERN)?.[0] ?? '';
+  const isNominalFragment =
+    HAN_NOMINAL_FRAGMENT_SUFFIX_PATTERN.test(sentence.body) ||
+    LATIN_NOMINAL_FRAGMENT_SUFFIX_PATTERN.test(sentence.body);
+  const hasPredicate =
+    HAN_DECLARATIVE_PREDICATE_PATTERN.test(sentence.body) ||
+    LATIN_DECLARATIVE_PREDICATE_PATTERN.test(sentence.body);
+  const hasUnambiguousClause =
+    HAN_CLAUSAL_RELATION_PATTERN.test(sentence.body) ||
+    LATIN_CLAUSAL_RELATION_PATTERN.test(sentence.body);
+  return (
+    DECLARATIVE_TERMINATOR_PATTERN.test(terminator) &&
+    !MARKDOWN_BLOCK_PREFIX_PATTERN.test(sentence.body) &&
+    hasPredicate &&
+    (!isNominalFragment || hasUnambiguousClause)
+  );
+}
+
 function questionRelevanceText(value: string, topical: boolean): string {
   let text = validationText(value).toLocaleLowerCase('und');
   for (const phrase of QUESTION_FORM_NOISE_PHRASES) text = text.replaceAll(phrase, ' ');
@@ -413,7 +446,9 @@ export function hasGroundedLexicalSupport(input: {
   const sentences = extractiveSentences(input.answer);
   if (
     sentences.length === 0 ||
-    sentences.some(isInterrogativeSentence) ||
+    sentences.some(
+      (sentence) => isInterrogativeSentence(sentence) || !isDeclarativeProposition(sentence),
+    ) ||
     !hasQuestionCoverage(input.question, sentences)
   ) {
     return false;
