@@ -471,7 +471,7 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       const body: Envelope<SessionDetail> = { data: detail, meta: { traceId: req.id } };
       reply.code(200).send(body);
       return reply;
-    } catch (err) {
+    } catch {
       req.log.error(
         { traceId: req.id, detailFailure: 'unexpected_read_failure' },
         'read session detail failed',
