@@ -75,10 +75,11 @@ function passResult(suite) {
     commands: 0,
   };
   const steps = suite.runner.steps.map((step, index) => {
-    const files =
+    const files = (
       step.kind === 'VITEST' || step.kind === 'NODE_TEST'
         ? step.argv.map((argument) => (step.cwd === '.' ? argument : `${step.cwd}/${argument}`))
-        : [];
+        : []
+    ).sort();
     const testCases = files.map((file, testIndex) => ({
       id: `${step.kind === 'NODE_TEST' ? 'node' : 'vitest'}:${file}:fixture ${testIndex}`,
       file,
@@ -239,6 +240,21 @@ test('unknown fields and duplicate selectors fail closed', () => {
 });
 
 test('suite selectors and semantic claims cannot drift beyond their machine policy', () => {
+  const postgres = manifest.suites.find((suite) => suite.id === 'TS-INFRA-REAL-PR-001');
+  assert.deepEqual(
+    postgres.runner.steps.filter((step) => step.cwd === 'db').map((step) => step.argv),
+    [
+      ['__tests__/agent-package-registry.pg.test.ts'],
+      [
+        '__tests__/agent-session-receipts.pg.test.ts',
+        '__tests__/agent-session-response-message.pg.test.ts',
+        '__tests__/agent-session-receipts-roles.pg.test.ts',
+      ],
+      ['__tests__/agent-session-receipts-upgrade.pg.test.ts'],
+    ],
+    'database evidence must retain the proven non-interfering groups from db-migrate.sh',
+  );
+
   const uncovered = structuredClone(manifest);
   uncovered.suites[4].runner.steps = [uncovered.suites[4].runner.steps[0]];
   assert.throws(
@@ -257,9 +273,11 @@ test('suite selectors and semantic claims cannot drift beyond their machine poli
   );
 
   const substituted = structuredClone(manifest);
-  const postgres = substituted.suites.find((suite) => suite.id === 'TS-INFRA-REAL-PR-001');
-  postgres.selectors.files = ['apps/web/src/pages/LoginPage.test.tsx'];
-  postgres.runner.steps = [
+  const substitutedPostgres = substituted.suites.find(
+    (suite) => suite.id === 'TS-INFRA-REAL-PR-001',
+  );
+  substitutedPostgres.selectors.files = ['apps/web/src/pages/LoginPage.test.tsx'];
+  substitutedPostgres.runner.steps = [
     {
       kind: 'VITEST',
       cwd: 'apps/web',

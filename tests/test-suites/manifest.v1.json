@@ -206,16 +206,32 @@
           {
             "kind": "VITEST",
             "cwd": "db",
+            "argv": ["__tests__/agent-package-registry.pg.test.ts"],
+            "requiredEnvNames": ["AGENT_PACKAGE_REGISTRY_PG_TEST", "DATABASE_URL"],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
             "argv": [
-              "__tests__/agent-package-registry.pg.test.ts",
-              "__tests__/agent-session-receipts-roles.pg.test.ts",
-              "__tests__/agent-session-receipts-upgrade.pg.test.ts",
               "__tests__/agent-session-receipts.pg.test.ts",
-              "__tests__/agent-session-response-message.pg.test.ts"
+              "__tests__/agent-session-response-message.pg.test.ts",
+              "__tests__/agent-session-receipts-roles.pg.test.ts"
             ],
             "requiredEnvNames": [
-              "AGENT_PACKAGE_REGISTRY_PG_TEST",
               "AGENT_SESSION_RECEIPTS_PG_TEST",
+              "DATABASE_URL",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/agent-session-receipts-upgrade.pg.test.ts"],
+            "requiredEnvNames": [
               "AGENT_SESSION_RECEIPTS_UPGRADE_PG_TEST",
               "DATABASE_URL",
               "POSTGRES_API_PASSWORD",
