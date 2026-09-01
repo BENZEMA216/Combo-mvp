@@ -19,7 +19,9 @@ const ANSWER_SUBCLAUSE_PATTERN = /[^，,]+/gu;
 const QUESTION_QUANTITY_SLOT = '\u{e000}';
 const QUESTION_CHOICE_SLOT = '\u{e001}';
 const QUESTION_VALUE_SLOT_SPLIT_PATTERN = /([\u{e000}\u{e001}])/u;
-const QUESTION_QUANTITY_VALUE_PATTERN = /^(?:\p{N}+|[零〇一二两三四五六七八九十百千万亿]+)$/u;
+const QUESTION_QUANTITY_VALUE_PATTERN =
+  /^(?:\p{N}+|[零〇一二两三四五六七八九十百千万亿]+)(?:[\p{Script=Latin}][\p{Script=Latin}\p{N}]*|个|份|次|种|项|名|位|家|条|台|套|本|张|件|笔|元|天|年|月|人)?$/u;
+const QUESTION_UNTYPED_CHOICE_PATTERN = /^(?:很多|许多|多个|若干|一些|不少|任意)$/u;
 const QUESTION_SKELETON_ATOM_PATTERN =
   /\p{Script=Han}+|[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
 const HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES = Object.freeze([
@@ -183,6 +185,8 @@ const QUESTION_TRAILING_SHELL_PHRASES = Object.freeze(
     '怎么',
   ].sort((left, right) => right.length - left.length || left.localeCompare(right)),
 );
+const TRAILING_QUANTITY_SHELLS = new Set(['是多少', '多少']);
+const TRAILING_CHOICE_SHELLS = new Set(['哪一个', '哪些', '哪个', '哪种', '哪家']);
 const QUESTION_DEMONSTRATIVE_SCAFFOLD_PHRASES = Object.freeze(['该服务的']);
 const TERMINAL_QUESTION_PARTICLE_PATTERN = /[吗呢](?=[?？]*$)/u;
 const RELATION_SIDE_HAN_PATTERN = /\p{Script=Han}{2,}/u;
@@ -199,6 +203,8 @@ const HAN_PREFIX_PATTERN = /^\p{Script=Han}/u;
 const LEADING_SEMANTIC_NEGATION_PATTERN = /[不没未无非莫]$/u;
 const LOCAL_SCOPE_MISMATCH_PATTERN =
   /(?:不|没|未|无|非|莫|可能|也许|或许|大概|恐怕|似乎|看似|据称|貌似|暂定|倾向|拒绝|禁止|否认)/u;
+const LOCAL_UNCERTAINTY_SCOPE_PATTERN =
+  /(?:不一定|未必|可能|也许|或许|大概|恐怕|似乎|看似|据称|貌似|暂定|倾向)/u;
 const SHORT_TOPIC_ACTIONS = new Set(HAN_ACTION_ARGUMENT_PREDICATE_PHRASES);
 const SHORT_TOPIC_STANDALONES = new Set(HAN_STANDALONE_PREDICATE_PHRASES);
 const DECLARATIVE_CONTINUATION_PHRASES = Object.freeze(
@@ -210,15 +216,6 @@ const DECLARATIVE_CONTINUATION_PHRASES = Object.freeze(
   ].sort((left, right) => right.length - left.length || left.localeCompare(right)),
 );
 const CLAUSE_CONTINUATION_PHRASES = Object.freeze(['并且', '而且', '但是', '并', '且', '但']);
-const TOPIC_PREFIX_PREDICATE_PHRASES = Object.freeze(
-  [
-    ...new Set([
-      ...HAN_DECLARATIVE_ARGUMENT_PREDICATE_PHRASES,
-      ...HAN_STANDALONE_PREDICATE_PHRASES,
-      '会',
-    ]),
-  ].sort((left, right) => right.length - left.length || left.localeCompare(right)),
-);
 const SUBSTANTIVE_HAN_NOISE_PHRASES = Object.freeze([
   '本系统',
   '该系统',
@@ -602,7 +599,17 @@ function stripQuestionClauseShell(value: string): StrippedQuestionClause | null 
     (phrase) => text.endsWith(phrase) && hasQuestionSideContent(text.slice(0, -phrase.length)),
   );
   const usedSuffix = suffix !== undefined;
-  if (suffix) text = text.slice(0, -suffix.length);
+  const trailingSlot = suffix
+    ? TRAILING_QUANTITY_SHELLS.has(suffix)
+      ? QUESTION_QUANTITY_SLOT
+      : TRAILING_CHOICE_SHELLS.has(suffix)
+        ? QUESTION_CHOICE_SLOT
+        : null
+    : null;
+  if (suffix) {
+    const prefix = text.slice(0, -suffix.length);
+    text = `${prefix}${suffix === '是多少' ? '是' : ''}${trailingSlot ?? ''}`;
+  }
   for (const scaffold of QUESTION_DEMONSTRATIVE_SCAFFOLD_PHRASES) {
     if (text.startsWith(scaffold) && hasQuestionSideContent(text.slice(scaffold.length))) {
       text = text.slice(scaffold.length);
@@ -610,7 +617,11 @@ function stripQuestionClauseShell(value: string): StrippedQuestionClause | null 
     }
   }
   if (usedSuffix) {
-    return { text, removedStructuralOperator: false, removedQuestionShell: true };
+    return {
+      text,
+      removedStructuralOperator: trailingSlot !== null,
+      removedQuestionShell: true,
+    };
   }
 
   const operators = structuralQuestionOperatorMatches(text);
@@ -705,6 +716,7 @@ function validQuestionSlotFill(slot: string, fill: string): boolean {
   if (slot === QUESTION_QUANTITY_SLOT) return QUESTION_QUANTITY_VALUE_PATTERN.test(fill);
   return (
     Array.from(fill).length <= 32 &&
+    !QUESTION_UNTYPED_CHOICE_PATTERN.test(fill) &&
     !HAN_CLAUSAL_ARGUMENT_RELATION_PHRASES.some(
       (phrase) => Array.from(phrase).length >= 2 && fill.includes(phrase),
     ) &&
@@ -865,6 +877,26 @@ function localSubclausePrefix(target: string, end: number): string {
   return prefix.slice(boundary + 1);
 }
 
+function prefixBeforeNextPredicate(value: string): string {
+  let end = value.length;
+  for (const phrase of DECLARATIVE_CONTINUATION_PHRASES) {
+    const index = value.indexOf(phrase);
+    if (index >= 0) end = Math.min(end, index);
+  }
+  return value.slice(0, end);
+}
+
+function hasNominalizedActionContinuation(target: string, end: number): boolean {
+  const suffix = target.slice(end).trimStart();
+  let boundary = suffix.length;
+  for (const phrase of CLAUSE_CONTINUATION_PHRASES) {
+    const index = suffix.indexOf(phrase);
+    if (index >= 0) boundary = Math.min(boundary, index);
+  }
+  const local = suffix.slice(0, boundary);
+  return HAN_NOMINAL_FRAGMENT_SUFFIXES.some((phrase) => local.includes(phrase));
+}
+
 function actionGroupHasSubject(group: string): boolean {
   const action = [...SHORT_TOPIC_ACTIONS].find((phrase) => group.endsWith(phrase));
   if (!action) return false;
@@ -875,21 +907,22 @@ function hasTopicGroupCoverage(
   group: string,
   target: string,
   predicateContext: QuestionTopicGroup['predicateContext'],
+  hasTypedValueSlot: boolean,
 ): boolean {
-  const groupStartsWithPredicate = TOPIC_PREFIX_PREDICATE_PHRASES.some((phrase) =>
-    group.startsWith(phrase),
-  );
   let fromIndex = 0;
   while (fromIndex <= target.length - group.length) {
     const index = target.indexOf(group, fromIndex);
     if (index < 0) return false;
     const localPrefix = localSubclausePrefix(target, index);
     const hasUnsupportedPrefix =
-      groupStartsWithPredicate &&
-      (LEADING_SEMANTIC_NEGATION_PATTERN.test(localPrefix) ||
-        LOCAL_SCOPE_MISMATCH_PATTERN.test(localPrefix));
+      LEADING_SEMANTIC_NEGATION_PATTERN.test(localPrefix) ||
+      LOCAL_SCOPE_MISMATCH_PATTERN.test(localPrefix);
+    const hasUnsupportedFollowingScope = LOCAL_UNCERTAINTY_SCOPE_PATTERN.test(
+      prefixBeforeNextPredicate(target.slice(index + group.length)),
+    );
     const hasRequiredPredicateContext =
       predicateContext === 'none' ||
+      (predicateContext === 'action' && hasTypedValueSlot) ||
       hasDeclarativeContinuation(
         target,
         index + group.length,
@@ -904,10 +937,15 @@ function hasTopicGroupCoverage(
       (DECLARATIVE_CONTINUATION_PHRASES.some((phrase) => localPrefix.trimEnd().endsWith(phrase)) ||
         HAN_DECLARATIVE_PREDICATE_PATTERN.test(localPrefix) ||
         LATIN_DECLARATIVE_PREDICATE_PATTERN.test(localPrefix));
+    const hasNominalizedAction =
+      predicateContext === 'action' &&
+      hasNominalizedActionContinuation(target, index + group.length);
     if (
       !hasUnsupportedPrefix &&
+      !hasUnsupportedFollowingScope &&
       !hasNominalBridgePrefix &&
       !hasPriorPredicate &&
+      !hasNominalizedAction &&
       hasRequiredPredicateContext
     ) {
       return true;
@@ -1009,6 +1047,9 @@ function sentenceSupportsObligation(
   allQuestionAnchors: ReadonlyMap<string, RelevanceAnchor>,
 ): boolean {
   const strictTopicGroups = obligation.topicGroups.map((group) => group.text);
+  const hasTypedValueSlot =
+    obligation.pattern.includes(QUESTION_QUANTITY_SLOT) ||
+    obligation.pattern.includes(QUESTION_CHOICE_SLOT);
   const matchingSubclauses = answerConnectedSubclauses(sentence).filter((subclause) =>
     matchesConnectedSkeleton(obligation.pattern, subclause.skeleton),
   );
@@ -1023,15 +1064,19 @@ function sentenceSupportsObligation(
     }
     return (
       obligation.topicGroups.every((group) =>
-        hasTopicGroupCoverage(group.text, subclause.text, group.predicateContext),
+        hasTopicGroupCoverage(
+          group.text,
+          subclause.text,
+          group.predicateContext,
+          hasTypedValueSlot,
+        ),
       ) && hasEveryLiteralQualifier(obligation.literalQualifiers, anchors)
     );
   });
   return (
     directSubclause &&
     hasPredicateOutsideTopicSpan(sentence, strictTopicGroups) &&
-    (obligation.pattern.includes(QUESTION_QUANTITY_SLOT) ||
-      obligation.pattern.includes(QUESTION_CHOICE_SLOT) ||
+    (hasTypedValueSlot ||
       hasSubstantiveInformationGain(sentence, strictTopicGroups, allQuestionAnchors))
   );
 }
@@ -1092,8 +1137,8 @@ function citedSentenceSupport(
  * conditions, and temporal qualifiers remain exact; this Beta deliberately does not infer premise
  * corrections or relation equivalence. Every residual Han group must occur as one complete
  * contiguous substring across the answer, every short action/state occurrence keeps its predicate
- * context, every sentence adds question-external substantive information, and every literal
- * qualifier appears in every sentence.
+ * context, every sentence adds question-external substantive information, and each sentence keeps
+ * every literal qualifier from the one question obligation it supports.
  * With no Han group, one discriminating literal plus all literal qualifiers are required; a
  * one-code-point Latin token, short number, lone year, or API token remains insufficient. Passing
  * only proves direct textual support and query relevance in the fixed Package; it does not prove
