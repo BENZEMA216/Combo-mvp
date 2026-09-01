@@ -12,6 +12,15 @@ fail() {
   exit 1
 }
 
+require_clean_checkout() {
+  local checkout_status
+  if ! checkout_status="$(git status --porcelain=v1 --untracked-files=all)"; then
+    fail 'could not verify the browser truth checkout state'
+  fi
+  [[ -z "$checkout_status" ]] \
+    || fail 'browser truth evidence requires a clean checkout with no untracked files'
+}
+
 for command_name in docker node pnpm curl; do
   command -v "$command_name" >/dev/null 2>&1 || fail "missing command: $command_name"
 done
@@ -34,14 +43,61 @@ WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
 SOURCE_SHA="${SOURCE_SHA:-$(git rev-parse HEAD)}"
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'SOURCE_SHA must be a full lowercase commit SHA'
 [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || fail 'SOURCE_SHA does not match the checkout'
+require_clean_checkout
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agora-resend-auth-e2e.XXXXXX")"
+TMP_DIR="$(mktemp -d "/tmp/agora-resend-auth-e2e.XXXXXX")"
 chmod 700 "$TMP_DIR"
+trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_DIR="$TMP_DIR" ROOT_DIR="$ROOT_DIR" node --input-type=module -e '
+  import { lstatSync, realpathSync, readdirSync } from "node:fs";
+  import { isAbsolute, relative } from "node:path";
+  const requested = process.env.TMP_DIR ?? "";
+  if (!isAbsolute(requested)) process.exit(1);
+  const stat = lstatSync(requested);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) process.exit(1);
+  if (readdirSync(requested).length !== 0) process.exit(1);
+  const directory = realpathSync(requested);
+  const repository = realpathSync(process.env.ROOT_DIR ?? "");
+  const fromRepository = relative(repository, directory);
+  if (fromRepository === "" || (!fromRepository.startsWith("..") && !isAbsolute(fromRepository))) {
+    process.exit(1);
+  }
+' || fail 'the browser truth temporary directory must be private and outside the repository'
+export TMPDIR="$TMP_DIR"
 LOG_FILE="$TMP_DIR/compose.log"
-SENTINEL_FILE="$TMP_DIR/sentinels.txt"
 COOKIE_JAR="$TMP_DIR/api.cookies"
+
+if [[ -n "${COMBO_BROWSER_TRUTH_PRIVATE_DIR:-}" ]]; then
+  TRUTH_PRIVATE_DIR="$COMBO_BROWSER_TRUTH_PRIVATE_DIR"
+  TRUTH_PRIVATE_DIR="$TRUTH_PRIVATE_DIR" ROOT_DIR="$ROOT_DIR" node --input-type=module -e '
+    import { lstatSync, realpathSync, readdirSync } from "node:fs";
+    import { isAbsolute, relative } from "node:path";
+    const requested = process.env.TRUTH_PRIVATE_DIR ?? "";
+    if (!isAbsolute(requested)) process.exit(1);
+    const stat = lstatSync(requested);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) process.exit(1);
+    if (readdirSync(requested).length !== 0) process.exit(1);
+    const directory = realpathSync(requested);
+    const repository = realpathSync(process.env.ROOT_DIR ?? "");
+    const fromRepository = relative(repository, directory);
+    if (fromRepository === "" || (!fromRepository.startsWith("..") && !isAbsolute(fromRepository))) {
+      process.exit(1);
+    }
+  ' || fail 'COMBO_BROWSER_TRUTH_PRIVATE_DIR must be an empty private directory outside the repository'
+else
+  TRUTH_PRIVATE_DIR="$TMP_DIR/browser-truth"
+  mkdir -m 700 "$TRUTH_PRIVATE_DIR"
+fi
+SENTINEL_FILE="$TRUTH_PRIVATE_DIR/sentinels.txt"
+PLAYWRIGHT_RAW_REPORT="$TRUTH_PRIVATE_DIR/playwright-report.json"
+PLAYWRIGHT_STDOUT="$TRUTH_PRIVATE_DIR/playwright.stdout"
+PLAYWRIGHT_STDERR="$TRUTH_PRIVATE_DIR/playwright.stderr"
+[[ ! -e "$SENTINEL_FILE" && ! -e "$PLAYWRIGHT_RAW_REPORT" \
+  && ! -e "$PLAYWRIGHT_STDOUT" && ! -e "$PLAYWRIGHT_STDERR" ]] \
+  || fail 'browser truth files already exist'
 : >"$SENTINEL_FILE"
 chmod 600 "$SENTINEL_FILE"
+require_clean_checkout
 
 PROJECT_NAME="agora-resend-auth-e2e-${RANDOM:-0}-$$"
 read -r WEB_PORT RESEND_MOCK_PORT POSTGRES_PORT REDIS_QUEUE_PORT REDIS_HOT_PORT \
@@ -497,8 +553,42 @@ AUTH_E2E_RESEND_MOCK_API_KEY="$RESEND_MOCK_API_KEY" \
 AUTH_E2E_SENTINEL_FILE="$SENTINEL_FILE" \
 AUTH_E2E_COMPOSE_PROJECT="$PROJECT_NAME" \
 AUTH_E2E_REPO_ROOT="$ROOT_DIR" \
+COMBO_BROWSER_TRUTH_CANDIDATE_SHA="$SOURCE_SHA" \
+PLAYWRIGHT_JSON_OUTPUT_FILE="$PLAYWRIGHT_RAW_REPORT" \
 PLAYWRIGHT_OUTPUT_DIR="$TMP_DIR/playwright" \
-  pnpm exec playwright test --config playwright.config.ts --tsconfig tsconfig.e2e.json
+PW_TEST_REPORTER='' \
+PW_TEST_DEBUG_REPORTERS='' \
+PW_TEST_CONNECT_EXPOSE_NETWORK='' \
+PW_TEST_CONNECT_HEADERS='' \
+PWDEBUG='' \
+PWDEBUGIMPL='' \
+PWPAUSE='' \
+PW_RUNNER_DEBUG='' \
+PW_TEST_CONNECT_WS_ENDPOINT='' \
+PW_TEST_REUSE_CONTEXT='' \
+PW_TEST_SOURCE_TRANSFORM='' \
+PW_TEST_SOURCE_TRANSFORM_SCOPE='' \
+PWTEST_CACHE_DIR="$TMP_DIR/playwright-cache" \
+PWTEST_CHILD_PROCESS_TIMEOUT='' \
+PWTEST_DEBUG='' \
+PWTEST_FORCE_EXIT_TIMEOUT='' \
+PWTEST_WATCH='' \
+PWTEST_HEADED_FOR_TEST='' \
+PWTEST_SHARD_WEIGHTS='' \
+PLAYWRIGHT_DASHBOARD='' \
+PLAYWRIGHT_FORCE_ASYNC_LOADER='' \
+PLAYWRIGHT_FORCE_TTY='' \
+PLAYWRIGHT_LAST_RUN_OUTPUT_FILE='' \
+PLAYWRIGHT_TEST_BASE_URL='' \
+PW_DISABLE_TS_ESM='' \
+  pnpm exec playwright test --config tests/e2e/playwright.test-truth.config.ts \
+    --tsconfig tsconfig.e2e.json --browser=chromium --reporter=json \
+    >"$PLAYWRIGHT_STDOUT" 2>"$PLAYWRIGHT_STDERR"
+for playwright_private_file in "$PLAYWRIGHT_RAW_REPORT" "$PLAYWRIGHT_STDOUT" "$PLAYWRIGHT_STDERR"; do
+  [[ -f "$playwright_private_file" && ! -L "$playwright_private_file" ]] \
+    || fail 'Playwright did not create every private evidence file'
+  chmod 600 "$playwright_private_file"
+done
 rm -rf "$TMP_DIR/playwright"
 
 step 'Checking challenge cooldown rate limiting...'
