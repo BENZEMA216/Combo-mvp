@@ -91,7 +91,7 @@ export type AbandonPendingUsageRecoveryResult = z.infer<
 
 export const CreateRecoveryRechargeOrderBodySchema = z
   .object({
-    recoveryUsageId: CanonicalUuidSchema,
+    recoveryUsageId: CanonicalUuidSchema.optional(),
     rechargeIntentId: CanonicalUuidSchema,
     amountCents: z.number().int().positive().max(99_999_999),
     channel: z.literal('qr'),
@@ -111,10 +111,9 @@ export const RecoveryRechargeOrderStatusSchema = z.enum([
 ]);
 export type RecoveryRechargeOrderStatus = z.infer<typeof RecoveryRechargeOrderStatusSchema>;
 
-export const RecoveryRechargeOrderViewSchema = z
+export const RechargeOrderViewSchema = z
   .object({
     id: IdSchema,
-    recoveryUsageId: CanonicalUuidSchema,
     rechargeIntentId: CanonicalUuidSchema,
     amountCents: KnowledgeCentsSchema.refine(
       (value) => BigInt(value) > 0n,
@@ -135,4 +134,9 @@ export const RecoveryRechargeOrderViewSchema = z
     updatedAt: IsoDateTimeSchema,
   })
   .strict();
+export type RechargeOrderView = z.infer<typeof RechargeOrderViewSchema>;
+
+export const RecoveryRechargeOrderViewSchema = RechargeOrderViewSchema.extend({
+  recoveryUsageId: CanonicalUuidSchema,
+}).strict();
 export type RecoveryRechargeOrderView = z.infer<typeof RecoveryRechargeOrderViewSchema>;

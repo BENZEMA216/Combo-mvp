@@ -9,6 +9,7 @@ import {
   BillingIdempotencyConflictError,
   BillingNotFoundError,
   BillingRateLimitedError,
+  BillingRecoveryUnavailableError,
   type BillingRepository,
   type LeasedRechargeOrder,
   type PrepareRechargeInput,
@@ -22,6 +23,7 @@ interface RechargeOrderRow {
   order_no: string;
   owner_user_id: string;
   client_idempotency_key: string;
+  recovery_usage_id: string | null;
   package_id: string;
   amount_cents: string | number | bigint;
   payment_method: RechargeOrder['paymentMethod'];
@@ -55,6 +57,7 @@ const MAX_RECONCILIATION_AGE_MS = 24 * 60 * 60 * 1_000;
 
 const ORDER_SELECT = `
   SELECT ro.id, ro.order_no, ro.owner_user_id, ro.client_idempotency_key,
+         ro.recovery_usage_id,
          ro.package_id, ro.amount_cents, ro.payment_method, ro.pay_type,
          ro.gateway_environment,
          ro.institution_no, ro.merchant_no, ro.pay_trace_no, ro.pay_time,
@@ -83,6 +86,7 @@ function toRechargeOrder(row: RechargeOrderRow, now = new Date()): RechargeOrder
     orderNo: row.order_no,
     ownerUserId: row.owner_user_id,
     clientIdempotencyKey: row.client_idempotency_key,
+    ...(row.recovery_usage_id ? { recoveryUsageId: row.recovery_usage_id } : {}),
     packageId: row.package_id,
     amountCents: BigInt(row.amount_cents),
     paymentMethod: row.payment_method,
@@ -144,6 +148,84 @@ async function selectOrderForUpdateByIntent(
     [ownerUserId, clientIdempotencyKey],
   );
   return result.rows[0] ? toRechargeOrder(result.rows[0]) : null;
+}
+
+interface PendingRecoveryOrderRow {
+  owner_user_id: string;
+  usage_id: string;
+  recovery_status: 'active' | 'accepted' | 'abandoned';
+  active_recharge_intent_id: string;
+  unit_price_cents: string | number | bigint;
+  expires_at: string | Date;
+  updated_at: string | Date;
+  is_unexpired: boolean;
+}
+
+async function selectPendingRecoveryForUpdate(
+  tx: Tx,
+  ownerUserId: string,
+  recoveryUsageId: string,
+): Promise<PendingRecoveryOrderRow | null> {
+  const result = await tx.query<PendingRecoveryOrderRow>(
+    `SELECT owner_user_id, usage_id, recovery_status, active_recharge_intent_id,
+            unit_price_cents, expires_at, updated_at,
+            expires_at > statement_timestamp() AS is_unexpired
+       FROM pending_usage_recoveries
+      WHERE owner_user_id = $1 AND usage_id = $2
+      FOR UPDATE`,
+    [ownerUserId, recoveryUsageId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function selectOrderByRecoveryIntent(
+  tx: Tx,
+  ownerUserId: string,
+  recoveryUsageId: string,
+  clientIdempotencyKey: string,
+): Promise<RechargeOrder | null> {
+  const result = await tx.query<RechargeOrderRow>(
+    `${ORDER_SELECT}
+      WHERE ro.owner_user_id = $1
+        AND ro.recovery_usage_id = $2
+        AND ro.client_idempotency_key = $3`,
+    [ownerUserId, recoveryUsageId, clientIdempotencyKey],
+  );
+  return result.rows[0] ? toRechargeOrder(result.rows[0]) : null;
+}
+
+function assertOrderMatchesPreparation(order: RechargeOrder, input: PrepareRechargeInput): void {
+  if (
+    order.recoveryUsageId !== input.recoveryUsageId ||
+    order.clientIdempotencyKey !== input.clientIdempotencyKey ||
+    order.packageId !== input.packageId ||
+    order.amountCents !== input.amountCents ||
+    order.paymentMethod !== input.paymentMethod ||
+    order.payType !== input.payType ||
+    order.gatewayEnvironment !== input.gatewayEnvironment ||
+    order.institutionNo !== input.institutionNo ||
+    order.merchantNo !== input.merchantNo ||
+    order.requestFingerprint !== input.requestFingerprint
+  ) {
+    throw new BillingIdempotencyConflictError();
+  }
+}
+
+function assertLegacyOrderMatchesPreparation(
+  order: RechargeOrder,
+  input: PrepareRechargeInput,
+): void {
+  if (
+    order.recoveryUsageId !== undefined ||
+    order.packageId !== input.packageId ||
+    order.amountCents !== input.amountCents ||
+    order.gatewayEnvironment !== input.gatewayEnvironment ||
+    order.institutionNo !== input.institutionNo ||
+    order.merchantNo !== input.merchantNo ||
+    order.requestFingerprint !== input.requestFingerprint
+  ) {
+    throw new BillingIdempotencyConflictError();
+  }
 }
 
 async function selectOrderForUpdateById(tx: Tx, orderId: string): Promise<RechargeOrder | null> {
@@ -315,55 +397,133 @@ export class PgBillingRepository implements BillingRepository {
     return result.rows[0] ? toRechargeOrder(result.rows[0]) : null;
   }
 
+  async findRechargeOrderByRecovery(
+    ownerUserId: string,
+    recoveryUsageId: string,
+  ): Promise<RechargeOrder | null> {
+    const result = await this.db.query<RechargeOrderRow>(
+      `${ORDER_SELECT}
+        WHERE ro.owner_user_id = $1
+          AND ro.recovery_usage_id = $2
+          AND (
+            ro.credit_status = 'credited'
+            OR ro.client_idempotency_key = (
+              SELECT active_recharge_intent_id::text
+                FROM pending_usage_recoveries
+               WHERE owner_user_id = $1 AND usage_id = $2
+            )
+          )
+        ORDER BY CASE WHEN ro.credit_status = 'credited' THEN 0 ELSE 1 END,
+                 ro.credited_at DESC NULLS LAST,
+                 ro.created_at DESC,
+                 ro.id
+        LIMIT 1`,
+      [ownerUserId, recoveryUsageId],
+    );
+    return result.rows[0] ? toRechargeOrder(result.rows[0]) : null;
+  }
+
   async prepareRecharge(input: PrepareRechargeInput): Promise<PrepareRechargeResult> {
     return withTransaction(this.pool, async (tx) => {
-      const existing = await selectOrderForUpdateByIntent(
-        tx,
-        input.ownerUserId,
-        input.clientIdempotencyKey,
-      );
-      if (existing) {
-        if (
-          existing.packageId !== input.packageId ||
-          existing.amountCents !== input.amountCents ||
-          existing.gatewayEnvironment !== input.gatewayEnvironment ||
-          existing.institutionNo !== input.institutionNo ||
-          existing.merchantNo !== input.merchantNo
-        ) {
+      const recoveryUsageId = input.recoveryUsageId;
+      if (recoveryUsageId === undefined) {
+        // Legacy UI orders keep their original intent-only transaction. They never
+        // inspect, guess, or bind a pending usage recovery.
+        const existing = await selectOrderForUpdateByIntent(
+          tx,
+          input.ownerUserId,
+          input.clientIdempotencyKey,
+        );
+        if (existing) {
+          assertLegacyOrderMatchesPreparation(existing, input);
+          return { order: existing, shouldSubmit: false, created: false };
+        }
+      } else {
+        // Runtime and Authoring share this exact lock order. Do not lock an existing
+        // recharge order here: updating a recovery-linked order performs an implicit
+        // foreign-key check against the pending row, so pending -> order would deadlock
+        // with a callback's order -> pending check. The recovery advisory lock alone
+        // serializes creators; replacement eligibility is tested in the pending CAS.
+        await tx.query(
+          `SELECT pg_advisory_xact_lock(
+             hashtextextended($1::uuid::text || ':' || $2::uuid::text, 0)
+           )`,
+          [input.ownerUserId, recoveryUsageId],
+        );
+        const recovery = await selectPendingRecoveryForUpdate(
+          tx,
+          input.ownerUserId,
+          recoveryUsageId,
+        );
+        if (!recovery) throw new BillingNotFoundError();
+        if (recovery.recovery_status !== 'active' || recovery.is_unexpired !== true) {
+          throw new BillingRecoveryUnavailableError();
+        }
+        if (BigInt(recovery.unit_price_cents) !== input.amountCents) {
           throw new BillingIdempotencyConflictError();
         }
-        if (existing.requestFingerprint !== input.requestFingerprint) {
-          throw new BillingIdempotencyConflictError();
+
+        const existing = await selectOrderByRecoveryIntent(
+          tx,
+          input.ownerUserId,
+          recoveryUsageId,
+          input.clientIdempotencyKey,
+        );
+        if (existing) {
+          if (recovery.active_recharge_intent_id !== input.clientIdempotencyKey) {
+            throw new BillingIdempotencyConflictError();
+          }
+          assertOrderMatchesPreparation(existing, input);
+          // The original POST may still be in flight. A repeated client request
+          // only observes the existing row; the due-order lease owns crash
+          // recovery after the configured transport timeout plus a safety margin.
+          return { order: existing, shouldSubmit: false, created: false };
         }
-        // The original POST may still be in flight. A repeated client request
-        // only observes the existing row; the due-order lease owns crash
-        // recovery after the configured transport timeout plus a safety margin.
-        return { order: existing, shouldSubmit: false, created: false };
+
+        if (recovery.active_recharge_intent_id !== input.clientIdempotencyKey) {
+          const replaced = await tx.query<{ usage_id: string }>(
+            `UPDATE pending_usage_recoveries
+                SET active_recharge_intent_id = $3, updated_at = statement_timestamp()
+              WHERE owner_user_id = $1 AND usage_id = $2
+                AND recovery_status = 'active'
+                AND active_recharge_intent_id = $4::uuid
+                AND expires_at > statement_timestamp()
+                AND EXISTS (
+                  SELECT 1
+                    FROM recharge_orders old_order
+                   WHERE old_order.owner_user_id = pending_usage_recoveries.owner_user_id
+                     AND old_order.recovery_usage_id = pending_usage_recoveries.usage_id
+                     AND old_order.client_idempotency_key = $4::text
+                     AND old_order.payment_status IN ('failed', 'closed')
+                     AND old_order.credit_status = 'uncredited'
+                )
+              RETURNING usage_id`,
+            [
+              input.ownerUserId,
+              recoveryUsageId,
+              input.clientIdempotencyKey,
+              recovery.active_recharge_intent_id,
+            ],
+          );
+          if (replaced.rows.length !== 1) throw new BillingIdempotencyConflictError();
+        }
       }
 
-      // A transaction-scoped owner lock makes admission deterministic across API
-      // replicas. Re-check the intent after acquiring it because another request
-      // may have committed the same intent while this transaction was waiting.
+      // The per-owner lock retains the existing bounded multi-replica admission
+      // policy, but is deliberately acquired only after the recovery lock and CAS.
       await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text, 0))`, [
         input.ownerUserId,
       ]);
-      const racedExisting = await selectOrderForUpdateByIntent(
-        tx,
-        input.ownerUserId,
-        input.clientIdempotencyKey,
-      );
-      if (racedExisting) {
-        if (
-          racedExisting.packageId !== input.packageId ||
-          racedExisting.amountCents !== input.amountCents ||
-          racedExisting.gatewayEnvironment !== input.gatewayEnvironment ||
-          racedExisting.institutionNo !== input.institutionNo ||
-          racedExisting.merchantNo !== input.merchantNo ||
-          racedExisting.requestFingerprint !== input.requestFingerprint
-        ) {
-          throw new BillingIdempotencyConflictError();
+      if (recoveryUsageId === undefined) {
+        const racedExisting = await selectOrderForUpdateByIntent(
+          tx,
+          input.ownerUserId,
+          input.clientIdempotencyKey,
+        );
+        if (racedExisting) {
+          assertLegacyOrderMatchesPreparation(racedExisting, input);
+          return { order: racedExisting, shouldSubmit: false, created: false };
         }
-        return { order: racedExisting, shouldSubmit: false, created: false };
       }
 
       const admission = await tx.query<{
@@ -392,13 +552,14 @@ export class PgBillingRepository implements BillingRepository {
 
       const inserted = await tx.query<{ id: string }>(
         `INSERT INTO recharge_orders (
-           order_no, owner_user_id, client_idempotency_key, package_id, amount_cents,
+           order_no, owner_user_id, client_idempotency_key, recovery_usage_id,
+           package_id, amount_cents,
            payment_method, pay_type, gateway_environment, institution_no, merchant_no,
            pay_trace_no, pay_time, payment_status, credit_status, next_query_at
          )
          VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-           'created', 'uncredited', now() + ($13 * interval '1 millisecond')
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+           'created', 'uncredited', now() + ($14 * interval '1 millisecond')
          )
          ON CONFLICT (owner_user_id, client_idempotency_key) DO NOTHING
          RETURNING id`,
@@ -406,6 +567,7 @@ export class PgBillingRepository implements BillingRepository {
           input.orderNo,
           input.ownerUserId,
           input.clientIdempotencyKey,
+          recoveryUsageId ?? null,
           input.packageId,
           input.amountCents.toString(),
           input.paymentMethod,
@@ -420,14 +582,25 @@ export class PgBillingRepository implements BillingRepository {
       );
       const row = inserted.rows[0];
       if (!row) {
-        const raced = await selectOrderForUpdateByIntent(
+        if (recoveryUsageId === undefined) {
+          const raced = await selectOrderForUpdateByIntent(
+            tx,
+            input.ownerUserId,
+            input.clientIdempotencyKey,
+          );
+          if (!raced || raced.requestFingerprint !== input.requestFingerprint) {
+            throw new BillingIdempotencyConflictError();
+          }
+          return { order: raced, shouldSubmit: false, created: false };
+        }
+        const raced = await selectOrderByRecoveryIntent(
           tx,
           input.ownerUserId,
+          recoveryUsageId,
           input.clientIdempotencyKey,
         );
-        if (!raced || raced.requestFingerprint !== input.requestFingerprint) {
-          throw new BillingIdempotencyConflictError();
-        }
+        if (!raced) throw new BillingIdempotencyConflictError();
+        assertOrderMatchesPreparation(raced, input);
         return { order: raced, shouldSubmit: false, created: false };
       }
       await tx.query(

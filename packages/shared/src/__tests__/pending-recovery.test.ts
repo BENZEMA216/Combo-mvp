@@ -6,6 +6,7 @@ import {
   PendingUsageRecoveryListQuerySchema,
   PendingUsageRecoveryUsageParamsSchema,
   PendingUsageRecoveryViewSchema,
+  RechargeOrderViewSchema,
   RechargeRequiredBodySchema,
   RecoveryRechargeOrderViewSchema,
 } from '../index.js';
@@ -108,7 +109,7 @@ describe('pending usage recovery contracts', () => {
     ).toBe(true);
   });
 
-  it('requires explicit recovery and intent identities for every recovery order', () => {
+  it('accepts legacy orders without recovery while keeping explicit recovery identities strict', () => {
     const parsed = CreateRecoveryRechargeOrderBodySchema.parse({
       recoveryUsageId: OWNER_USAGE_ID.toUpperCase(),
       rechargeIntentId: ACTIVE_INTENT_ID.toUpperCase(),
@@ -124,13 +125,18 @@ describe('pending usage recovery contracts', () => {
       payType: 'wechat',
     });
     expect(
-      CreateRecoveryRechargeOrderBodySchema.safeParse({
-        rechargeIntentId: ACTIVE_INTENT_ID,
+      CreateRecoveryRechargeOrderBodySchema.parse({
+        rechargeIntentId: ACTIVE_INTENT_ID.toUpperCase(),
         amountCents: 1,
         channel: 'qr',
         payType: 'wechat',
-      }).success,
-    ).toBe(false);
+      }),
+    ).toEqual({
+      rechargeIntentId: ACTIVE_INTENT_ID,
+      amountCents: 1,
+      channel: 'qr',
+      payType: 'wechat',
+    });
     expect(
       CreateRecoveryRechargeOrderBodySchema.safeParse({
         recoveryUsageId: OWNER_USAGE_ID,
@@ -161,6 +167,26 @@ describe('pending usage recovery contracts', () => {
     expect(
       RecoveryRechargeOrderViewSchema.safeParse({ ...view, payTraceNo: 'must-not-leak' }).success,
     ).toBe(false);
+  });
+
+  it('keeps the legacy recharge-order projection exact and recovery-free', () => {
+    const view = {
+      id: ORDER_ID,
+      rechargeIntentId: ACTIVE_INTENT_ID,
+      amountCents: '500',
+      channel: 'qr',
+      payType: 'alipay',
+      status: 'pending',
+      reconciliationActive: true,
+      paymentAction: { kind: 'qr_code', url: 'https://qr.alipay.com/opaque' },
+      createdAt: '2026-09-01T12:00:00.000Z',
+      updatedAt: '2026-09-01T12:01:00.000Z',
+    } as const;
+    expect(RechargeOrderViewSchema.parse(view)).toEqual(view);
+    expect(
+      RechargeOrderViewSchema.safeParse({ ...view, recoveryUsageId: OWNER_USAGE_ID }).success,
+    ).toBe(false);
+    expect(RecoveryRechargeOrderViewSchema.safeParse(view).success).toBe(false);
   });
 
   it('uses a minimal idempotent abandonment response', () => {
