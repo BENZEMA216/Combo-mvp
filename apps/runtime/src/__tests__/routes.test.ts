@@ -2060,6 +2060,13 @@ describe('knowledge Agent handler closed loop', () => {
       recovery_status: 'accepted',
       terminal_turn_id: expect.any(String),
     });
+    expect(
+      db.queries.some(
+        (query) =>
+          query.startsWith('UPDATE billing_free_allowances SET free_reserved_count') &&
+          query.includes('updated_at = GREATEST(now(), updated_at)'),
+      ),
+    ).toBe(true);
     for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
       const acceptedDetail = await readDetail(detailEnv);
       expect(acceptedDetail.statusCode).toBe(200);

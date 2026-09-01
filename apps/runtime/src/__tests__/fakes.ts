@@ -635,6 +635,9 @@ export class FakeDb implements Queryable, TxPool {
       return { rows: [{ exists }] as R[], rowCount: 1 };
     }
     if (s.startsWith('UPDATE pending_usage_recoveries')) {
+      if (!s.includes('updated_at = GREATEST(statement_timestamp(), updated_at, created_at)')) {
+        throw new Error('FakeDb: pending terminal timestamp must be monotonic');
+      }
       const key = `${String(params[0])}:${String(params[1])}`;
       const row = this.pendingUsageRecoveries.get(key);
       if (!row || row.recovery_status !== 'active') return { rows: [], rowCount: 0 };
@@ -646,7 +649,7 @@ export class FakeDb implements Queryable, TxPool {
         row.recovery_status = 'abandoned';
         row.terminal_turn_id = params[2] === null ? null : String(params[2]);
       }
-      row.updated_at = nowIso();
+      row.updated_at = [row.created_at, row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO billing_accounts')) {
@@ -683,7 +686,8 @@ export class FakeDb implements Queryable, TxPool {
     }
     if (
       s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint') &&
-      s.includes('balance_cents = balance_cents + $2::bigint')
+      s.includes('balance_cents = balance_cents + $2::bigint') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
     ) {
       const [ownerUserId, amountRaw] = params as [string, string];
       const row = this.billingAccounts.get(ownerUserId);
@@ -691,16 +695,19 @@ export class FakeDb implements Queryable, TxPool {
       if (!row || row.reserved_cents < amount) return { rows: [], rowCount: 0 };
       row.reserved_cents -= amount;
       row.balance_cents += amount;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
-    if (s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint')) {
+    if (
+      s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
+    ) {
       const [ownerUserId, amountRaw] = params as [string, string];
       const row = this.billingAccounts.get(ownerUserId);
       const amount = BigInt(amountRaw);
       if (!row || row.reserved_cents < amount) return { rows: [], rowCount: 0 };
       row.reserved_cents -= amount;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO billing_free_allowances')) {
@@ -751,24 +758,26 @@ export class FakeDb implements Queryable, TxPool {
     if (
       s.startsWith(
         'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count - 1, free_used_count = free_used_count + 1',
-      )
+      ) &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
     ) {
       const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
       if (!row || row.free_reserved_count <= 0) return { rows: [], rowCount: 0 };
       row.free_reserved_count -= 1;
       row.free_used_count += 1;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (
       s.startsWith(
         'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count - 1',
-      )
+      ) &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
     ) {
       const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
       if (!row || row.free_reserved_count <= 0) return { rows: [], rowCount: 0 };
       row.free_reserved_count -= 1;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (
@@ -908,18 +917,27 @@ export class FakeDb implements Queryable, TxPool {
       this.usageCharges.set(row.id, row);
       return { rows: [{ id: row.id }] as R[], rowCount: 1 };
     }
-    if (s.startsWith("UPDATE usage_charges SET status = 'completed'")) {
+    if (
+      s.startsWith("UPDATE usage_charges SET status = 'completed'") &&
+      s.includes('finished_at = GREATEST(now(), created_at)') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
+    ) {
       const [id, settledRaw] = params as [string, string];
       const row = this.usageCharges.get(id);
       if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
       row.status = 'completed';
       row.settled_cents = BigInt(settledRaw);
       if (row.product_kind === 'knowledge_agent_test') row.execution_outcome = 'answered';
-      row.finished_at = nowIso();
-      row.updated_at = row.finished_at;
+      const now = nowIso();
+      row.finished_at = [row.created_at, now].sort().at(-1)!;
+      row.updated_at = [row.updated_at, now].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
-    if (s.startsWith("UPDATE usage_charges SET status = 'released'")) {
+    if (
+      s.startsWith("UPDATE usage_charges SET status = 'released'") &&
+      s.includes('finished_at = GREATEST(now(), created_at)') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
+    ) {
       const row = this.usageCharges.get(params[0] as string);
       if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
       row.status = 'released';
@@ -927,8 +945,9 @@ export class FakeDb implements Queryable, TxPool {
       if (row.product_kind === 'knowledge_agent_test') {
         row.execution_outcome = params[1] as UsageChargeRowF['execution_outcome'];
       }
-      row.finished_at = nowIso();
-      row.updated_at = row.finished_at;
+      const now = nowIso();
+      row.finished_at = [row.created_at, now].sort().at(-1)!;
+      row.updated_at = [row.updated_at, now].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO wallet_ledger')) {
