@@ -90,9 +90,11 @@ export function useRechargeOrderByIntent(rechargeIntentId: string) {
 
 export async function getRechargeOrderByRecovery(
   recoveryUsageId: string,
+  signal?: AbortSignal,
 ): Promise<RecoveryRechargeOrderView | null> {
   const value = await apiGet<unknown>(
     `/billing/recharge-orders/by-recovery/${encodeURIComponent(recoveryUsageId)}`,
+    { signal },
   );
   if (value === null) return null;
   return RecoveryRechargeOrderViewSchema.parse(value);

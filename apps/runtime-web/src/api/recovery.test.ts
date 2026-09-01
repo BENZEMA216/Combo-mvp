@@ -264,7 +264,7 @@ describe('pending usage recovery server truth', () => {
     );
   });
 
-  it('deduplicates concurrent StrictMode and multitab resume attempts before the business POST', async () => {
+  it('deduplicates concurrent resumes and lets a later tab converge on a lock-owned 404', async () => {
     const request = installSerialBrowserLock();
     const fetchMock = vi
       .fn()

@@ -238,7 +238,7 @@ describe('knowledge recovery uses server truth', () => {
     expect(first).toBe(duplicate);
     await act(async () => Promise.all([first, duplicate]));
 
-    expect(orderByRecoveryMock).toHaveBeenCalledWith(recovery.usageId);
+    expect(orderByRecoveryMock).toHaveBeenCalledWith(recovery.usageId, expect.any(AbortSignal));
     expect(coordinateMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenCalledTimes(1);
     expect(sendMock).toHaveBeenCalledWith(
@@ -248,6 +248,38 @@ describe('knowledge recovery uses server truth', () => {
       expect.anything(),
     );
     expect(result.current.pendingRecovery).toBeNull();
+  });
+
+  it('converges a stale loser after another tab completes under the recovery lock', async () => {
+    const recovery = recoveryView(OLD_CREDITED_INTENT, 'already resumed by another tab');
+    resolveRecoveryMock.mockResolvedValue(recovery);
+    exactRecoveryMock.mockRejectedValueOnce(new ApiError('not found', 404));
+    // The real coordinator owns the exact read and resolves a lock-owned 404 as terminal.
+    coordinateMock.mockResolvedValueOnce(undefined);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result } = renderHook(() => useSessionStream(SESSION_ID, DETAIL), {
+      wrapper: wrapper(queryClient),
+    });
+    await vi.waitFor(() => expect(result.current.pendingRecovery).toEqual(recovery));
+
+    await act(async () => result.current.resumeAfterRecharge(OLD_CREDITED_INTENT));
+
+    expect(coordinateMock).toHaveBeenCalledWith(
+      recovery.usageId,
+      expect.any(Function),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(exactRecoveryMock).not.toHaveBeenCalled();
+    expect(orderByRecoveryMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+    expect(result.current.pendingRecovery).toBeNull();
+    expect(result.current.recoveryDialogOpen).toBe(false);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['session', SESSION_ID] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+    expect(result.current.errorMessage).toBeNull();
   });
 
   it('keeps exact server recovery visible when bounded resume fails closed', async () => {
@@ -296,10 +328,11 @@ describe('knowledge recovery uses server truth', () => {
   });
 });
 
-function wrapper() {
-  const queryClient = new QueryClient({
+function wrapper(
+  queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
-  });
+  }),
+) {
   return function Wrapper({ children }: PropsWithChildren): ReactElement {
     return createElement(ReleaseMetadataProvider, {
       metadata: PREVIEW_METADATA,

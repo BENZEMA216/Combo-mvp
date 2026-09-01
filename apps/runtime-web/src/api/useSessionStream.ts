@@ -805,40 +805,31 @@ export function useSessionStream(
       resumeAbortControllerRef.current = resumeAbortController;
       const operation = (async (): Promise<void> => {
         const binding = knowledgeBindingRef.current;
-        const exact = await getPendingUsageRecovery(serverRecovery.usageId);
-        if (
-          !binding ||
-          !pendingRecoveryMatchesBinding(exact, requestSessionId, binding) ||
-          exact.usageId !== serverRecovery.usageId ||
-          exact.requestText !== serverRecovery.requestText ||
-          exact.billing.unitPriceCents !== serverRecovery.billing.unitPriceCents
-        ) {
-          throw new Error('待恢复任务与当前会话不匹配，已停止恢复。');
-        }
-        if (activeSessionIdRef.current !== requestSessionId) {
-          throw new Error('会话已切换，请在当前会话重新确认。');
-        }
-        applyServerRecovery(exact);
-        const credited = await getRechargeOrderByRecovery(exact.usageId);
-        if (
-          !credited ||
-          credited.status !== 'credited' ||
-          credited.recoveryUsageId !== exact.usageId ||
-          credited.rechargeIntentId !== creditedIntentId ||
-          credited.amountCents !== exact.billing.unitPriceCents
-        ) {
-          throw new Error('充值还未确认到账，请稍后重试。');
-        }
         await coordinateRecoveryResume(
-          exact.usageId,
+          serverRecovery.usageId,
           async (lockedRecovery, { signal }) => {
             if (
+              !binding ||
               !pendingRecoveryMatchesBinding(lockedRecovery, requestSessionId, binding) ||
-              lockedRecovery.usageId !== exact.usageId ||
-              lockedRecovery.requestText !== exact.requestText ||
-              lockedRecovery.billing.unitPriceCents !== exact.billing.unitPriceCents
+              lockedRecovery.usageId !== serverRecovery.usageId ||
+              lockedRecovery.requestText !== serverRecovery.requestText ||
+              lockedRecovery.billing.unitPriceCents !== serverRecovery.billing.unitPriceCents
             ) {
               throw new Error('锁内待恢复任务与当前会话不匹配，已停止恢复。');
+            }
+            if (activeSessionIdRef.current !== requestSessionId) {
+              throw new Error('会话已切换，请在当前会话重新确认。');
+            }
+            applyServerRecovery(lockedRecovery);
+            const credited = await getRechargeOrderByRecovery(lockedRecovery.usageId, signal);
+            if (
+              !credited ||
+              credited.status !== 'credited' ||
+              credited.recoveryUsageId !== lockedRecovery.usageId ||
+              credited.rechargeIntentId !== creditedIntentId ||
+              credited.amountCents !== lockedRecovery.billing.unitPriceCents
+            ) {
+              throw new Error('充值还未确认到账，请稍后重试。');
             }
             await submitMessage(lockedRecovery.requestText, {
               creditedIntentId,
