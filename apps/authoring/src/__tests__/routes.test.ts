@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 23 declared endpoints (including two gated Package Registry routes)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(23);
+  it('registers exactly 24 declared endpoints (including recovery order readback)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(24);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -74,7 +74,7 @@ describe('route registry self-check', () => {
         endpoint.url.startsWith('/billing/') &&
         endpoint.url !== '/billing/leshouying/payment-notify',
     );
-    expect(billing).toHaveLength(4);
+    expect(billing).toHaveLength(5);
     for (const endpoint of billing) {
       expect(endpoint.preHandlers?.length).toBeGreaterThanOrEqual(2);
     }

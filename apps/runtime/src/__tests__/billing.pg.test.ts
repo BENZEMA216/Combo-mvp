@@ -9,6 +9,7 @@ import {
 import type { CapabilityDefinition, KnowledgeAgentBinding } from '@cb/shared';
 import {
   createUsageBillingService,
+  usageRequestFingerprint,
   UsageRequestConflictError,
   type UsageRequest,
 } from '../modules/billing/service.js';
@@ -30,7 +31,10 @@ import {
 import { toRuntimeDb, withTransaction, type RuntimeDb } from '../platform/infra/db.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
-import type { KnowledgeAgentTestGate } from '../platform/config/env.js';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  type KnowledgeAgentTestGate,
+} from '../platform/config/env.js';
 import {
   knowledgeQuestionDigest,
   type ResolvedKnowledgeAgent,
@@ -218,7 +222,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     const packageDigest = `sha256:${suffix}${suffix}` as const;
     const releaseId = `release.agent-package.${suffix}` as const;
     const chunkId = `chunk.knowledge.${suffix}` as const;
-    const content = 'Combo 的前三次成功回答使用免费额度。';
+    const content = 'Combo 的免费额度可以用于前三次成功回答。';
     const knowledge = createCreatorKnowledgeBundle({
       protocol: 'combo.knowledge-bundle/1',
       chunks: [
@@ -268,8 +272,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       ownerUserId: chain.consumerUserId,
       agentBinding: binding,
     });
-    const question = 'Combo 的免费额度是多少？';
-    const answer = '前三次成功回答免费。';
+    const question = 'Combo 的免费额度可以用于哪些成功回答？';
+    const answer = content;
     const resolved: ResolvedKnowledgeAgent = {
       binding,
       name: '公开知识助手',
@@ -299,7 +303,11 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
   function knowledgeRunner(
     chain: SeededKnowledgeChain,
     script: Parameters<typeof makeFakeAgentFactory>[0],
-    policy: { freeUses: number; unitPriceCents: number },
+    policy: { freeUses: number; unitPriceCents: number; version?: string },
+    usageId = randomUUID(),
+    recovery?: {
+      validatorPolicyVersion: string;
+    },
   ) {
     const agent = makeFakeAgentFactory(script);
     const runner = createTurnRunner({
@@ -314,7 +322,6 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       runtimeSourceSha: RUNTIME_SOURCE_SHA,
       log: silentLog,
     });
-    const usageId = randomUUID();
     const start = (id = usageId) =>
       runner.startTurn({
         session: chain.session,
@@ -324,12 +331,57 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         capabilityOwnerUserId: chain.creatorUserId,
         knowledge: {
           resolved: chain.resolved,
-          gate: chain.gate,
+          ...(recovery
+            ? { validatorPolicyVersion: recovery.validatorPolicyVersion }
+            : { gate: chain.gate }),
           runtimeSourceSha: RUNTIME_SOURCE_SHA,
         },
         log: silentLog,
       });
     return { agent, runner, start, usageId };
+  }
+
+  async function seedPendingKnowledgeRecovery(
+    chain: SeededKnowledgeChain,
+    usageId: string,
+    validatorPolicyVersion: string,
+  ): Promise<void> {
+    const requestFingerprint = usageRequestFingerprint({
+      ownerUserId: chain.consumerUserId,
+      capabilityOwnerUserId: chain.creatorUserId,
+      capabilityId: chain.capabilityId,
+      sessionId: chain.session.id,
+      usageId,
+      text: chain.question,
+      knowledge: { binding: chain.binding, validatorPolicyVersion },
+    });
+    await db.query(
+      `INSERT INTO pending_usage_recoveries (
+         owner_user_id, usage_id, session_id, capability_id, request_text,
+         request_fingerprint, product_kind, capability_protocol, release_id,
+         package_digest, release_scope, knowledge_resource_path,
+         knowledge_resource_digest, billing_policy_version, validator_policy_version,
+         unit_price_cents, free_limit_snapshot, active_recharge_intent_id
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, 'knowledge_agent_test', $7, $8, $9,
+         $10, $11, $12, 'runtime-frozen-v1', $13, 101, 1, $2
+       )`,
+      [
+        chain.consumerUserId,
+        usageId,
+        chain.session.id,
+        chain.capabilityId,
+        chain.question,
+        requestFingerprint,
+        chain.binding.capability.protocol,
+        chain.binding.release.releaseId,
+        chain.binding.release.packageDigest,
+        chain.binding.releaseScope,
+        chain.binding.knowledge.resourcePath,
+        chain.binding.knowledge.resourceDigest,
+        validatorPolicyVersion,
+      ],
+    );
   }
 
   const waitForKnowledgeReceipt = (sessionId: string) =>
@@ -379,6 +431,19 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
   it('reserves and completes a free use through combo_runtime service SQL', async () => {
     const chain = await seedChain();
     const { billing, turnId } = await reserveFreeUsage(chain, '成功的免费任务');
+    const clockRollbackFloor = await db.query<{ updated_at: string }>(
+      `UPDATE billing_free_allowances
+          SET updated_at = statement_timestamp() + interval '1 minute'
+        WHERE owner_user_id = $1 AND capability_id = $2
+        RETURNING updated_at::text`,
+      [chain.consumerUserId, chain.capabilityId],
+    );
+    await db.query(
+      `UPDATE usage_charges
+          SET updated_at = $2::timestamptz
+        WHERE turn_id = $1`,
+      [turnId, clockRollbackFloor.rows[0]!.updated_at],
+    );
 
     await withTransaction(runtimeDb, async (transaction) => {
       await lockTurnSession(transaction, chain.session.id);
@@ -395,6 +460,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       balance_cents: string;
       reserved_cents: string;
       debit_count: string;
+      allowance_updated_at: string;
+      charge_updated_at: string;
     }>(
       `SELECT
          fa.free_used_count,
@@ -403,6 +470,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
          uc.status AS charge_status,
          ba.balance_cents::text,
          ba.reserved_cents::text,
+         fa.updated_at::text AS allowance_updated_at,
+         uc.updated_at::text AS charge_updated_at,
          (SELECT count(*)::text
             FROM wallet_ledger wl
            WHERE wl.owner_user_id = $1
@@ -417,7 +486,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         AND uc.turn_id = $3`,
       [chain.consumerUserId, chain.capabilityId, turnId],
     );
-    expect(result.rows[0]).toEqual({
+    expect(result.rows[0]).toMatchObject({
       free_used_count: 1,
       free_reserved_count: 0,
       charge_source: 'free',
@@ -426,6 +495,12 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       reserved_cents: '0',
       debit_count: '0',
     });
+    expect(Date.parse(result.rows[0]!.allowance_updated_at)).toBeGreaterThanOrEqual(
+      Date.parse(clockRollbackFloor.rows[0]!.updated_at),
+    );
+    expect(Date.parse(result.rows[0]!.charge_updated_at)).toBeGreaterThanOrEqual(
+      Date.parse(clockRollbackFloor.rows[0]!.updated_at),
+    );
   });
 
   it('creates and settles an owner use without a pre-existing billing account', async () => {
@@ -943,28 +1018,101 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     expect(ledger.rows[0]).toEqual({ debit_count: '1', debit_total: '-100' });
   });
 
-  it('resumes the original knowledge usageId after real PostgreSQL 402 and settles once', async () => {
+  it.each([
+    ['legacy v1', 'knowledge-agent-test-validator-v1'],
+    ['unknown', 'knowledge-agent-unknown-validator-v9'],
+  ])(
+    'fails closed for a real PostgreSQL active recovery with %s before Turn/model/charge',
+    async (_label, validatorPolicyVersion) => {
+      const chain = await seedKnowledgeChain();
+      const usageId = randomUUID();
+      await seedPendingKnowledgeRecovery(chain, usageId, validatorPolicyVersion);
+      const context = knowledgeRunner(
+        chain,
+        {},
+        { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
+        usageId,
+        {
+          validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+        },
+      );
+      try {
+        await expect(context.start()).rejects.toMatchObject({
+          name: 'KnowledgeRecoveryPolicyUnavailableError',
+        });
+        const state = await runtimeDb.query<{
+          turn_count: string;
+          charge_count: string;
+          request_text: string | null;
+          recovery_status: string;
+          validator_policy_version: string;
+        }>(
+          `SELECT
+             (SELECT count(*)::text FROM turns WHERE session_id = p.session_id) AS turn_count,
+             (SELECT count(*)::text FROM usage_charges WHERE session_id = p.session_id) AS charge_count,
+             p.request_text,
+             p.recovery_status,
+             p.validator_policy_version
+           FROM pending_usage_recoveries p
+          WHERE p.owner_user_id = $1 AND p.usage_id = $2`,
+          [chain.consumerUserId, usageId],
+        );
+        expect(state.rows).toEqual([
+          {
+            turn_count: '0',
+            charge_count: '0',
+            request_text: chain.question,
+            recovery_status: 'active',
+            validator_policy_version: validatorPolicyVersion,
+          },
+        ]);
+        expect(context.agent.calls).toHaveLength(0);
+      } finally {
+        await context.runner.dispose(AbortSignal.timeout(5_000));
+      }
+    },
+  );
+
+  it('dispatches frozen grounded-v2 after real PostgreSQL 402 and settles once', async () => {
     const chain = await seedKnowledgeChain();
+    const script = {
+      invokeNamedTools: [
+        { name: 'knowledge_search', params: { query: '免费额度' } },
+        {
+          name: 'submit_knowledge_answer',
+          params: {
+            status: 'answered' as const,
+            answer: chain.answer,
+            citationChunkIds: [chain.chunkId],
+          },
+        },
+      ],
+    };
+    const recoveryUsageId = randomUUID();
+    await seedPendingKnowledgeRecovery(
+      chain,
+      recoveryUsageId,
+      KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+    );
     const context = knowledgeRunner(
       chain,
+      script,
       {
-        invokeNamedTools: [
-          { name: 'knowledge_search', params: { query: '免费额度' } },
-          {
-            name: 'submit_knowledge_answer',
-            params: {
-              status: 'answered',
-              answer: chain.answer,
-              citationChunkIds: [chain.chunkId],
-            },
-          },
-        ],
+        freeUses: 99,
+        unitPriceCents: 999,
+        version: 'runtime-current-v8',
       },
-      { freeUses: 0, unitPriceCents: 101 },
+      recoveryUsageId,
+      {
+        validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+      },
     );
+    let retryContext: ReturnType<typeof knowledgeRunner> | undefined;
     try {
       await expect(context.start()).resolves.toEqual({
         status: 'recharge_required',
+        recoveryUsageId: context.usageId,
+        rechargeIntentId: context.usageId,
         balanceCents: 100n,
         requiredCents: 101n,
       });
@@ -989,6 +1137,35 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         reserved_cents: '0',
       });
       expect(context.agent.calls).toHaveLength(0);
+      const pending = await runtimeDb.query<{
+        request_text: string | null;
+        request_fingerprint: string;
+        active_recharge_intent_id: string;
+        recovery_status: string;
+        billing_policy_version: string;
+        validator_policy_version: string;
+        unit_price_cents: string;
+        free_limit_snapshot: number;
+      }>(
+        `SELECT request_text, request_fingerprint, active_recharge_intent_id,
+                recovery_status, billing_policy_version, validator_policy_version,
+                unit_price_cents::text, free_limit_snapshot
+           FROM pending_usage_recoveries
+          WHERE owner_user_id = $1 AND usage_id = $2`,
+        [chain.consumerUserId, context.usageId],
+      );
+      expect(pending.rows).toEqual([
+        {
+          request_text: chain.question,
+          request_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          active_recharge_intent_id: context.usageId,
+          recovery_status: 'active',
+          billing_policy_version: 'runtime-frozen-v1',
+          validator_policy_version: 'knowledge-agent-grounded-validator-v2',
+          unit_price_cents: '101',
+          free_limit_snapshot: 1,
+        },
+      ]);
 
       const suffix = randomUUID().replaceAll('-', '');
       await withTransaction(db, async (transaction) => {
@@ -1026,7 +1203,16 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         );
       });
 
-      const opened = await Promise.all([context.start(), context.start()]);
+      retryContext = knowledgeRunner(
+        chain,
+        script,
+        { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
+        context.usageId,
+        {
+          validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+        },
+      );
+      const opened = await Promise.all([retryContext.start(), retryContext.start()]);
       expect(opened.map((result) => result.status).sort()).toEqual(['replayed', 'started']);
       await waitFor(async () => {
         const receipt = await runtimeDb.query<{ count: string }>(
@@ -1037,7 +1223,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         );
         return receipt.rows[0]?.count === '1';
       }, 5_000);
-      const replay = await context.start();
+      const replay = await retryContext.start();
       expect(replay.status).toBe('replayed');
       const accepted = opened.find((result) => result.status === 'started');
       if (accepted?.status === 'started' && replay.status === 'replayed') {
@@ -1058,7 +1244,11 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
              WHERE owner_user_id = $2 AND entry_type = 'usage_debit') AS debit_total,
            max(t.status::text) AS turn_status,
            max(uc.status::text) AS charge_status,
+           max(uc.charge_source::text) AS charge_source,
            max(uc.execution_outcome::text) AS execution_outcome,
+           max(uc.billing_policy_version) AS billing_policy_version,
+           max(uc.validator_policy_version) AS validator_policy_version,
+           max(uc.unit_price_cents)::text AS unit_price_cents,
            max(r.validation_code) AS validation_code,
            max(uc.settled_cents)::text AS settled_cents,
            max(ba.balance_cents)::text AS balance_cents,
@@ -1084,7 +1274,11 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         debit_total: '-101',
         turn_status: 'completed',
         charge_status: 'completed',
+        charge_source: 'wallet',
         execution_outcome: 'answered',
+        billing_policy_version: 'runtime-frozen-v1',
+        validator_policy_version: 'knowledge-agent-grounded-validator-v2',
+        unit_price_cents: '101',
         validation_code: 'accepted',
         settled_cents: '101',
         balance_cents: '0',
@@ -1093,8 +1287,27 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         charge_package_digest: chain.binding.release.packageDigest,
         receipt_package_digest: chain.binding.release.packageDigest,
       });
-      expect(context.agent.calls).toHaveLength(1);
+      expect(context.agent.calls).toHaveLength(0);
+      expect(retryContext.agent.calls).toHaveLength(1);
+      const recoveryTerminal = await runtimeDb.query<{
+        request_text: string | null;
+        recovery_status: string;
+        terminal_turn_id: string | null;
+      }>(
+        `SELECT request_text, recovery_status, terminal_turn_id
+           FROM pending_usage_recoveries
+          WHERE owner_user_id = $1 AND usage_id = $2`,
+        [chain.consumerUserId, context.usageId],
+      );
+      expect(recoveryTerminal.rows).toEqual([
+        {
+          request_text: null,
+          recovery_status: 'accepted',
+          terminal_turn_id: expect.any(String),
+        },
+      ]);
     } finally {
+      await retryContext?.runner.dispose(AbortSignal.timeout(5_000));
       await context.runner.dispose(AbortSignal.timeout(5_000));
     }
   });
@@ -1138,6 +1351,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     },
     {
       label: 'rejected candidate',
+      grounded: true,
       free: false,
       script: (chain: SeededKnowledgeChain) => ({
         invokeNamedTools: [
@@ -1170,6 +1384,17 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     },
   ])('settles $label and records an immutable receipt', async (candidate) => {
     const chain = await seedKnowledgeChain();
+    if ('grounded' in candidate && candidate.grounded) {
+      chain.gate = {
+        protocol: 'combo.knowledge-agent-runtime-test-gate/2',
+        sourceSha: chain.gate.sourceSha,
+        publisherUserId: chain.gate.publisherUserId,
+        capabilityId: chain.gate.capabilityId,
+        releaseId: chain.gate.releaseId,
+        packageDigest: chain.gate.packageDigest,
+        validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+      };
+    }
     const context = knowledgeRunner(chain, candidate.script(chain), {
       freeUses: candidate.free ? 1 : 0,
       unitPriceCents: 100,
@@ -1179,6 +1404,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       await waitForKnowledgeReceipt(chain.session.id);
       const state = await db.query<KnowledgeStateRow>(
         `SELECT uc.charge_source,
+                uc.validator_policy_version,
                 t.status::text AS turn_status,
                 uc.status::text AS charge_status,
                 uc.execution_outcome::text,
@@ -1204,6 +1430,10 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       );
       expect(state.rows[0]).toEqual({
         charge_source: candidate.free ? 'free' : 'wallet',
+        validator_policy_version:
+          'grounded' in candidate && candidate.grounded
+            ? KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY
+            : 'knowledge-agent-test-validator-v1',
         turn_status: candidate.turnStatus,
         charge_status: candidate.free ? 'completed' : 'released',
         execution_outcome: candidate.outcome,

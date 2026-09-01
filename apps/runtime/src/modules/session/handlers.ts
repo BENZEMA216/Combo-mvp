@@ -10,6 +10,7 @@ import {
   SessionModeSchema,
   SendMessageBodySchema,
   UpdateSessionBodySchema,
+  knowledgeBindingsEqual,
   type CapabilityInputField,
   type Envelope,
   type KnowledgeAgentBinding,
@@ -25,8 +26,17 @@ import { sendError } from '../../platform/http/_helpers.js';
 import { knowledgeAgentTestGateFromEnv } from '../../platform/config/env.js';
 import { loadCapability, readAccessibleCapabilitySummary } from '../capability/loader.js';
 import { sendLoadFailure } from '../capability/handlers.js';
-import { SessionInactiveError, TurnAdmissionUnavailableError } from '../agent/run-turn.js';
+import {
+  KnowledgeRecoveryPolicyUnavailableError,
+  SessionInactiveError,
+  TurnAdmissionUnavailableError,
+} from '../agent/run-turn.js';
 import { UsageRequestConflictError } from '../billing/service.js';
+import {
+  PendingUsageRecoveryConflictError,
+  PendingUsageRecoveryExpiredError,
+  findPendingUsageRecovery,
+} from '../billing/pending-recovery.js';
 import { adoptExistingConsumeUiArtifact, seedCapabilityUiArtifact } from '../artifact/repo.js';
 import {
   archiveSession,
@@ -42,6 +52,7 @@ import {
 import { readSessionDetailDbSnapshot } from './detail.js';
 import {
   KnowledgeAgentResolutionError,
+  resolveFrozenKnowledgeAgentPackage,
   resolveKnowledgeAgentPackage,
 } from '../knowledge-agent/resolver.js';
 import { projectKnowledgeResults } from '../knowledge-agent/resolver.js';
@@ -319,6 +330,7 @@ export function archiveSessionHandler(): RouteHandlerMethod {
 
 export function getSessionDetailHandler(): RouteHandlerMethod {
   return async function (req: FastifyRequest, reply: FastifyReply) {
+    reply.header('Cache-Control', 'private, no-store');
     const userId = req.auth?.userId;
     if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
     const { id } = req.params as { id: string };
@@ -379,23 +391,11 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       let knowledgeResults: SessionDetail['knowledgeResults'];
       try {
         if (session.agentBinding.productKind === 'knowledge_agent_test') {
-          const gate = knowledgeAgentTestGateFromEnv(req.server.infra.env);
-          const access = await readAccessibleCapabilitySummary(
-            db,
-            session.capabilityId,
-            session.ownerUserId,
-          );
-          if (!gate || !access) throw new KnowledgeAgentResolutionError('closed');
-          const resolved = await resolveKnowledgeAgentPackage({
+          const resolved = await resolveFrozenKnowledgeAgentPackage({
             db,
             objectStore,
-            capability: access,
-            projection: {
-              version: 2,
-              protocol: session.agentBinding.capability.protocol,
-              release: verifyCreatorAgentPackageRelease(session.agentBinding.release),
-            },
-            gate,
+            capability,
+            binding: session.agentBinding,
           });
           knowledgeResults = projectKnowledgeResults({
             binding: session.agentBinding,
@@ -427,7 +427,10 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
           );
           return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
         }
-        req.log.warn({ err, traceId: req.id }, 'load definition for detail failed, degrading');
+        req.log.warn(
+          { traceId: req.id, detailFailure: 'legacy_definition_unavailable' },
+          'load definition for detail failed, degrading',
+        );
       }
       const detail: SessionDetail = {
         session: toSessionView(session),
@@ -468,8 +471,11 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       const body: Envelope<SessionDetail> = { data: detail, meta: { traceId: req.id } };
       reply.code(200).send(body);
       return reply;
-    } catch (err) {
-      req.log.error({ err, traceId: req.id }, 'read session detail failed');
+    } catch {
+      req.log.error(
+        { traceId: req.id, detailFailure: 'unexpected_read_failure' },
+        'read session detail failed',
+      );
       return sendError(req, reply, ErrorCode.INTERNAL);
     }
   };
@@ -490,30 +496,53 @@ export function sendMessageHandler(): RouteHandlerMethod {
     let knowledge:
       | {
           resolved: Awaited<ReturnType<typeof resolveKnowledgeAgentPackage>>;
-          gate: NonNullable<ReturnType<typeof knowledgeAgentTestGateFromEnv>>;
+          gate?: NonNullable<ReturnType<typeof knowledgeAgentTestGateFromEnv>>;
+          validatorPolicyVersion?: string;
           runtimeSourceSha: string;
         }
       | undefined;
     if (session.agentBinding.productKind === 'knowledge_agent_test') {
       try {
+        const pendingRecovery = await findPendingUsageRecovery(
+          db,
+          session.ownerUserId,
+          parsed.data.usageId,
+        );
+        const frozenRecovery = pendingRecovery;
+        if (
+          frozenRecovery &&
+          (frozenRecovery.sessionId !== session.id ||
+            frozenRecovery.capabilityId !== session.capabilityId ||
+            (frozenRecovery.requestText !== null &&
+              frozenRecovery.requestText !== parsed.data.text) ||
+            !knowledgeBindingsEqual(frozenRecovery.binding, session.agentBinding))
+        ) {
+          return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
+        }
         const capability = await readAccessibleCapabilitySummary(
           db,
           session.capabilityId,
           session.ownerUserId,
         );
-        const gate = knowledgeAgentTestGateFromEnv(env);
-        if (!capability || !gate) return sendError(req, reply, ErrorCode.NOT_FOUND);
-        const resolved = await resolveKnowledgeAgentPackage({
-          db,
-          objectStore,
-          capability,
-          projection: {
-            version: 2,
-            protocol: session.agentBinding.capability.protocol,
-            release: verifyCreatorAgentPackageRelease(session.agentBinding.release),
-          },
-          gate,
-        });
+        if (!capability) return sendError(req, reply, ErrorCode.NOT_FOUND);
+        const resolved = frozenRecovery
+          ? await resolveFrozenKnowledgeAgentPackage({
+              db,
+              objectStore,
+              capability,
+              binding: frozenRecovery.binding,
+            })
+          : await resolveKnowledgeAgentPackage({
+              db,
+              objectStore,
+              capability,
+              projection: {
+                version: 2,
+                protocol: session.agentBinding.capability.protocol,
+                release: verifyCreatorAgentPackageRelease(session.agentBinding.release),
+              },
+              gate: knowledgeAgentTestGateFromEnv(env),
+            });
         definition = {
           version: 1 as const,
           name: resolved.name,
@@ -525,7 +554,13 @@ export function sendMessageHandler(): RouteHandlerMethod {
           meta: {},
         };
         capabilityOwnerUserId = capability.ownerUserId;
-        knowledge = { resolved, gate, runtimeSourceSha: env.COMBO_SOURCE_SHA };
+        knowledge = {
+          resolved,
+          ...(frozenRecovery
+            ? { validatorPolicyVersion: frozenRecovery.validatorPolicyVersion }
+            : { gate: knowledgeAgentTestGateFromEnv(env)! }),
+          runtimeSourceSha: env.COMBO_SOURCE_SHA,
+        };
       } catch (error) {
         if (
           error instanceof KnowledgeAgentResolutionError &&
@@ -582,7 +617,11 @@ export function sendMessageHandler(): RouteHandlerMethod {
           userMessage: '这条会话仍在生成，请停止或等待完成后再发送。',
         });
       }
-      if (err instanceof UsageRequestConflictError) {
+      if (
+        err instanceof UsageRequestConflictError ||
+        err instanceof PendingUsageRecoveryConflictError ||
+        err instanceof PendingUsageRecoveryExpiredError
+      ) {
         return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
       }
       if (err instanceof TurnAdmissionUnavailableError) {
@@ -597,13 +636,18 @@ export function sendMessageHandler(): RouteHandlerMethod {
         );
         return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
       }
+      if (err instanceof KnowledgeRecoveryPolicyUnavailableError) {
+        req.log.warn({ traceId: req.id }, 'knowledge recovery validator policy unavailable');
+        return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+      }
       req.log.error({ err, traceId: req.id }, 'start turn failed');
       return sendError(req, reply, ErrorCode.INTERNAL);
     }
     if (result.status === 'recharge_required') {
       const body: RechargeRequiredBody = {
         rechargeRequired: true,
-        rechargeIntentId: parsed.data.usageId,
+        ...(knowledge && result.recoveryUsageId ? { recoveryUsageId: result.recoveryUsageId } : {}),
+        rechargeIntentId: result.rechargeIntentId ?? parsed.data.usageId,
         balanceCents: result.balanceCents.toString(),
         requiredCents: result.requiredCents.toString(),
       };

@@ -8,7 +8,10 @@ import {
   parseCreatorAgentPackageManifest,
   type CreatorAgentPackageFile,
 } from '@cb/creator-agent-protocol/agent-package';
-import type { CreatorAgentPackageCapability } from '@cb/creator-agent-protocol/agent-package-capability';
+import {
+  createCreatorAgentPackageCapability,
+  type CreatorAgentPackageCapability,
+} from '@cb/creator-agent-protocol/agent-package-capability';
 import { CREATOR_AGENT_PACKAGE_RELEASE_PROTOCOL } from '@cb/creator-agent-protocol/agent-package-release';
 import {
   CREATOR_KNOWLEDGE_BUNDLE_MAX_BYTES,
@@ -53,6 +56,12 @@ import {
   type KnowledgeExecutionOutcome,
   type UsageChargeRecord,
 } from '../billing/repo.js';
+import { lockUsageId } from '../billing/repo.js';
+import {
+  closePendingUsageRecoveryForTerminal,
+  findPendingUsageRecovery,
+  readUsageIdentityByTurn,
+} from '../billing/pending-recovery.js';
 import {
   finishTurnCas,
   lockRunningTurn,
@@ -187,22 +196,20 @@ async function readExactFile(
   if (!exactFileMatches(bytes, file)) throw new KnowledgeAgentResolutionError('invalid_package');
   return bytes;
 }
-/**
- * Resolves the exact controlled-Test Package. Registry and the frozen digest select bytes; the
- * mutable Capability row contributes only access metadata and must exactly match the gate owner.
- */
-export async function resolveKnowledgeAgentPackage(input: {
+interface SelectedKnowledgeAgentPackageInput {
   db: Queryable;
   objectStore: RuntimeObjectStore;
-  capability: CapabilitySummary;
+  capabilityId: string;
   projection: CreatorAgentPackageCapability;
-  gate: KnowledgeAgentTestGate | null;
+  publisherUserId?: string;
+  expectedBinding?: KnowledgeAgentBinding;
   signal?: AbortSignal;
-}): Promise<ResolvedKnowledgeAgent> {
-  if (!gateMatches(input.gate, input.capability, input.projection)) {
-    throw new KnowledgeAgentResolutionError('closed');
-  }
+}
 
+/** Registry and the selected immutable Release choose bytes; fresh selection also pins gate owner. */
+async function resolveSelectedKnowledgeAgentPackage(
+  input: SelectedKnowledgeAgentPackageInput,
+): Promise<ResolvedKnowledgeAgent> {
   let registry;
   try {
     registry = await input.db.query<RegistryReleaseRow>(
@@ -224,8 +231,7 @@ export async function resolveKnowledgeAgentPackage(input: {
   if (
     row.release_id !== input.projection.release.releaseId ||
     row.package_digest !== input.projection.release.packageDigest ||
-    row.owner_user_id !== input.capability.ownerUserId ||
-    row.owner_user_id !== input.gate.publisherUserId ||
+    (input.publisherUserId !== undefined && row.owner_user_id !== input.publisherUserId) ||
     row.release_protocol !== CREATOR_AGENT_PACKAGE_RELEASE_PROTOCOL ||
     row.release_scope !== 'controlled_test' ||
     row.package_protocol !== CREATOR_AGENT_PACKAGE_PROTOCOL
@@ -268,7 +274,7 @@ export async function resolveKnowledgeAgentPackage(input: {
     const binding = KnowledgeAgentBindingSchema.parse({
       productKind: 'knowledge_agent_test',
       capability: {
-        id: input.capability.id,
+        id: input.capabilityId,
         protocol: input.projection.protocol,
       },
       release: input.projection.release,
@@ -279,6 +285,9 @@ export async function resolveKnowledgeAgentPackage(input: {
         resourceDigest: resource.digest,
       },
     });
+    if (input.expectedBinding && !knowledgeBindingsEqual(binding, input.expectedBinding)) {
+      throw new KnowledgeAgentResolutionError('invalid_package');
+    }
     return Object.freeze({
       binding,
       name: manifest.name,
@@ -290,6 +299,60 @@ export async function resolveKnowledgeAgentPackage(input: {
     if (error instanceof KnowledgeAgentResolutionError) throw error;
     throw new KnowledgeAgentResolutionError('invalid_package');
   }
+}
+
+/**
+ * Resolves a fresh controlled-Test request selected by the current exact-SHA environment gate.
+ */
+export async function resolveKnowledgeAgentPackage(input: {
+  db: Queryable;
+  objectStore: RuntimeObjectStore;
+  capability: CapabilitySummary;
+  projection: CreatorAgentPackageCapability;
+  gate: KnowledgeAgentTestGate | null;
+  signal?: AbortSignal;
+}): Promise<ResolvedKnowledgeAgent> {
+  if (!gateMatches(input.gate, input.capability, input.projection)) {
+    throw new KnowledgeAgentResolutionError('closed');
+  }
+  return resolveSelectedKnowledgeAgentPackage({
+    db: input.db,
+    objectStore: input.objectStore,
+    capabilityId: input.capability.id,
+    projection: input.projection,
+    publisherUserId: input.gate.publisherUserId,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+}
+
+/**
+ * Resolves an active recovery solely from its database-frozen binding. A mutable environment gate
+ * is intentionally not accepted by this API and therefore cannot retarget Package bytes.
+ */
+export async function resolveFrozenKnowledgeAgentPackage(input: {
+  db: Queryable;
+  objectStore: RuntimeObjectStore;
+  capability: Pick<CapabilitySummary, 'id'>;
+  binding: KnowledgeAgentBinding;
+  signal?: AbortSignal;
+}): Promise<ResolvedKnowledgeAgent> {
+  const parsed = KnowledgeAgentBindingSchema.safeParse(input.binding);
+  if (!parsed.success || parsed.data.capability.id !== input.capability.id) {
+    throw new KnowledgeAgentResolutionError('closed');
+  }
+  const projection = createCreatorAgentPackageCapability({
+    version: 2,
+    protocol: parsed.data.capability.protocol,
+    release: parsed.data.release,
+  });
+  return resolveSelectedKnowledgeAgentPackage({
+    db: input.db,
+    objectStore: input.objectStore,
+    capabilityId: input.capability.id,
+    projection,
+    expectedBinding: parsed.data,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
 }
 const SEARCH_LIMIT_DEFAULT = 5;
 const SEARCH_LIMIT_MAX = 8;
@@ -534,6 +597,51 @@ export function knowledgeQuestionDigest(question: string): `sha256:${string}` {
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
+/** Immutable grounded-v2 validation shared by fresh Test turns and frozen recovery. */
+export function validateGroundedKnowledgeCandidate(input: {
+  question: string;
+  candidate: KnowledgeAnswerCandidate | null;
+  exposedHits: readonly KnowledgeSearchHit[];
+}): KnowledgeValidation {
+  if (input.candidate === null) {
+    return Object.freeze({
+      outcome: 'failed',
+      validationCode: 'protocol_invalid',
+      answer: null,
+      citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  if (input.candidate.status === 'insufficient_evidence') {
+    return Object.freeze({
+      outcome: 'insufficient_evidence',
+      validationCode: 'insufficient_evidence',
+      answer: INSUFFICIENT_EVIDENCE_ANSWER,
+      citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  if (
+    !hasGroundedLexicalSupport({
+      question: input.question,
+      answer: input.candidate.answer,
+      citationChunkIds: input.candidate.citationChunkIds,
+      exposedHits: input.exposedHits,
+    })
+  ) {
+    return Object.freeze({
+      outcome: 'failed',
+      validationCode: 'rejected',
+      answer: null,
+      citationChunkIds: EMPTY_CITATIONS,
+    });
+  }
+  return Object.freeze({
+    outcome: 'answered',
+    validationCode: 'accepted',
+    answer: input.candidate.answer,
+    citationChunkIds: Object.freeze([...input.candidate.citationChunkIds]),
+  });
+}
+
 /** Platform-owned Test validation. Package instructions never configure acceptance. */
 export function validateKnowledgeCandidate(input: {
   gate: KnowledgeAgentTestGate;
@@ -558,15 +666,7 @@ export function validateKnowledgeCandidate(input: {
     });
   }
   if (input.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2') {
-    const accepted =
-      input.gate.validatorPolicyVersion === KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY &&
-      hasGroundedLexicalSupport({
-        question: input.question,
-        answer: input.candidate.answer,
-        citationChunkIds: input.candidate.citationChunkIds,
-        exposedHits: input.exposedHits,
-      });
-    if (!accepted) {
+    if (input.gate.validatorPolicyVersion !== KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY) {
       return Object.freeze({
         outcome: 'failed',
         validationCode: 'rejected',
@@ -574,12 +674,7 @@ export function validateKnowledgeCandidate(input: {
         citationChunkIds: EMPTY_CITATIONS,
       });
     }
-    return Object.freeze({
-      outcome: 'answered',
-      validationCode: 'accepted',
-      answer: input.candidate.answer,
-      citationChunkIds: Object.freeze([...input.candidate.citationChunkIds]),
-    });
+    return validateGroundedKnowledgeCandidate(input);
   }
   const expected = input.gate.cases.find(
     (candidate) => candidate.questionDigest === knowledgeQuestionDigest(input.question),
@@ -753,7 +848,8 @@ async function insertReceipt(
 
 /**
  * Commits the only authoritative knowledge terminal. The transaction follows the database lock
- * order Session -> Turn -> usage charge -> response Message and appends Redis only after return.
+ * order Session -> owner/usage advisory -> pending recovery -> Turn -> usage charge -> response
+ * Message and appends Redis only after return.
  */
 export async function finishKnowledgeTurn(
   db: RuntimeDb,
@@ -768,6 +864,17 @@ export async function finishKnowledgeTurn(
     db,
     async (transaction) => {
       await lockTurnSession(transaction, input.sessionId);
+      const usageIdentity = await readUsageIdentityByTurn(transaction, input.turnId);
+      if (!usageIdentity || usageIdentity.sessionId !== input.sessionId) {
+        throw new Error('knowledge usage identity is invalid');
+      }
+      await lockUsageId(transaction, usageIdentity.ownerUserId, usageIdentity.usageId);
+      await findPendingUsageRecovery(
+        transaction,
+        usageIdentity.ownerUserId,
+        usageIdentity.usageId,
+        true,
+      );
       if (!(await lockRunningTurn(transaction, input.turnId, input.sessionId))) {
         return { won: false };
       }
@@ -814,6 +921,12 @@ export async function finishKnowledgeTurn(
         await releaseUsageCharge(transaction, charge, input.outcome);
       }
       const receiptId = await insertReceipt(transaction, resolvedInput, charge, response);
+      await closePendingUsageRecoveryForTerminal(transaction, {
+        ownerUserId: usageIdentity.ownerUserId,
+        usageId: usageIdentity.usageId,
+        turnId: input.turnId,
+        outcome: input.outcome,
+      });
       return { won: true, turnStatus: status, response, receiptId };
     },
     options.transaction,

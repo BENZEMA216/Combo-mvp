@@ -2,7 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import { EventType } from '@ag-ui/core';
 import { knowledgeBindingsEqual, type CapabilityDefinition, type SessionMode } from '@cb/shared';
-import type { KnowledgeAgentTestGate } from '../../platform/config/env.js';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  type KnowledgeAgentTestGate,
+} from '../../platform/config/env.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import type { RuntimeObjectStore } from '../../platform/infra/object-store.js';
 import type { PublishedStreamEvent, SessionEventBus } from '../../platform/infra/event-bus.js';
@@ -30,12 +33,26 @@ import {
   type UsageBillingPolicy,
   type UsageRequest,
 } from '../billing/service.js';
-import { findUsageCharge, readUsageChargeProductKindByTurn } from '../billing/repo.js';
+import { findUsageCharge, lockUsageId, readUsageChargeProductKindByTurn } from '../billing/repo.js';
+import {
+  PendingUsageRecoveryConflictError,
+  assertPendingUsageRecoveryBindingMatches,
+  assertPendingUsageRecoveryMatches,
+  findPendingUsageRecovery,
+  insertOrFindPendingUsageRecovery,
+  sweepExpiredPendingUsageRecoveries,
+  type PendingUsageRecoveryExpected,
+  type PendingUsageRecoveryRecord,
+} from '../billing/pending-recovery.js';
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
 import {
   createKnowledgeToolSession,
+  validateGroundedKnowledgeCandidate,
   validateKnowledgeCandidate,
+  type KnowledgeAnswerCandidate,
   type KnowledgeAgentTool,
+  type KnowledgeSearchHit,
+  type KnowledgeValidation,
   type ResolvedKnowledgeAgent,
 } from '../knowledge-agent/resolver.js';
 import { finishKnowledgeTurn, sweepExpiredKnowledgeTurns } from '../knowledge-agent/resolver.js';
@@ -85,6 +102,24 @@ export class TurnAgentUnavailableError extends Error {
   }
 }
 
+export interface GroundedKnowledgeValidatorInput {
+  question: string;
+  candidate: KnowledgeAnswerCandidate | null;
+  exposedHits: readonly KnowledgeSearchHit[];
+  resolved: ResolvedKnowledgeAgent;
+  turnSignal: AbortSignal;
+}
+export type GroundedKnowledgeValidator = (
+  input: GroundedKnowledgeValidatorInput,
+) => KnowledgeValidation | Promise<KnowledgeValidation>;
+
+export class KnowledgeRecoveryPolicyUnavailableError extends Error {
+  constructor() {
+    super('pending knowledge recovery validator policy is unavailable');
+    this.name = 'KnowledgeRecoveryPolicyUnavailableError';
+  }
+}
+
 export class SessionInactiveError extends Error {
   constructor() {
     super('session is no longer active');
@@ -101,6 +136,7 @@ const TURN_OWNERSHIP_RETRY_MAX_DELAY_MS = 5_000;
 export type TurnAdmissionStage =
   | 'transaction_setup'
   | 'session_lock'
+  | 'pending_recovery_lock'
   | 'usage_prepare'
   | 'usage_replay_lookup'
   | 'running_check'
@@ -166,7 +202,13 @@ export interface TurnRunnerDeps {
 }
 export type StartTurnResult =
   | { status: 'started' | 'replayed'; userMessage: MessageRecord }
-  | { status: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+  | {
+      status: 'recharge_required';
+      recoveryUsageId?: string;
+      rechargeIntentId?: string;
+      balanceCents: bigint;
+      requiredCents: bigint;
+    };
 export interface TurnRunner {
   startTurn(input: {
     session: SessionRow;
@@ -176,7 +218,10 @@ export interface TurnRunner {
     capabilityOwnerUserId: string;
     knowledge?: {
       resolved: ResolvedKnowledgeAgent;
-      gate: KnowledgeAgentTestGate;
+      /** Present only for fresh controlled-Test v1 admission. */
+      gate?: KnowledgeAgentTestGate;
+      /** Present only when an active recovery was selected from its frozen database row. */
+      validatorPolicyVersion?: string;
       runtimeSourceSha: string;
     };
     log: TurnLogger;
@@ -604,6 +649,11 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       } catch (err) {
         deps.log.error({ err }, 'billing reservation reconciliation failed');
       }
+      try {
+        await sweepExpiredPendingUsageRecoveries(deps.db);
+      } catch (err) {
+        deps.log.error({ err }, 'pending usage recovery sweep failed');
+      }
     })().finally(() => {
       if (sweepInFlight === run) sweepInFlight = undefined;
     });
@@ -654,6 +704,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     controller: AbortController;
     runId: string;
     knowledge: NonNullable<Parameters<TurnRunner['startTurn']>[0]['knowledge']>;
+    validator: GroundedKnowledgeValidator;
+    requiresGroundedExtractiveAnswer: boolean;
     log: TurnLogger;
   }): Promise<void> {
     const { sessionId, controller, log, runId } = args;
@@ -741,8 +793,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     const toolSession = createKnowledgeToolSession({
       knowledge: args.knowledge.resolved.knowledge,
       turnSignal: controller.signal,
-      requiresGroundedExtractiveAnswer:
-        args.knowledge.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2',
+      requiresGroundedExtractiveAnswer: args.requiresGroundedExtractiveAnswer,
     });
     let agent: TurnAgent;
     try {
@@ -757,8 +808,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           name: args.knowledge.resolved.name,
           description: args.knowledge.resolved.description,
           instructions: args.knowledge.resolved.instructions,
-          requiresGroundedExtractiveAnswer:
-            args.knowledge.gate.protocol === 'combo.knowledge-agent-runtime-test-gate/2',
+          requiresGroundedExtractiveAnswer: args.requiresGroundedExtractiveAnswer,
         },
       });
     } catch (err) {
@@ -868,12 +918,29 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       return;
     }
 
-    const validation = validateKnowledgeCandidate({
-      gate: args.knowledge.gate,
-      question: args.text,
-      candidate: toolSession.candidate(),
-      exposedHits: toolSession.exposedHits(),
-    });
+    let validation: KnowledgeValidation;
+    try {
+      validation = await args.validator({
+        question: args.text,
+        candidate: toolSession.candidate(),
+        exposedHits: toolSession.exposedHits(),
+        resolved: args.knowledge.resolved,
+        turnSignal: controller.signal,
+      });
+    } catch {
+      log.error({ runId }, 'knowledge validator failed');
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: {
+          code: 'TURN_KNOWLEDGE_VALIDATOR_UNAVAILABLE',
+          message: '知识验证暂时不可用。',
+        },
+      });
+      return;
+    }
     await finish({
       outcome: validation.outcome,
       validationCode: validation.validationCode,
@@ -1311,6 +1378,33 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   return {
     async startTurn(input) {
       if (disposing) throw new Error('turn runner is shutting down');
+      const freshKnowledgeGate = input.knowledge?.gate;
+      const frozenValidatorPolicyVersion = input.knowledge?.validatorPolicyVersion;
+      if (
+        input.knowledge &&
+        (freshKnowledgeGate === undefined) === (frozenValidatorPolicyVersion === undefined)
+      ) {
+        throw new KnowledgeRecoveryPolicyUnavailableError();
+      }
+      const recoveryValidator = (validatorPolicyVersion: string): GroundedKnowledgeValidator => {
+        if (validatorPolicyVersion !== KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY) {
+          throw new KnowledgeRecoveryPolicyUnavailableError();
+        }
+        return validateGroundedKnowledgeCandidate;
+      };
+      let knowledgeValidator: GroundedKnowledgeValidator | undefined = input.knowledge
+        ? freshKnowledgeGate
+          ? ({ question, candidate, exposedHits }) =>
+              validateKnowledgeCandidate({
+                gate: freshKnowledgeGate,
+                question,
+                candidate,
+                exposedHits,
+              })
+          : undefined
+        : undefined;
+      let requiresGroundedExtractiveAnswer =
+        freshKnowledgeGate?.protocol === 'combo.knowledge-agent-runtime-test-gate/2';
       const sessionId = input.session.id;
       const runId = randomUUID();
       const controller = new AbortController();
@@ -1344,7 +1438,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           ? {
               knowledge: {
                 binding: input.knowledge.resolved.binding,
-                validatorPolicyVersion: input.knowledge.gate.validatorPolicyVersion,
+                validatorPolicyVersion:
+                  freshKnowledgeGate?.validatorPolicyVersion ?? frozenValidatorPolicyVersion!,
               },
             }
           : {}),
@@ -1352,7 +1447,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       type OpenTurnOutcome =
         | { kind: 'started'; userMessage: MessageRecord }
         | { kind: 'replayed'; userMessage: MessageRecord }
-        | { kind: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+        | {
+            kind: 'recharge_required';
+            recoveryUsageId?: string;
+            rechargeIntentId?: string;
+            balanceCents: bigint;
+            requiredCents: bigint;
+          };
       let outcome: OpenTurnOutcome | undefined;
       let repairedTerminal: PublishedStreamEvent | undefined;
       let admissionStage: TurnAdmissionStage = 'transaction_setup';
@@ -1361,14 +1462,80 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       const admissionSignal = AbortSignal.any([transactionController.signal, admissionDeadline]);
       type CommitConfirmation =
         | { kind: 'committed'; outcome: Extract<OpenTurnOutcome, { kind: 'started' }> }
+        | { kind: 'terminal' }
         | { kind: 'absent' }
         | { kind: 'unknown' };
+      const usageRequestForRecovery = (recovery: PendingUsageRecoveryRecord): UsageRequest => {
+        if (!input.knowledge) {
+          throw new PendingUsageRecoveryConflictError();
+        }
+        return {
+          ...usageRequest,
+          knowledge: {
+            ...usageRequest.knowledge!,
+            validatorPolicyVersion: recovery.validatorPolicyVersion,
+          },
+          recovery: {
+            billingPolicyVersion: recovery.billingPolicyVersion,
+            validatorPolicyVersion: recovery.validatorPolicyVersion,
+            unitPriceCents: recovery.unitPriceCents,
+            freeLimitSnapshot: recovery.freeLimitSnapshot,
+          },
+        };
+      };
+      const expectedRecovery = (
+        freeLimitSnapshot: number,
+        request: UsageRequest = usageRequest,
+      ): PendingUsageRecoveryExpected => {
+        if (!input.knowledge || !request.knowledge) {
+          throw new PendingUsageRecoveryConflictError();
+        }
+        return {
+          ownerUserId: usageRequest.ownerUserId,
+          usageId: usageRequest.usageId,
+          sessionId: usageRequest.sessionId,
+          capabilityId: usageRequest.capabilityId,
+          requestText: usageRequest.text,
+          requestFingerprint: usageRequestFingerprint(request),
+          binding: input.knowledge.resolved.binding,
+          billingPolicyVersion: request.recovery?.billingPolicyVersion ?? billing.policy.version,
+          validatorPolicyVersion: request.knowledge.validatorPolicyVersion,
+          unitPriceCents: request.recovery?.unitPriceCents ?? BigInt(billing.policy.unitPriceCents),
+          freeLimitSnapshot: request.recovery?.freeLimitSnapshot ?? freeLimitSnapshot,
+        };
+      };
       const confirmCommittedStart = async (signal: AbortSignal): Promise<CommitConfirmation> => {
         const confirmed = await withTransaction(
           deps.db,
           async (tx) => {
             const lockedSession = await lockActiveSession(tx, sessionId, input.session.ownerUserId);
             if (!lockedSession) return null;
+            await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+            // Establish that this process's admission COMMIT actually created the
+            // exact running Turn before trusting any independently-created pending
+            // row. This is a non-locking read under the already-held Session lock,
+            // so the terminal lock order remains pending -> Turn/charge.
+            if ((await getRunningTurnId(tx, sessionId)) !== runId) {
+              return null;
+            }
+            const pending = input.knowledge
+              ? await findPendingUsageRecovery(
+                  tx,
+                  usageRequest.ownerUserId,
+                  usageRequest.usageId,
+                  true,
+                )
+              : null;
+            const confirmedUsageRequest = pending ? usageRequestForRecovery(pending) : usageRequest;
+            if (pending) {
+              assertPendingUsageRecoveryBindingMatches(
+                pending,
+                expectedRecovery(pending.freeLimitSnapshot, confirmedUsageRequest),
+              );
+              if (pending.recoveryStatus !== 'active') {
+                return { kind: 'terminal' as const };
+              }
+            }
             const charge = await findUsageCharge(
               tx,
               usageRequest.ownerUserId,
@@ -1379,8 +1546,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               charge.turnId !== runId ||
               charge.sessionId !== sessionId ||
               charge.status !== 'reserved' ||
-              charge.requestFingerprint !== usageRequestFingerprint(usageRequest) ||
-              (await getRunningTurnId(tx, sessionId)) !== runId
+              charge.requestFingerprint !== usageRequestFingerprint(confirmedUsageRequest)
             ) {
               return null;
             }
@@ -1398,11 +1564,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             timeoutMs: TURN_OWNERSHIP_CONFIRMATION_DATABASE_TIMEOUT_MS,
           },
         ).catch(() => undefined);
-        return confirmed
-          ? { kind: 'committed', outcome: confirmed }
-          : confirmed === null
-            ? { kind: 'absent' }
-            : { kind: 'unknown' };
+        return confirmed?.kind === 'terminal'
+          ? confirmed
+          : confirmed
+            ? { kind: 'committed', outcome: confirmed }
+            : confirmed === null
+              ? { kind: 'absent' }
+              : { kind: 'unknown' };
       };
       const scheduleCommitRecovery = (): void => {
         retainActiveForRecovery = true;
@@ -1431,6 +1599,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                   controller,
                   runId,
                   knowledge: input.knowledge,
+                  validator: knowledgeValidator!,
+                  requiresGroundedExtractiveAnswer,
                   log: input.log,
                 });
               } else {
@@ -1448,7 +1618,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               }
               return;
             }
-            if (confirmation.kind === 'absent') return;
+            if (confirmation.kind === 'absent' || confirmation.kind === 'terminal') return;
             await waitForDelay(retryDelayMs, disposalController.signal);
             retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
           }
@@ -1483,8 +1653,42 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               }
               // usageId 锁跨 Session 生效；完全相同的重试优先于 SESSION_BUSY，
               // 因而原 Turn 仍运行时也能稳定返回原 user Message。
+              let lockedRecovery: PendingUsageRecoveryRecord | null = null;
+              let billableUsageRequest = usageRequest;
+              if (input.knowledge) {
+                admissionStage = 'pending_recovery_lock';
+                await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+                lockedRecovery = await findPendingUsageRecovery(
+                  tx,
+                  usageRequest.ownerUserId,
+                  usageRequest.usageId,
+                  true,
+                );
+                if (lockedRecovery) {
+                  if (lockedRecovery.recoveryStatus === 'active') {
+                    // Frozen recovery policy dispatch happens before usage preparation, Turn
+                    // insertion, reservation, or model execution. Current gate semantics are
+                    // deliberately excluded from this branch.
+                    knowledgeValidator = recoveryValidator(lockedRecovery.validatorPolicyVersion);
+                    requiresGroundedExtractiveAnswer = true;
+                  }
+                  billableUsageRequest = usageRequestForRecovery(lockedRecovery);
+                  assertPendingUsageRecoveryBindingMatches(
+                    lockedRecovery,
+                    expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
+                  );
+                  if (lockedRecovery.recoveryStatus === 'active' && !lockedRecovery.isUnexpired) {
+                    assertPendingUsageRecoveryMatches(
+                      lockedRecovery,
+                      expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
+                    );
+                  }
+                } else if (frozenValidatorPolicyVersion !== undefined) {
+                  throw new KnowledgeRecoveryPolicyUnavailableError();
+                }
+              }
               admissionStage = 'usage_prepare';
-              const preparation = await billing.prepareUsage(tx, usageRequest);
+              const preparation = await billing.prepareUsage(tx, billableUsageRequest);
               if (preparation.kind === 'replay') {
                 admissionStage = 'usage_replay_lookup';
                 const messages = await getMessages(tx, sessionId);
@@ -1519,18 +1723,51 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 );
               }
               if (preparation.kind === 'insufficient') {
+                if (!input.knowledge) {
+                  admissionStage = 'commit';
+                  return {
+                    kind: 'recharge_required' as const,
+                    balanceCents: preparation.balanceCents,
+                    requiredCents: preparation.requiredCents,
+                  };
+                }
+                const authoritative = lockedRecovery
+                  ? (() => {
+                      assertPendingUsageRecoveryMatches(
+                        lockedRecovery,
+                        expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
+                      );
+                      return lockedRecovery;
+                    })()
+                  : (
+                      await insertOrFindPendingUsageRecovery(
+                        tx,
+                        expectedRecovery(preparation.freeLimitSnapshot),
+                      )
+                    ).recovery;
                 admissionStage = 'commit';
                 return {
                   kind: 'recharge_required' as const,
+                  recoveryUsageId: authoritative.usageId,
+                  rechargeIntentId: authoritative.activeRechargeIntentId,
                   balanceCents: preparation.balanceCents,
                   requiredCents: preparation.requiredCents,
                 };
+              }
+              if (lockedRecovery) {
+                assertPendingUsageRecoveryMatches(
+                  lockedRecovery,
+                  expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
+                );
+              }
+              if (input.knowledge && !knowledgeValidator) {
+                throw new KnowledgeRecoveryPolicyUnavailableError();
               }
               admissionStage = 'turn_insert';
               await createTurn(tx, { id: runId, sessionId });
               admissionStage = 'usage_reservation';
               await billing.reservePreparedUsage(tx, {
-                ...usageRequest,
+                ...billableUsageRequest,
                 turnId: runId,
                 preparation,
               });
@@ -1643,6 +1880,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         if (outcome.kind === 'recharge_required') {
           return {
             status: 'recharge_required',
+            ...(outcome.recoveryUsageId ? { recoveryUsageId: outcome.recoveryUsageId } : {}),
+            ...(outcome.rechargeIntentId ? { rechargeIntentId: outcome.rechargeIntentId } : {}),
             balanceCents: outcome.balanceCents,
             requiredCents: outcome.requiredCents,
           };
@@ -1661,6 +1900,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 controller,
                 runId,
                 knowledge: input.knowledge,
+                validator: knowledgeValidator!,
+                requiresGroundedExtractiveAnswer,
                 log: input.log,
               })
             : executeTurn({

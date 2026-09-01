@@ -6,6 +6,7 @@ import {
   billingNoStore,
   createRechargeOrderHandler,
   getRechargeOrderByIntentHandler,
+  getRechargeOrderByRecoveryHandler,
   getRechargeOrderHandler,
   paymentNotificationHandler,
   requireBillingJson,
@@ -44,6 +45,12 @@ export const BILLING_ENDPOINTS: EndpointDecl[] = [
     url: '/billing/recharge-orders/by-intent/:rechargeIntentId',
     preHandlers: [billingNoStore(), requireAuth()],
     handler: getRechargeOrderByIntentHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/billing/recharge-orders/by-recovery/:recoveryUsageId',
+    preHandlers: [billingNoStore(), requireAuth()],
+    handler: getRechargeOrderByRecoveryHandler(),
   },
   {
     method: 'GET',

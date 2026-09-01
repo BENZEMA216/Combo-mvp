@@ -11,6 +11,7 @@ import {
   type SessionView,
 } from '@cb/shared';
 import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
+import { abandonActiveRecoveryForLockedSession } from '../billing/pending-recovery.js';
 import { parseMessageContent } from './message-content.js';
 
 /** timestamptz → ISO 字符串（pg 可能回 Date 或字符串）。 */
@@ -250,6 +251,8 @@ export async function archiveSession(
       [id],
     );
     if (running.rows[0]?.exists) throw new SessionBusyError();
+
+    await abandonActiveRecoveryForLockedSession(tx, ownerUserId, id);
 
     const res = await tx.query<SessionDbRow>(
       `UPDATE sessions

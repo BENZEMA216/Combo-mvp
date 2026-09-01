@@ -379,7 +379,7 @@ export async function completeUsageCharge(
       `UPDATE billing_free_allowances
           SET free_reserved_count = free_reserved_count - 1,
               free_used_count = free_used_count + 1,
-              updated_at = now()
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND capability_id = $2 AND free_reserved_count > 0`,
       [charge.ownerUserId, charge.capabilityId],
     );
@@ -387,7 +387,8 @@ export async function completeUsageCharge(
   } else if (charge.chargeSource === 'wallet') {
     const account = await db.query(
       `UPDATE billing_accounts
-          SET reserved_cents = reserved_cents - $2::bigint, updated_at = now()
+          SET reserved_cents = reserved_cents - $2::bigint,
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND reserved_cents >= $2::bigint`,
       [charge.ownerUserId, charge.reservedCents.toString()],
     );
@@ -407,14 +408,17 @@ export async function completeUsageCharge(
       ? await db.query(
           `UPDATE usage_charges
         SET status = 'completed', settled_cents = $2::bigint,
-            execution_outcome = 'answered', finished_at = now(), updated_at = now()
+            execution_outcome = 'answered',
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
       WHERE id = $1 AND status = 'reserved' AND execution_outcome IS NULL`,
           [charge.id, settledCents.toString()],
         )
       : await db.query(
           `UPDATE usage_charges
         SET status = 'completed', settled_cents = $2::bigint,
-            finished_at = now(), updated_at = now()
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
       WHERE id = $1 AND status = 'reserved'`,
           [charge.id, settledCents.toString()],
         );
@@ -435,7 +439,8 @@ export async function releaseUsageCharge(
   if (charge.chargeSource === 'free') {
     const allowance = await db.query(
       `UPDATE billing_free_allowances
-          SET free_reserved_count = free_reserved_count - 1, updated_at = now()
+          SET free_reserved_count = free_reserved_count - 1,
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND capability_id = $2 AND free_reserved_count > 0`,
       [charge.ownerUserId, charge.capabilityId],
     );
@@ -445,7 +450,7 @@ export async function releaseUsageCharge(
       `UPDATE billing_accounts
           SET reserved_cents = reserved_cents - $2::bigint,
               balance_cents = balance_cents + $2::bigint,
-              updated_at = now()
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND reserved_cents >= $2::bigint`,
       [charge.ownerUserId, charge.reservedCents.toString()],
     );
@@ -456,14 +461,16 @@ export async function releaseUsageCharge(
       ? await db.query(
           `UPDATE usage_charges
         SET status = 'released', settled_cents = 0, execution_outcome = $2,
-            finished_at = now(), updated_at = now()
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
       WHERE id = $1 AND status = 'reserved' AND execution_outcome IS NULL`,
           [charge.id, outcome],
         )
       : await db.query(
           `UPDATE usage_charges
         SET status = 'released', settled_cents = 0,
-            finished_at = now(), updated_at = now()
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
       WHERE id = $1 AND status = 'reserved'`,
           [charge.id],
         );

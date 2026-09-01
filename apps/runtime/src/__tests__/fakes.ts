@@ -171,6 +171,32 @@ export interface AgentUsageReceiptRowF {
   created_at: string;
 }
 
+export interface PendingUsageRecoveryRowF {
+  owner_user_id: string;
+  usage_id: string;
+  session_id: string;
+  capability_id: string;
+  request_text: string | null;
+  request_fingerprint: string;
+  product_kind: 'knowledge_agent_test';
+  capability_protocol: string;
+  release_id: string;
+  package_digest: string;
+  release_scope: 'controlled_test';
+  knowledge_resource_path: string;
+  knowledge_resource_digest: string;
+  billing_policy_version: string;
+  validator_policy_version: string;
+  unit_price_cents: bigint;
+  free_limit_snapshot: number;
+  active_recharge_intent_id: string;
+  recovery_status: 'active' | 'accepted' | 'abandoned';
+  terminal_turn_id: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AgentPackageRowF {
   package_digest: string;
   protocol: 'combo.agent-package/1';
@@ -315,6 +341,7 @@ export class FakeDb implements Queryable, TxPool {
   usageCharges = new Map<string, UsageChargeRowF>();
   walletLedger = new Map<string, WalletLedgerRowF>();
   agentUsageReceipts = new Map<string, AgentUsageReceiptRowF>();
+  pendingUsageRecoveries = new Map<string, PendingUsageRecoveryRowF>();
   agentPackages = new Map<string, AgentPackageRowF>();
   agentPackageReleases = new Map<string, AgentPackageReleaseRowF>();
   /** 事务轨迹（断言 BEGIN/COMMIT/ROLLBACK 收口）。 */
@@ -374,6 +401,42 @@ export class FakeDb implements Queryable, TxPool {
     return row;
   }
 
+  seedPendingUsageRecovery(
+    input: Omit<
+      PendingUsageRecoveryRowF,
+      | 'active_recharge_intent_id'
+      | 'recovery_status'
+      | 'terminal_turn_id'
+      | 'expires_at'
+      | 'created_at'
+      | 'updated_at'
+    > &
+      Partial<
+        Pick<
+          PendingUsageRecoveryRowF,
+          | 'active_recharge_intent_id'
+          | 'recovery_status'
+          | 'terminal_turn_id'
+          | 'expires_at'
+          | 'created_at'
+          | 'updated_at'
+        >
+      >,
+  ): PendingUsageRecoveryRowF {
+    const now = nowIso();
+    const row: PendingUsageRecoveryRowF = {
+      ...input,
+      active_recharge_intent_id: input.active_recharge_intent_id ?? input.usage_id,
+      recovery_status: input.recovery_status ?? 'active',
+      terminal_turn_id: input.terminal_turn_id ?? null,
+      expires_at: input.expires_at ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+      created_at: input.created_at ?? now,
+      updated_at: input.updated_at ?? now,
+    };
+    this.pendingUsageRecoveries.set(`${row.owner_user_id}:${row.usage_id}`, row);
+    return row;
+  }
+
   seedAgentPackageRegistry(input: {
     packageDigest: string;
     releaseId: string;
@@ -424,6 +487,171 @@ export class FakeDb implements Queryable, TxPool {
     if (s.startsWith('SELECT pg_advisory_xact_lock')) {
       return { rows: [{}] as R[], rowCount: 1 };
     }
+    if (s.startsWith('INSERT INTO pending_usage_recoveries')) {
+      const [
+        ownerUserId,
+        usageId,
+        sessionId,
+        capabilityId,
+        requestText,
+        requestFingerprint,
+        capabilityProtocol,
+        releaseId,
+        packageDigest,
+        releaseScope,
+        knowledgeResourcePath,
+        knowledgeResourceDigest,
+        billingPolicyVersion,
+        validatorPolicyVersion,
+        unitPriceRaw,
+        freeLimitSnapshot,
+      ] = params as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        'controlled_test',
+        string,
+        string,
+        string,
+        string,
+        string,
+        number,
+      ];
+      const key = `${ownerUserId}:${usageId}`;
+      const activeForSession = [...this.pendingUsageRecoveries.values()].find(
+        (row) => row.session_id === sessionId && row.recovery_status === 'active',
+      );
+      if (this.pendingUsageRecoveries.has(key) || activeForSession) {
+        return { rows: [], rowCount: 0 };
+      }
+      const now = nowIso();
+      const row: PendingUsageRecoveryRowF = {
+        owner_user_id: ownerUserId,
+        usage_id: usageId,
+        session_id: sessionId,
+        capability_id: capabilityId,
+        request_text: requestText,
+        request_fingerprint: requestFingerprint,
+        product_kind: 'knowledge_agent_test',
+        capability_protocol: capabilityProtocol,
+        release_id: releaseId,
+        package_digest: packageDigest,
+        release_scope: releaseScope,
+        knowledge_resource_path: knowledgeResourcePath,
+        knowledge_resource_digest: knowledgeResourceDigest,
+        billing_policy_version: billingPolicyVersion,
+        validator_policy_version: validatorPolicyVersion,
+        unit_price_cents: BigInt(unitPriceRaw),
+        free_limit_snapshot: freeLimitSnapshot,
+        active_recharge_intent_id: usageId,
+        recovery_status: 'active',
+        terminal_turn_id: null,
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+        created_at: now,
+        updated_at: now,
+      };
+      this.pendingUsageRecoveries.set(key, row);
+      return { rows: [{ ...row, is_unexpired: true }] as R[], rowCount: 1 };
+    }
+    if (
+      s.startsWith(
+        'SELECT owner_user_id, usage_id, session_id, capability_id, request_text, request_fingerprint, product_kind, capability_protocol, release_id,',
+      ) &&
+      s.includes('FROM pending_usage_recoveries')
+    ) {
+      let rows = [...this.pendingUsageRecoveries.values()];
+      if (s.includes('WHERE owner_user_id = $1 AND usage_id = $2')) {
+        rows = rows.filter((row) => row.owner_user_id === params[0] && row.usage_id === params[1]);
+      } else if (s.includes('WHERE owner_user_id = $1 AND session_id = $2')) {
+        rows = rows.filter(
+          (row) =>
+            row.owner_user_id === params[0] &&
+            row.session_id === params[1] &&
+            row.recovery_status === 'active',
+        );
+      } else {
+        rows = rows.filter(
+          (row) =>
+            row.owner_user_id === params[0] &&
+            row.recovery_status === 'active' &&
+            new Date(row.expires_at).getTime() > Date.now() &&
+            (params[1] === null || row.session_id === params[1]),
+        );
+        rows.sort(
+          (left, right) =>
+            right.updated_at.localeCompare(left.updated_at) ||
+            left.usage_id.localeCompare(right.usage_id),
+        );
+        rows = rows.slice(0, 100);
+      }
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          is_unexpired: new Date(row.expires_at).getTime() > Date.now(),
+        })) as R[],
+        rowCount: rows.length,
+      };
+    }
+    if (s.includes('SELECT id, name, summary, kind FROM capabilities WHERE id = $1')) {
+      const c = this.capabilities.get(params[0] as string);
+      if (!c) return { rows: [], rowCount: 0 };
+      return {
+        rows: [{ id: c.id, name: c.name, summary: c.summary, kind: c.kind }] as R[],
+        rowCount: 1,
+      };
+    }
+    if (s.startsWith('SELECT owner_user_id, usage_id, session_id FROM pending_usage_recoveries')) {
+      const rows = [...this.pendingUsageRecoveries.values()]
+        .filter(
+          (row) =>
+            row.recovery_status === 'active' && new Date(row.expires_at).getTime() <= Date.now(),
+        )
+        .sort(
+          (left, right) =>
+            left.expires_at.localeCompare(right.expires_at) ||
+            left.owner_user_id.localeCompare(right.owner_user_id) ||
+            left.usage_id.localeCompare(right.usage_id),
+        )
+        .slice(0, Number(params[0]));
+      return {
+        rows: rows.map((row) => ({
+          owner_user_id: row.owner_user_id,
+          usage_id: row.usage_id,
+          session_id: row.session_id,
+        })) as R[],
+        rowCount: rows.length,
+      };
+    }
+    if (s.startsWith('SELECT EXISTS ( SELECT 1 FROM usage_charges')) {
+      const exists = [...this.usageCharges.values()].some(
+        (row) => row.owner_user_id === params[0] && row.usage_id === params[1],
+      );
+      return { rows: [{ exists }] as R[], rowCount: 1 };
+    }
+    if (s.startsWith('UPDATE pending_usage_recoveries')) {
+      if (!s.includes('updated_at = GREATEST(statement_timestamp(), updated_at, created_at)')) {
+        throw new Error('FakeDb: pending terminal timestamp must be monotonic');
+      }
+      const key = `${String(params[0])}:${String(params[1])}`;
+      const row = this.pendingUsageRecoveries.get(key);
+      if (!row || row.recovery_status !== 'active') return { rows: [], rowCount: 0 };
+      row.request_text = null;
+      if (s.includes('recovery_status = $3')) {
+        row.recovery_status = params[2] as 'accepted' | 'abandoned';
+        row.terminal_turn_id = String(params[3]);
+      } else {
+        row.recovery_status = 'abandoned';
+        row.terminal_turn_id = params[2] === null ? null : String(params[2]);
+      }
+      row.updated_at = [row.created_at, row.updated_at, nowIso()].sort().at(-1)!;
+      return { rows: [], rowCount: 1 };
+    }
     if (s.startsWith('INSERT INTO billing_accounts')) {
       const ownerUserId = params[0] as string;
       if (!this.billingAccounts.has(ownerUserId)) {
@@ -458,7 +686,8 @@ export class FakeDb implements Queryable, TxPool {
     }
     if (
       s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint') &&
-      s.includes('balance_cents = balance_cents + $2::bigint')
+      s.includes('balance_cents = balance_cents + $2::bigint') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
     ) {
       const [ownerUserId, amountRaw] = params as [string, string];
       const row = this.billingAccounts.get(ownerUserId);
@@ -466,16 +695,19 @@ export class FakeDb implements Queryable, TxPool {
       if (!row || row.reserved_cents < amount) return { rows: [], rowCount: 0 };
       row.reserved_cents -= amount;
       row.balance_cents += amount;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
-    if (s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint')) {
+    if (
+      s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
+    ) {
       const [ownerUserId, amountRaw] = params as [string, string];
       const row = this.billingAccounts.get(ownerUserId);
       const amount = BigInt(amountRaw);
       if (!row || row.reserved_cents < amount) return { rows: [], rowCount: 0 };
       row.reserved_cents -= amount;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO billing_free_allowances')) {
@@ -526,24 +758,26 @@ export class FakeDb implements Queryable, TxPool {
     if (
       s.startsWith(
         'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count - 1, free_used_count = free_used_count + 1',
-      )
+      ) &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
     ) {
       const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
       if (!row || row.free_reserved_count <= 0) return { rows: [], rowCount: 0 };
       row.free_reserved_count -= 1;
       row.free_used_count += 1;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (
       s.startsWith(
         'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count - 1',
-      )
+      ) &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
     ) {
       const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
       if (!row || row.free_reserved_count <= 0) return { rows: [], rowCount: 0 };
       row.free_reserved_count -= 1;
-      row.updated_at = nowIso();
+      row.updated_at = [row.updated_at, nowIso()].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (
@@ -559,6 +793,28 @@ export class FakeDb implements Queryable, TxPool {
               candidate.owner_user_id === params[0] && candidate.usage_id === params[1],
           );
       return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith(
+        'SELECT owner_user_id, usage_id, session_id FROM usage_charges WHERE turn_id = $1',
+      )
+    ) {
+      const row = [...this.usageCharges.values()].find(
+        (candidate) =>
+          candidate.turn_id === params[0] && candidate.product_kind === 'knowledge_agent_test',
+      );
+      return row
+        ? {
+            rows: [
+              {
+                owner_user_id: row.owner_user_id,
+                usage_id: row.usage_id,
+                session_id: row.session_id,
+              },
+            ] as R[],
+            rowCount: 1,
+          }
+        : { rows: [], rowCount: 0 };
     }
     if (s.startsWith('SELECT product_kind FROM usage_charges WHERE turn_id = $1')) {
       const row = [...this.usageCharges.values()].find(
@@ -661,18 +917,27 @@ export class FakeDb implements Queryable, TxPool {
       this.usageCharges.set(row.id, row);
       return { rows: [{ id: row.id }] as R[], rowCount: 1 };
     }
-    if (s.startsWith("UPDATE usage_charges SET status = 'completed'")) {
+    if (
+      s.startsWith("UPDATE usage_charges SET status = 'completed'") &&
+      s.includes('finished_at = GREATEST(now(), created_at)') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
+    ) {
       const [id, settledRaw] = params as [string, string];
       const row = this.usageCharges.get(id);
       if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
       row.status = 'completed';
       row.settled_cents = BigInt(settledRaw);
       if (row.product_kind === 'knowledge_agent_test') row.execution_outcome = 'answered';
-      row.finished_at = nowIso();
-      row.updated_at = row.finished_at;
+      const now = nowIso();
+      row.finished_at = [row.created_at, now].sort().at(-1)!;
+      row.updated_at = [row.updated_at, now].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
-    if (s.startsWith("UPDATE usage_charges SET status = 'released'")) {
+    if (
+      s.startsWith("UPDATE usage_charges SET status = 'released'") &&
+      s.includes('finished_at = GREATEST(now(), created_at)') &&
+      s.includes('updated_at = GREATEST(now(), updated_at)')
+    ) {
       const row = this.usageCharges.get(params[0] as string);
       if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
       row.status = 'released';
@@ -680,8 +945,9 @@ export class FakeDb implements Queryable, TxPool {
       if (row.product_kind === 'knowledge_agent_test') {
         row.execution_outcome = params[1] as UsageChargeRowF['execution_outcome'];
       }
-      row.finished_at = nowIso();
-      row.updated_at = row.finished_at;
+      const now = nowIso();
+      row.finished_at = [row.created_at, now].sort().at(-1)!;
+      row.updated_at = [row.updated_at, now].sort().at(-1)!;
       return { rows: [], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO wallet_ledger')) {
@@ -839,14 +1105,6 @@ export class FakeDb implements Queryable, TxPool {
     if (s.includes('FROM capabilities WHERE id = $1') && s.includes('storage_key')) {
       const c = this.capabilities.get(params[0] as string);
       return c ? { rows: [{ ...c }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
-    }
-    if (s.includes('SELECT id, name, summary, kind FROM capabilities WHERE id = $1')) {
-      const c = this.capabilities.get(params[0] as string);
-      if (!c) return { rows: [], rowCount: 0 };
-      return {
-        rows: [{ id: c.id, name: c.name, summary: c.summary, kind: c.kind }] as R[],
-        rowCount: 1,
-      };
     }
     if (s.includes('FROM capabilities WHERE owner_user_id = $1 OR published = true')) {
       const owner = params[0] as string;
