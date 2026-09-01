@@ -330,6 +330,7 @@ export function archiveSessionHandler(): RouteHandlerMethod {
 
 export function getSessionDetailHandler(): RouteHandlerMethod {
   return async function (req: FastifyRequest, reply: FastifyReply) {
+    reply.header('Cache-Control', 'private, no-store');
     const userId = req.auth?.userId;
     if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
     const { id } = req.params as { id: string };
@@ -390,23 +391,11 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       let knowledgeResults: SessionDetail['knowledgeResults'];
       try {
         if (session.agentBinding.productKind === 'knowledge_agent_test') {
-          const gate = knowledgeAgentTestGateFromEnv(req.server.infra.env);
-          const access = await readAccessibleCapabilitySummary(
-            db,
-            session.capabilityId,
-            session.ownerUserId,
-          );
-          if (!gate || !access) throw new KnowledgeAgentResolutionError('closed');
-          const resolved = await resolveKnowledgeAgentPackage({
+          const resolved = await resolveFrozenKnowledgeAgentPackage({
             db,
             objectStore,
-            capability: access,
-            projection: {
-              version: 2,
-              protocol: session.agentBinding.capability.protocol,
-              release: verifyCreatorAgentPackageRelease(session.agentBinding.release),
-            },
-            gate,
+            capability,
+            binding: session.agentBinding,
           });
           knowledgeResults = projectKnowledgeResults({
             binding: session.agentBinding,
@@ -438,7 +427,10 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
           );
           return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
         }
-        req.log.warn({ err, traceId: req.id }, 'load definition for detail failed, degrading');
+        req.log.warn(
+          { traceId: req.id, detailFailure: 'legacy_definition_unavailable' },
+          'load definition for detail failed, degrading',
+        );
       }
       const detail: SessionDetail = {
         session: toSessionView(session),
@@ -480,7 +472,10 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       reply.code(200).send(body);
       return reply;
     } catch (err) {
-      req.log.error({ err, traceId: req.id }, 'read session detail failed');
+      req.log.error(
+        { traceId: req.id, detailFailure: 'unexpected_read_failure' },
+        'read session detail failed',
+      );
       return sendError(req, reply, ErrorCode.INTERNAL);
     }
   };
