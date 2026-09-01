@@ -10,6 +10,7 @@ import {
   classifyInventoryBoundary,
   manifestPath,
   normalizeNodeTestReport,
+  normalizePlaywrightReport,
   normalizeVitestReport,
   parseManifest,
   renderSummary,
@@ -223,6 +224,104 @@ function acceptanceWithEvidence(commit, { allGates = true } = {}) {
     };
   });
   return value;
+}
+
+const playwrightStep = {
+  kind: 'PLAYWRIGHT',
+  cwd: 'tests/e2e',
+  argv: ['resend-auth.spec.ts'],
+};
+
+function passingPlaywrightReport() {
+  const testDirectory = join(repoRoot, 'tests/e2e');
+  return {
+    config: {
+      argv: [
+        'node',
+        'playwright',
+        'test',
+        '--config',
+        'tests/e2e/playwright.test-truth.config.ts',
+        '--tsconfig',
+        'tsconfig.e2e.json',
+        '--browser=chromium',
+        '--reporter=json',
+      ],
+      rootDir: testDirectory,
+      failOnFlakyTests: true,
+      forbidOnly: true,
+      fullyParallel: false,
+      grep: {},
+      grepInvert: null,
+      maxFailures: 0,
+      metadata: {
+        actualWorkers: 1,
+        comboEvidence: {
+          protocol: 'combo.playwright-controlled-local-auth/1',
+          candidateCommit: candidate.mergeSha,
+          environment: 'LOCAL_DOCKER_COMPOSE',
+          browserCliDefault: 'chromium',
+          emailDelivery: 'RESEND_MOCK',
+          transport: 'HTTP',
+          cookieSecure: false,
+        },
+        ci: { revision: 'private framework metadata' },
+        gitCommit: { hash: 'private framework commit' },
+        gitDiff: { patch: 'private framework diff' },
+      },
+      projects: [
+        {
+          id: 'chromium',
+          name: 'chromium',
+          repeatEach: 1,
+          retries: 0,
+          testDir: testDirectory,
+          testIgnore: [],
+          testMatch: ['resend-auth.spec.ts'],
+        },
+      ],
+      reporter: [['json']],
+      shard: null,
+      updateSnapshots: 'none',
+      version: '1.62.0',
+      workers: 1,
+    },
+    suites: [
+      {
+        title: 'resend-auth.spec.ts',
+        file: 'resend-auth.spec.ts',
+        specs: [
+          {
+            title: '邮箱验证码登录在两个服务间共享不透明会话并可注销',
+            ok: true,
+            tags: [],
+            file: 'resend-auth.spec.ts',
+            tests: [
+              {
+                annotations: [],
+                expectedStatus: 'passed',
+                projectId: 'chromium',
+                projectName: 'chromium',
+                status: 'expected',
+                results: [
+                  {
+                    status: 'passed',
+                    retry: 0,
+                    duration: 25,
+                    attachments: [],
+                    stdout: [],
+                    stderr: [],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    errors: [],
+    stats: { expected: 1, skipped: 0, unexpected: 0, flaky: 0 },
+  };
 }
 
 test('the committed manifest is normalized and exposes its unclassified boundary', () => {
@@ -601,6 +700,269 @@ describe('native Node suite event compatibility', () => {
   test('a regular case inside describe remains machine reportable', () => {
     assert.equal(1 + 1, 2);
   });
+});
+
+test('Playwright PASS is derived from one exact unfiltered reported browser execution', () => {
+  const normalized = normalizePlaywrightReport(passingPlaywrightReport(), {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(normalized.status, 'PASS');
+  assert.deepEqual(normalized.reasonCodes, []);
+  assert.deepEqual(normalized.counts, {
+    tests: 1,
+    passed: 1,
+    failed: 0,
+    cancelled: 0,
+    skipped: 0,
+    todo: 0,
+    commands: 0,
+  });
+  assert.deepEqual(normalized.collectedFiles, ['tests/e2e/resend-auth.spec.ts']);
+  assert.equal(normalized.testCases[0].id, 'playwright:tests/e2e/resend-auth.spec.ts:case-1');
+  assert.equal(normalized.testCases[0].name, 'Playwright case 1');
+  assert.doesNotMatch(
+    JSON.stringify(normalized),
+    /邮箱验证码|private framework metadata|private framework commit|private framework diff/,
+  );
+});
+
+test('Playwright evidence rejects runtime drift, candidate drift, filtering, and unsafe output', () => {
+  const raw = passingPlaywrightReport();
+  raw.config.forbidOnly = false;
+  raw.config.argv.push('--grep=login');
+  raw.config.metadata.comboEvidence.candidateCommit = '4'.repeat(40);
+  raw.suites[0].specs[0].tests[0].results[0].stdout.push({ text: 'not publishable' });
+  const normalized = normalizePlaywrightReport(raw, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(normalized.status, 'FAIL');
+  assert.deepEqual(normalized.reasonCodes, [
+    'PLAYWRIGHT_COMMAND_POLICY_MISMATCH',
+    'PLAYWRIGHT_EVIDENCE_METADATA_MISMATCH',
+    'PLAYWRIGHT_FILTERED_EXECUTION',
+    'PLAYWRIGHT_RUNTIME_POLICY_MISMATCH',
+    'PLAYWRIGHT_UNSAFE_RAW_OUTPUT',
+  ]);
+});
+
+test('Playwright rejects command-line browser and project identity drift', () => {
+  const raw = passingPlaywrightReport();
+  raw.config.argv[raw.config.argv.indexOf('--browser=chromium')] = '--browser=firefox';
+  raw.config.projects[0].id = 'firefox';
+  raw.config.projects[0].name = 'firefox';
+  const execution = raw.suites[0].specs[0].tests[0];
+  execution.projectId = 'firefox';
+  execution.projectName = 'firefox';
+  const normalized = normalizePlaywrightReport(raw, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(normalized.status, 'FAIL');
+  assert.deepEqual(normalized.reasonCodes, [
+    'PLAYWRIGHT_BROWSER_COMMAND_OVERRIDE',
+    'PLAYWRIGHT_BROWSER_PROJECT_MISMATCH',
+    'PLAYWRIGHT_COMMAND_POLICY_MISMATCH',
+    'PLAYWRIGHT_RUNTIME_POLICY_MISMATCH',
+  ]);
+});
+
+test('Playwright rejects every command shape outside the single unfiltered allowlist', () => {
+  for (const extraArguments of [
+    ['-G', 'logout'],
+    ['--test-list', 'selected-tests.txt'],
+    ['--test-list-invert', 'excluded-tests.txt'],
+    ['resend-auth.spec.ts:120'],
+  ]) {
+    const raw = passingPlaywrightReport();
+    raw.config.argv.push(...extraArguments);
+    const normalized = normalizePlaywrightReport(raw, {
+      step: playwrightStep,
+      candidate,
+      exitCode: 0,
+      rawDigest: 'c'.repeat(64),
+      minimumTestCount: 1,
+    });
+    assert.equal(normalized.status, 'FAIL');
+    assert.equal(normalized.reasonCodes.includes('PLAYWRIGHT_COMMAND_POLICY_MISMATCH'), true);
+  }
+});
+
+test('Playwright expected failures, skips, retries, global errors, and command failure stay red', () => {
+  const expectedFailure = passingPlaywrightReport();
+  const expectedExecution = expectedFailure.suites[0].specs[0].tests[0];
+  expectedExecution.expectedStatus = 'failed';
+  expectedExecution.results[0].status = 'failed';
+  const expectedNormalized = normalizePlaywrightReport(expectedFailure, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(expectedNormalized.status, 'FAIL');
+  assert.deepEqual(expectedNormalized.reasonCodes, [
+    'PLAYWRIGHT_EXPECTED_STATUS_OVERRIDE',
+    'TEST_FAILURE',
+  ]);
+
+  const skipped = passingPlaywrightReport();
+  const skippedExecution = skipped.suites[0].specs[0].tests[0];
+  skippedExecution.expectedStatus = 'skipped';
+  skippedExecution.status = 'skipped';
+  skippedExecution.results = [];
+  skipped.stats = { expected: 0, skipped: 1, unexpected: 0, flaky: 0 };
+  const skippedNormalized = normalizePlaywrightReport(skipped, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(skippedNormalized.status, 'FAIL');
+  assert.deepEqual(skippedNormalized.reasonCodes, [
+    'PLAYWRIGHT_EXPECTED_STATUS_OVERRIDE',
+    'UNEXPECTED_SKIP',
+  ]);
+
+  const flaky = passingPlaywrightReport();
+  const flakyExecution = flaky.suites[0].specs[0].tests[0];
+  flakyExecution.status = 'flaky';
+  flakyExecution.results = [
+    { ...flakyExecution.results[0], status: 'failed' },
+    { ...flakyExecution.results[0], retry: 1 },
+  ];
+  flaky.stats = { expected: 0, skipped: 0, unexpected: 0, flaky: 1 };
+  const flakyNormalized = normalizePlaywrightReport(flaky, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(flakyNormalized.status, 'FAIL');
+  assert.deepEqual(flakyNormalized.reasonCodes, ['PLAYWRIGHT_UNEXPECTED_RETRY', 'TEST_FAILURE']);
+
+  const globalFailure = passingPlaywrightReport();
+  globalFailure.errors.push({ message: 'private raw error' });
+  const globalNormalized = normalizePlaywrightReport(globalFailure, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 1,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(globalNormalized.status, 'FAIL');
+  assert.deepEqual(globalNormalized.reasonCodes, [
+    'COMMAND_EXIT_NONZERO',
+    'PLAYWRIGHT_GLOBAL_ERROR',
+  ]);
+  assert.doesNotMatch(JSON.stringify(globalNormalized), /private raw error/);
+});
+
+test('Playwright zero-test and malformed inventory cannot become PASS', () => {
+  const empty = passingPlaywrightReport();
+  empty.suites = [];
+  empty.stats = { expected: 0, skipped: 0, unexpected: 0, flaky: 0 };
+  const normalized = normalizePlaywrightReport(empty, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 1,
+  });
+  assert.equal(normalized.status, 'FAIL');
+  assert.deepEqual(normalized.reasonCodes, [
+    'COLLECTED_FILE_MISMATCH',
+    'PLAYWRIGHT_MINIMUM_TEST_COUNT_NOT_MET',
+    'ZERO_TESTS_EXECUTED',
+  ]);
+
+  const malformed = passingPlaywrightReport();
+  malformed.suites[0].specs[0].tests = [];
+  assert.throws(
+    () =>
+      normalizePlaywrightReport(malformed, {
+        step: playwrightStep,
+        candidate,
+        exitCode: 0,
+        rawDigest: 'c'.repeat(64),
+        minimumTestCount: 1,
+      }),
+    /spec execution inventory invalid/,
+  );
+
+  const expanded = passingPlaywrightReport();
+  expanded.suites[0].specs.push(structuredClone(expanded.suites[0].specs[0]));
+  expanded.suites[0].specs[1].title = 'private newly added case title';
+  expanded.stats.expected = 2;
+  const expandedNormalized = normalizePlaywrightReport(expanded, {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 2,
+  });
+  assert.equal(expandedNormalized.status, 'PASS');
+  assert.deepEqual(
+    expandedNormalized.testCases.map(({ id, name }) => ({ id, name })),
+    [
+      {
+        id: 'playwright:tests/e2e/resend-auth.spec.ts:case-1',
+        name: 'Playwright case 1',
+      },
+      {
+        id: 'playwright:tests/e2e/resend-auth.spec.ts:case-2',
+        name: 'Playwright case 2',
+      },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(expandedNormalized), /private newly added case title/);
+
+  const shrunk = normalizePlaywrightReport(passingPlaywrightReport(), {
+    step: playwrightStep,
+    candidate,
+    exitCode: 0,
+    rawDigest: 'c'.repeat(64),
+    minimumTestCount: 2,
+  });
+  assert.equal(shrunk.status, 'FAIL');
+  assert.deepEqual(shrunk.reasonCodes, ['PLAYWRIGHT_MINIMUM_TEST_COUNT_NOT_MET']);
+
+  const invalidDigest = passingPlaywrightReport();
+  assert.throws(
+    () =>
+      normalizePlaywrightReport(invalidDigest, {
+        step: playwrightStep,
+        candidate,
+        exitCode: 0,
+        rawDigest: 'not-a-sha256',
+        minimumTestCount: 1,
+      }),
+    /raw report digest invalid/,
+  );
+
+  assert.throws(
+    () =>
+      normalizePlaywrightReport(passingPlaywrightReport(), {
+        step: playwrightStep,
+        candidate,
+        exitCode: 0,
+        rawDigest: 'c'.repeat(64),
+        minimumTestCount: 0,
+      }),
+    /minimum test count invalid/,
+  );
 });
 
 test('an aggregate passes only with exact candidate-bound results from all required jobs', () => {

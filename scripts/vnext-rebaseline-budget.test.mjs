@@ -116,6 +116,7 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(policyPaths.includes(legacyContractPath), true);
   assert.equal(policyPaths.includes(contractPath), true);
   assert.equal(policyPaths.includes('docs/deployment-topology.md'), true);
+  assert.equal(policyPaths.includes('scripts/playwright-test-truth.mjs'), true);
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
   assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);

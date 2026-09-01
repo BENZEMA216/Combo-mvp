@@ -51,6 +51,7 @@ export {
   repoRoot,
   validateRepositoryManifest,
 } from './test-truth-core.mjs';
+export { normalizePlaywrightReport } from './playwright-test-truth.mjs';
 
 function findFilesWithSuffix(directory, suffix) {
   if (!existsSync(directory)) return [];
