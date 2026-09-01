@@ -33,7 +33,14 @@ const allowedLayers = new Set([
   'BROWSER',
   'DESKTOP_UAT',
 ]);
-const allowedSources = new Set(['PR_SOURCE', 'PR_INFRA', 'MAIN_INTEGRATION', 'MANUAL', 'NONE']);
+const allowedSources = new Set([
+  'PR_SOURCE',
+  'PR_INFRA',
+  'PR_INTEGRATION',
+  'MAIN_INTEGRATION',
+  'MANUAL',
+  'NONE',
+]);
 const allowedPrMainSchedules = new Set(['RUN_REQUIRED', 'RUN_OPTIONAL', 'NOT_SCHEDULED']);
 const allowedManualSchedules = new Set(['AVAILABLE', 'REQUIRED_FOR_ACCEPTANCE', 'NOT_AVAILABLE']);
 const allowedStatuses = new Set(['PASS', 'FAIL', 'NOT_RUN', 'BLOCKED', 'NOT_IMPLEMENTED']);
@@ -150,14 +157,14 @@ const suiteSemanticPolicy = Object.freeze({
       },
     ],
   },
-  'TS-INFRA-REAL-MAIN-002': {
+  'TS-INFRA-REAL-PR-002': {
     layer: 'INFRA_REAL',
     acceptance: { relationship: 'SUPPORTING', journeyIds: [], acceptanceIds: [] },
     proves: [
       {
-        id: 'CLAIM-MAIN-INFRA-INTEGRATIONS',
+        id: 'CLAIM-PR-INFRA-INTEGRATIONS',
         statement:
-          'The remaining selected PostgreSQL and Redis integration contracts passed on the tested main candidate.',
+          'The selected authentication, application-role, terminal-fence, and session-consistency contracts passed against ephemeral PostgreSQL 16 and Redis 7 on the exact pull request candidate.',
       },
     ],
   },
@@ -193,7 +200,7 @@ const suiteExecutionPolicyDigests = Object.freeze({
   'TS-UNIT-011': 'fe4d387d827a61f05e4c06c50ad6b1b1b9d1f3d316adfd762b2747e1305abb75',
   'TS-ADAPTER-LOCAL-001': 'bfbf919bd1ad68ce316fd307f954c6697a078d0d501fec1472c53b63a2779007',
   'TS-INFRA-REAL-PR-001': '5e19a7197120b4f5ee3b11cf911a7ec24dc8a1dc58dbd84942dd0bb6768c423c',
-  'TS-INFRA-REAL-MAIN-002': 'bb533ba0250b38b134aef544dc0dc2fed99416b749620de856cd6a5c5fa70309',
+  'TS-INFRA-REAL-PR-002': '12bdb87d5cc22c2e1471d4303c4dc9f36a936cd262780e1d10069e27cc277879',
   'TS-HOST-REAL-001': '8029a02fdb0c332d941fbc3e4cac23acf303eabe1e9bdf0a70e05be8cff056e3',
   'TS-BROWSER-AUTH-001': 'b53be46c1ccc2e86c2dccf86469ca777c3bf134fe470ca9a7028b5e2dc1f4b9a',
   'TS-DESKTOP-UAT-011': 'd642d6aa24371e31373c3c2d008760712fc78b2925879d19c5f19acf28d2bcd2',
@@ -454,7 +461,10 @@ export function parseManifest(source) {
       );
     }
 
-    const prSource = suite.resultSource === 'PR_SOURCE' || suite.resultSource === 'PR_INFRA';
+    const prSource =
+      suite.resultSource === 'PR_SOURCE' ||
+      suite.resultSource === 'PR_INFRA' ||
+      suite.resultSource === 'PR_INTEGRATION';
     invariant(
       (suite.defaults.pr === 'RUN_REQUIRED') === prSource,
       `${suite.id} PR schedule and result source disagree`,

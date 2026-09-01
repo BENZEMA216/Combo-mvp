@@ -14,6 +14,7 @@ export const policyPaths = Object.freeze([
   '.agents/skills/github-collaboration/references/worktree-lifecycle.md',
   '.github/workflows/pr-ci.yml',
   'AGENTS.md',
+  'docs/deployment-topology.md',
   legacyContractPath,
   'docs/reliable-development-and-preview.md',
   'package.json',

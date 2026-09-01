@@ -31,7 +31,7 @@
 
 | workflow                       | 显示名        | 触发                                  | 作用                                                                                                                                                        |
 | ------------------------------ | ------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/pr-ci.yml`  | PR checks     | pull_request                          | 合并前质量门禁：依赖安装、shared 构建、format、lint、typecheck、无容器快速测试、ShellCheck；不构建或发布镜像                                                |
+| `.github/workflows/pr-ci.yml`  | PR checks     | pull_request                          | 合并前质量门禁：依赖安装、shared 构建、format、lint、typecheck、快速测试、ShellCheck，以及隔离的临时 PostgreSQL 16 / Redis 7 机器证据；不构建或发布镜像     |
 | `.github/workflows/ci.yml`     | Release build | main push、workflow_call              | 全量构建：集成测试、容器契约、三个镜像（api/runtime/web），并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>-<attempt>` 构建清单；也是分支构建的可复用入口 |
 | `.github/workflows/deploy.yml` | Deploy        | Release build 完成、workflow_dispatch | 统一部署三环境，执行晋级链                                                                                                                                  |
 
