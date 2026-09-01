@@ -199,14 +199,14 @@ async function readExactFile(
 interface SelectedKnowledgeAgentPackageInput {
   db: Queryable;
   objectStore: RuntimeObjectStore;
-  capability: CapabilitySummary;
+  capabilityId: string;
   projection: CreatorAgentPackageCapability;
-  publisherUserId: string;
+  publisherUserId?: string;
   expectedBinding?: KnowledgeAgentBinding;
   signal?: AbortSignal;
 }
 
-/** Registry and the selected immutable Release choose bytes; Capability contributes access owner. */
+/** Registry and the selected immutable Release choose bytes; fresh selection also pins gate owner. */
 async function resolveSelectedKnowledgeAgentPackage(
   input: SelectedKnowledgeAgentPackageInput,
 ): Promise<ResolvedKnowledgeAgent> {
@@ -231,8 +231,7 @@ async function resolveSelectedKnowledgeAgentPackage(
   if (
     row.release_id !== input.projection.release.releaseId ||
     row.package_digest !== input.projection.release.packageDigest ||
-    row.owner_user_id !== input.capability.ownerUserId ||
-    row.owner_user_id !== input.publisherUserId ||
+    (input.publisherUserId !== undefined && row.owner_user_id !== input.publisherUserId) ||
     row.release_protocol !== CREATOR_AGENT_PACKAGE_RELEASE_PROTOCOL ||
     row.release_scope !== 'controlled_test' ||
     row.package_protocol !== CREATOR_AGENT_PACKAGE_PROTOCOL
@@ -275,7 +274,7 @@ async function resolveSelectedKnowledgeAgentPackage(
     const binding = KnowledgeAgentBindingSchema.parse({
       productKind: 'knowledge_agent_test',
       capability: {
-        id: input.capability.id,
+        id: input.capabilityId,
         protocol: input.projection.protocol,
       },
       release: input.projection.release,
@@ -319,7 +318,7 @@ export async function resolveKnowledgeAgentPackage(input: {
   return resolveSelectedKnowledgeAgentPackage({
     db: input.db,
     objectStore: input.objectStore,
-    capability: input.capability,
+    capabilityId: input.capability.id,
     projection: input.projection,
     publisherUserId: input.gate.publisherUserId,
     ...(input.signal ? { signal: input.signal } : {}),
@@ -333,7 +332,7 @@ export async function resolveKnowledgeAgentPackage(input: {
 export async function resolveFrozenKnowledgeAgentPackage(input: {
   db: Queryable;
   objectStore: RuntimeObjectStore;
-  capability: CapabilitySummary;
+  capability: Pick<CapabilitySummary, 'id'>;
   binding: KnowledgeAgentBinding;
   signal?: AbortSignal;
 }): Promise<ResolvedKnowledgeAgent> {
@@ -349,9 +348,8 @@ export async function resolveFrozenKnowledgeAgentPackage(input: {
   return resolveSelectedKnowledgeAgentPackage({
     db: input.db,
     objectStore: input.objectStore,
-    capability: input.capability,
+    capabilityId: input.capability.id,
     projection,
-    publisherUserId: input.capability.ownerUserId,
     expectedBinding: parsed.data,
     ...(input.signal ? { signal: input.signal } : {}),
   });

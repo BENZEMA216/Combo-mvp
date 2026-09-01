@@ -1106,27 +1106,6 @@ export class FakeDb implements Queryable, TxPool {
       const c = this.capabilities.get(params[0] as string);
       return c ? { rows: [{ ...c }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
-    if (
-      s.includes(
-        'SELECT id, owner_user_id, name, summary, kind, published FROM capabilities WHERE id = $1',
-      )
-    ) {
-      const c = this.capabilities.get(params[0] as string);
-      if (!c) return { rows: [], rowCount: 0 };
-      return {
-        rows: [
-          {
-            id: c.id,
-            owner_user_id: c.owner_user_id,
-            name: c.name,
-            summary: c.summary,
-            kind: c.kind,
-            published: c.published,
-          },
-        ] as R[],
-        rowCount: 1,
-      };
-    }
     if (s.includes('FROM capabilities WHERE owner_user_id = $1 OR published = true')) {
       const owner = params[0] as string;
       const rows = [...this.capabilities.values()]

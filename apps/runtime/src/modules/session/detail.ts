@@ -1,8 +1,8 @@
 import type { ArtifactView, TerminalTurnView } from '@cb/shared';
 import { getActiveTurn, getLatestTerminalTurnView } from '../agent/turn-repo.js';
 import { listArtifacts, readCapabilityUiArtifact, type StoredArtifact } from '../artifact/repo.js';
-import type { CapabilitySummary } from '../capability/loader.js';
-import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
+import { readCapabilitySummary, type CapabilitySummary } from '../capability/loader.js';
+import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import { getMessages, getSession, type MessageRecord, type SessionRow } from './repo.js';
 import {
   readKnowledgeUsageReceipts,
@@ -11,46 +11,13 @@ import {
 
 export interface SessionDetailDbSnapshot {
   session: SessionRow;
-  capability: CapabilitySummary | null;
+  capability: Pick<CapabilitySummary, 'id' | 'name' | 'summary' | 'kind'> | null;
   messages: MessageRecord[];
   artifacts: ArtifactView[];
   currentUiArtifact: StoredArtifact | null;
   activeTurn: { id: string; createdAt: string } | null;
   latestTerminalTurn: TerminalTurnView | null;
   knowledgeReceipts: KnowledgeReceiptDbRow[];
-}
-
-interface SessionCapabilityDbRow {
-  id: string;
-  owner_user_id: string;
-  name: string;
-  summary: string;
-  kind: string;
-  published: boolean;
-}
-
-async function readSessionCapabilitySummary(
-  db: Queryable,
-  capabilityId: string,
-): Promise<CapabilitySummary | null> {
-  const result = await db.query<SessionCapabilityDbRow>(
-    `SELECT id, owner_user_id, name, summary, kind, published
-       FROM capabilities
-      WHERE id = $1
-      LIMIT 1`,
-    [capabilityId],
-  );
-  const row = result.rows[0];
-  return row
-    ? {
-        id: row.id,
-        name: row.name,
-        summary: row.summary,
-        kind: row.kind,
-        published: row.published,
-        ownerUserId: row.owner_user_id,
-      }
-    : null;
 }
 
 /**
@@ -69,7 +36,7 @@ export async function readSessionDetailDbSnapshot(
       if (!session) return null;
 
       // 单连接顺序读取让每一项都明确属于上面建立的 REPEATABLE READ 快照。
-      const capability = await readSessionCapabilitySummary(tx, session.capabilityId);
+      const capability = await readCapabilitySummary(tx, session.capabilityId);
       const messages = await getMessages(tx, session.id);
       const artifacts = await listArtifacts(tx, session.id, session.mode);
       const currentUiArtifact =
