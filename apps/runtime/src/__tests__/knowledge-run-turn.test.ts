@@ -180,6 +180,24 @@ async function runtime(
     });
   return { db, session, agent, eventLog, runner, start };
 }
+
+function validateGroundedFixture(input: { question: string; answer: string; excerpt: string }) {
+  return validateKnowledgeCandidate({
+    gate: groundedGate(),
+    question: input.question,
+    candidate: { status: 'answered', answer: input.answer, citationChunkIds: [CHUNK] },
+    exposedHits: [
+      {
+        chunkId: CHUNK,
+        sourceId: `source.knowledge.${'6'.repeat(32)}`,
+        displayLabel: '公开说明',
+        contentDigest: `sha256:${'a'.repeat(64)}`,
+        excerpt: input.excerpt,
+      },
+    ],
+  });
+}
+
 describe('knowledge run-turn high-risk boundaries', () => {
   it('searches deterministically, fences citations, and leaves acceptance to the platform', async () => {
     expect(searchKnowledgeBundle(resolved.knowledge, 'Combo', 8).map((hit) => hit.chunkId)).toEqual(
@@ -193,6 +211,9 @@ describe('knowledge run-turn high-risk boundaries', () => {
     expect(
       tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
     ).toContain('每个事实性句子必须逐字复用所引 excerpt 中的完整原句');
+    expect(
+      tools.tools.find((tool) => tool.name === 'submit_knowledge_answer')?.description,
+    ).toContain('不得提交 FAQ 问句或仅回显问题的标题');
     await expect(
       executeTool(tools, 'submit_knowledge_answer', {
         status: 'answered',
@@ -371,6 +392,167 @@ describe('knowledge run-turn high-risk boundaries', () => {
           citationChunkIds: candidate.citationChunkIds,
         },
         exposedHits: searchKnowledgeBundle(resolved.knowledge, candidate.question, 8),
+      }),
+    ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+  });
+
+  it.each([
+    {
+      question: '退款规则是什么？',
+      answer: '这个功能是什么。',
+      excerpt: '这个功能是什么。',
+    },
+    {
+      question: '2026 年价格是多少？',
+      answer: '本系统在 2026 年发布。',
+      excerpt: '本系统在 2026 年发布。',
+    },
+    {
+      question: 'API 的退款规则是什么？',
+      answer: 'API 已于昨天发布。',
+      excerpt: 'API 已于昨天发布。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '系统规则已经发布。',
+      excerpt: '系统规则已经发布。',
+    },
+    {
+      question: 'API 2026 是什么？',
+      answer: 'API 在 2026 年发布。',
+      excerpt: 'API 在 2026 年发布。',
+    },
+  ])(
+    'rejects an exact but irrelevant source sentence: $answer',
+    ({ question, answer, excerpt }) => {
+      expect(validateGroundedFixture({ question, answer, excerpt })).toMatchObject({
+        outcome: 'failed',
+        validationCode: 'rejected',
+      });
+    },
+  );
+
+  it.each([
+    { question: '如何申请退款？', answer: '如何申请退款？' },
+    { question: '免费额度是多少？', answer: '免费额度是多少？' },
+    { question: '退款流程是什么？', answer: '退款流程。' },
+  ])('rejects an extractive FAQ question or heading: $answer', ({ question, answer }) => {
+    expect(validateGroundedFixture({ question, answer, excerpt: answer })).toMatchObject({
+      outcome: 'failed',
+      validationCode: 'rejected',
+    });
+  });
+
+  it.each([
+    {
+      question: '价格是多少？',
+      answer: '价格是 10 0 元。',
+      excerpt: '可选值是 10 和 0。价格是 100 元。',
+    },
+    {
+      question: '错误码是什么？',
+      answer: '错误码是 40 2。',
+      excerpt: '容量是 40，重试两次写作 2。错误码是 402。',
+    },
+    {
+      question: 'API 版本是什么？',
+      answer: 'API 版本是 v 2。',
+      excerpt: '变量 v 和数字 2 都有定义。API 版本是 v2。',
+    },
+  ])('rejects whitespace fusion or cross-sentence literal borrowing: $answer', (fixture) => {
+    expect(validateGroundedFixture(fixture)).toMatchObject({
+      outcome: 'failed',
+      validationCode: 'rejected',
+    });
+  });
+
+  it.each([
+    {
+      question: 'HTTP 402 表示什么？',
+      answer: 'HTTP 402 表示需要充值。',
+      excerpt: 'HTTP 402 表示需要充值。',
+    },
+    {
+      question: 'API v2 使用什么验证策略？',
+      answer: 'API v2 使用新的验证策略。',
+      excerpt: 'API v2 使用新的验证策略。',
+    },
+    {
+      question: '面积是多少？',
+      answer: '面积是 20 m2。',
+      excerpt: '面积是 20 m2。',
+    },
+  ])('accepts an exact declarative sentence with separated literal tokens: $answer', (fixture) => {
+    expect(validateGroundedFixture(fixture)).toMatchObject({
+      outcome: 'answered',
+      validationCode: 'accepted',
+    });
+  });
+
+  it.each([
+    {
+      question: 'HTTP 402 代表什么？',
+      answer: 'HTTP 402 表示需要充值。',
+      excerpt: 'HTTP 402 表示需要充值。',
+    },
+    {
+      question: '退款规则是什么？',
+      answer: '退款可以在七天内申请。',
+      excerpt: '退款可以在七天内申请。',
+    },
+    {
+      question: '费用是多少？',
+      answer: '费用是 10² 元。',
+      excerpt: '费用是 10² 元。',
+    },
+  ])('accepts a relevant reformulation or exact NFC source sentence: $answer', (fixture) => {
+    expect(validateGroundedFixture(fixture)).toMatchObject({
+      outcome: 'answered',
+      validationCode: 'accepted',
+    });
+  });
+
+  it.each([
+    {
+      question: '费用是多少？',
+      answer: '费用是 102 元。',
+      excerpt: '费用是 10² 元。',
+    },
+    {
+      question: '版本是什么？',
+      answer: '版本是 IV。',
+      excerpt: '版本是 Ⅳ。',
+    },
+  ])('rejects an NFKC semantic collision: $answer', (fixture) => {
+    expect(validateGroundedFixture(fixture)).toMatchObject({
+      outcome: 'failed',
+      validationCode: 'rejected',
+    });
+  });
+
+  it('rejects an excerpt boundary fragment but accepts a complete interior source sentence', () => {
+    expect(
+      validateGroundedFixture({
+        question: '退款规则是什么？',
+        answer: '…退款可以在七天内申请。',
+        excerpt: '…退款可以在七天内申请。',
+      }),
+    ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
+    expect(
+      validateGroundedFixture({
+        question: '退款规则是什么？',
+        answer: '退款可以在七天内申请。',
+        excerpt: '…前句残片。退款可以在七天内申请。后句残片…',
+      }),
+    ).toMatchObject({ outcome: 'answered', validationCode: 'accepted' });
+  });
+
+  it('rejects an unrelated exact source sentence appended to a relevant answer', () => {
+    expect(
+      validateGroundedFixture({
+        question: QUESTION,
+        answer: `${GROUNDED_ANSWER}火星天气晴朗。`,
+        excerpt: `${GROUNDED_ANSWER}火星天气晴朗。`,
       }),
     ).toMatchObject({ outcome: 'failed', validationCode: 'rejected' });
   });

@@ -6,14 +6,69 @@ import type {
 const EXCERPT_MAX_CODE_POINTS = 1_200;
 const HAN_PATTERN = /\p{Script=Han}+/gu;
 const LITERAL_PATTERN = /[\p{Script=Latin}\p{N}]+(?:[-._:/+][\p{Script=Latin}\p{N}]+)*/gu;
-const SENTENCE_SEPARATOR_PATTERN = /[。！？!?；;\n]+/gu;
+const SENTENCE_UNIT_PATTERN = /[^。！？!?；;\n]+(?:[。！？!?；;\n]+|$)/gu;
+const SENTENCE_TERMINATOR_PATTERN = /[。！？!?；;\n]+$/u;
+const EDGE_HORIZONTAL_WHITESPACE_PATTERN = /^[\p{Zs}\t\r]+|[\p{Zs}\t\r]+$/gu;
+const INTERROGATIVE_TERMINATOR_PATTERN = /[?？]/u;
+const INTERROGATIVE_PHRASE_PATTERN =
+  /请问|如何|为什么|为何|怎么回事|怎么|怎样|什么|多少|哪些|哪个|哪一个|哪种|哪家|哪里|哪儿|谁|何时|什么时候|是不是|有没有|能不能|可不可以|是否|能否|可否|几(?:个|次|种|天|年|月|元)|吗$|呢$/u;
+const QUESTION_FORM_NOISE_PHRASES = Object.freeze([
+  '什么时候',
+  '为什么',
+  '怎么回事',
+  '可不可以',
+  '是不是',
+  '有没有',
+  '能不能',
+  '是多少',
+  '是什么',
+  '哪一个',
+  '怎么样',
+  '如何',
+  '为何',
+  '怎么',
+  '怎样',
+  '什么',
+  '多少',
+  '哪些',
+  '哪个',
+  '哪种',
+  '哪家',
+  '哪里',
+  '哪儿',
+  '何时',
+  '是否',
+  '能否',
+  '可否',
+  '请问',
+  '意味着',
+  '代表',
+  '表示',
+  '含义',
+  '意思',
+  '谁',
+  '吗',
+  '呢',
+]);
+const GENERIC_HAN_TOPIC_PHRASES = Object.freeze([
+  '规则',
+  '功能',
+  '系统',
+  '内容',
+  '信息',
+  '问题',
+  '答案',
+  '说明',
+  '方法',
+  '方式',
+]);
+const GENERIC_LITERAL_TOPIC_TOKENS = new Set(['api', 'http', 'https']);
+const YEAR_LITERAL_PATTERN = /^(?:19|20)\d{2}$/u;
 
 interface LexicalFeature {
   key: string;
   text: string;
   weight: number;
-  strength: 'weak' | 'strong';
-  literal: boolean;
 }
 
 export interface GroundedKnowledgeSearchHit {
@@ -34,9 +89,9 @@ function setFeature(features: Map<string, LexicalFeature>, feature: LexicalFeatu
 }
 
 /**
- * Chinese words are not whitespace-delimited, so retrieval and validation use overlapping Han
- * bigrams/trigrams. Latin and numeric material remains an exact whole token so dates, amounts,
- * versions, HTTP codes, and identifiers cannot be supported by partial substrings.
+ * Chinese words are not whitespace-delimited, so retrieval uses overlapping Han bigrams/trigrams.
+ * Latin and numeric material remains a whole token for stable search scoring. Billable validation
+ * below deliberately uses a narrower NFC-preserving representation instead of this NFKC index.
  */
 function lexicalFeatures(value: string): Map<string, LexicalFeature> {
   const text = normalized(value);
@@ -49,8 +104,6 @@ function lexicalFeatures(value: string): Map<string, LexicalFeature> {
         key: `han1:${token}`,
         text: token,
         weight: 1,
-        strength: 'weak',
-        literal: false,
       });
       continue;
     }
@@ -61,8 +114,6 @@ function lexicalFeatures(value: string): Map<string, LexicalFeature> {
           key: `han${size}:${token}`,
           text: token,
           weight: size === 3 ? 4 : 1,
-          strength: size === 3 ? 'strong' : 'weak',
-          literal: false,
         });
       }
     }
@@ -73,8 +124,6 @@ function lexicalFeatures(value: string): Map<string, LexicalFeature> {
       key: `literal:${token}`,
       text: token,
       weight: Math.min(16, Math.max(4, Array.from(token).length * 2)),
-      strength: 'strong',
-      literal: true,
     });
   }
   return features;
@@ -163,52 +212,186 @@ export function searchGroundedKnowledgeBundle(
     }));
 }
 
-function hasStrongOverlap(
-  left: ReadonlyMap<string, LexicalFeature>,
-  right: ReadonlyMap<string, LexicalFeature>,
-): boolean {
-  let weakMatches = 0;
-  for (const feature of left.values()) {
-    if (!right.has(feature.key)) continue;
-    if (feature.strength === 'strong') return true;
-    weakMatches += 1;
+interface ExtractiveSentence {
+  canonical: string;
+  body: string;
+  literalTokens: readonly string[];
+}
+
+interface RelevanceAnchor {
+  key: string;
+  kind: 'han' | 'literal';
+  text: string;
+}
+
+function validationText(value: string): string {
+  return value.normalize('NFC');
+}
+
+function literalTokenSequence(value: string): readonly string[] {
+  return Object.freeze(
+    [...validationText(value).matchAll(LITERAL_PATTERN)].map((match) => match[0]),
+  );
+}
+
+function extractiveSentences(value: string): ExtractiveSentence[] {
+  const text = validationText(value);
+  const rawUnits = [...text.matchAll(SENTENCE_UNIT_PATTERN)].map((match) => match[0]);
+  if (rawUnits.join('') !== text) return [];
+  const sentences: ExtractiveSentence[] = [];
+  for (const rawUnit of rawUnits) {
+    const canonical = rawUnit.replace(EDGE_HORIZONTAL_WHITESPACE_PATTERN, '');
+    const terminator = canonical.match(SENTENCE_TERMINATOR_PATTERN)?.[0] ?? '';
+    const body = terminator === '' ? canonical : canonical.slice(0, -terminator.length).trimEnd();
+    if (body === '') return [];
+    sentences.push(
+      Object.freeze({ canonical, body, literalTokens: literalTokenSequence(canonical) }),
+    );
   }
-  return weakMatches >= 2;
+  return sentences;
 }
 
-function extractiveText(value: string): string {
-  return normalized(value).replace(/\s+/gu, '');
+function isInterrogativeSentence(sentence: ExtractiveSentence): boolean {
+  const terminator = sentence.canonical.match(SENTENCE_TERMINATOR_PATTERN)?.[0] ?? '';
+  return (
+    INTERROGATIVE_TERMINATOR_PATTERN.test(terminator) ||
+    INTERROGATIVE_PHRASE_PATTERN.test(sentence.body)
+  );
 }
 
-function extractiveSentences(value: string): string[] {
-  return value
-    .split(SENTENCE_SEPARATOR_PATTERN)
-    .map((sentence) => extractiveText(sentence))
-    .filter(Boolean);
+function questionRelevanceText(value: string, topical: boolean): string {
+  let text = validationText(value).toLocaleLowerCase('und');
+  for (const phrase of QUESTION_FORM_NOISE_PHRASES) text = text.replaceAll(phrase, ' ');
+  if (topical) {
+    for (const phrase of GENERIC_HAN_TOPIC_PHRASES) text = text.replaceAll(phrase, ' ');
+  }
+  return text;
 }
 
-function hitDirectlySupportsSentence(sentence: string, hit: GroundedKnowledgeSearchHit): boolean {
-  const sentenceFeatures = lexicalFeatures(sentence);
-  const evidenceFeatures = lexicalFeatures(hit.excerpt);
+function relevanceAnchors(
+  value: string,
+  mode: 'answer' | 'question' | 'question-topic',
+): Map<string, RelevanceAnchor> {
+  const text =
+    mode === 'answer'
+      ? validationText(value).toLocaleLowerCase('und')
+      : questionRelevanceText(value, mode === 'question-topic');
+  const anchors = new Map<string, RelevanceAnchor>();
+  for (const match of text.matchAll(HAN_PATTERN)) {
+    const points = Array.from(match[0]);
+    for (const size of [2, 3] as const) {
+      for (let index = 0; index + size <= points.length; index += 1) {
+        const token = points.slice(index, index + size).join('');
+        const anchor = { key: `han${size}:${token}`, kind: 'han' as const, text: token };
+        anchors.set(anchor.key, anchor);
+      }
+    }
+  }
+  for (const match of text.matchAll(LITERAL_PATTERN)) {
+    const anchor = {
+      key: `literal:${match[0]}`,
+      kind: 'literal' as const,
+      text: match[0],
+    };
+    anchors.set(anchor.key, anchor);
+  }
+  return anchors;
+}
+
+function anchorMatches(
+  query: ReadonlyMap<string, RelevanceAnchor>,
+  target: ReadonlyMap<string, RelevanceAnchor>,
+): RelevanceAnchor[] {
+  return [...query.values()].filter((anchor) => target.has(anchor.key));
+}
+
+function literalAnchorIsDiscriminating(anchor: RelevanceAnchor): boolean {
+  return (
+    anchor.kind === 'literal' &&
+    !GENERIC_LITERAL_TOPIC_TOKENS.has(anchor.text) &&
+    !YEAR_LITERAL_PATTERN.test(anchor.text)
+  );
+}
+
+function hasTopicalCoverage(
+  queryTopics: ReadonlyMap<string, RelevanceAnchor>,
+  target: ReadonlyMap<string, RelevanceAnchor>,
+): boolean {
+  const matches = anchorMatches(queryTopics, target);
+  if ([...queryTopics.values()].some((anchor) => anchor.kind === 'han')) {
+    return matches.some((anchor) => anchor.kind === 'han');
+  }
+  const literalMatches = matches.filter((anchor) => anchor.kind === 'literal');
+  return literalMatches.length >= 2 && literalMatches.some(literalAnchorIsDiscriminating);
+}
+
+function hasInformationGain(
+  question: ReadonlyMap<string, RelevanceAnchor>,
+  answer: ReadonlyMap<string, RelevanceAnchor>,
+): boolean {
+  return [...answer.keys()].some((key) => !question.has(key));
+}
+
+function hasQuestionCoverage(question: string, sentences: readonly ExtractiveSentence[]): boolean {
+  const queryTopics = relevanceAnchors(question, 'question-topic');
+  if (queryTopics.size === 0) return false;
+  const questionAnchors = relevanceAnchors(question, 'question');
+  const answerAnchors = relevanceAnchors(
+    sentences.map((sentence) => sentence.body).join('\n'),
+    'answer',
+  );
   if (
-    sentenceFeatures.size === 0 ||
-    !extractiveSentences(hit.excerpt).includes(extractiveText(sentence))
+    !hasTopicalCoverage(queryTopics, answerAnchors) ||
+    !hasInformationGain(questionAnchors, answerAnchors)
   ) {
     return false;
   }
-  // Keep the complete-token invariant explicit even though full-sentence equality is stricter.
-  for (const feature of sentenceFeatures.values()) {
-    if (feature.literal && !evidenceFeatures.has(feature.key)) return false;
+
+  // A relevant sentence cannot subsidize an unrelated exact sentence appended to the answer.
+  return sentences.every((sentence) => {
+    const sentenceAnchors = relevanceAnchors(sentence.body, 'answer');
+    return (
+      hasTopicalCoverage(queryTopics, sentenceAnchors) &&
+      hasInformationGain(questionAnchors, sentenceAnchors)
+    );
+  });
+}
+
+function sentenceSupportKey(sentence: ExtractiveSentence): string {
+  return JSON.stringify([sentence.canonical, sentence.literalTokens]);
+}
+
+function citedSentenceSupport(
+  hits: readonly GroundedKnowledgeSearchHit[],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const support = new Map<string, Set<string>>();
+  for (const hit of hits) {
+    const sentences = extractiveSentences(hit.excerpt);
+    for (let index = 0; index < sentences.length; index += 1) {
+      const sentence = sentences[index]!;
+      // Retrieval marks an excerpt cut with an ellipsis. Boundary fragments are not full source
+      // sentences and therefore cannot be used as billable extractive evidence.
+      if (
+        (index === 0 && hit.excerpt.startsWith('…')) ||
+        (index === sentences.length - 1 && hit.excerpt.endsWith('…'))
+      ) {
+        continue;
+      }
+      const key = sentenceSupportKey(sentence);
+      const chunkIds = support.get(key) ?? new Set<string>();
+      chunkIds.add(hit.chunkId);
+      support.set(key, chunkIds);
+    }
   }
-  return hasStrongOverlap(sentenceFeatures, evidenceFeatures);
+  return support;
 }
 
 /**
- * Conservative Test-only extractive guard. Every factual sentence must equal a complete sentence
- * in a cited excerpt (apart from Unicode normalization, whitespace, and terminal punctuation),
- * preserving qualifiers, relations, polarity, and complete Latin/numeric tokens. Passing this
- * guard only proves direct textual support from the immutable Package evidence; it does not prove
- * that the source itself is factually true.
+ * Conservative Test-only extractive guard. Every declarative answer sentence must NFC-match one
+ * complete cited sentence, including its internal whitespace, terminal punctuation, and ordered
+ * Latin/numeric tokens. Deterministic topical-anchor coverage rejects generic question words or a
+ * lone year/API token. Passing only proves direct textual support and query relevance in the fixed
+ * Package; it does not prove that the source itself is factually true.
  */
 export function hasGroundedLexicalSupport(input: {
   question: string;
@@ -227,19 +410,21 @@ export function hasGroundedLexicalSupport(input: {
     citedHits.push(hit);
   }
 
-  const questionFeatures = lexicalFeatures(input.question);
-  const answerFeatures = lexicalFeatures(input.answer);
-  const evidenceFeatures = lexicalFeatures(citedHits.map((hit) => hit.excerpt).join('\n'));
-  if (!hasStrongOverlap(lexicalFeatures(input.question), evidenceFeatures)) return false;
-  if (!hasStrongOverlap(questionFeatures, answerFeatures)) return false;
   const sentences = extractiveSentences(input.answer);
-  if (sentences.length === 0) return false;
+  if (
+    sentences.length === 0 ||
+    sentences.some(isInterrogativeSentence) ||
+    !hasQuestionCoverage(input.question, sentences)
+  ) {
+    return false;
+  }
 
+  const supportBySentence = citedSentenceSupport(citedHits);
   const supportingChunkIds = new Set<string>();
   for (const sentence of sentences) {
-    const supportingHits = citedHits.filter((hit) => hitDirectlySupportsSentence(sentence, hit));
-    if (supportingHits.length === 0) return false;
-    for (const hit of supportingHits) supportingChunkIds.add(hit.chunkId);
+    const chunkIds = supportBySentence.get(sentenceSupportKey(sentence));
+    if (!chunkIds || chunkIds.size === 0) return false;
+    for (const chunkId of chunkIds) supportingChunkIds.add(chunkId);
   }
 
   // Every listed citation must directly support at least one answer sentence; labels never count.
