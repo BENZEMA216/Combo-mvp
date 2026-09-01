@@ -943,6 +943,34 @@ describe('RecoveryRechargeDialog', () => {
     expect(mocks.createRecoveryOrder).not.toHaveBeenCalled();
   });
 
+  it('keeps retrying the exact task without offering another order after credited recovery rejects', async () => {
+    const recovery = pendingRecovery();
+    mocks.recoveryOrder = recoveryOrder(recovery, recovery.activeRechargeIntentId, 'credited');
+    const onCredited = vi.fn().mockRejectedValue(new Error('原任务恢复失败，请重试。'));
+
+    render(
+      <RecoveryRechargeDialog
+        recovery={recovery}
+        onClose={vi.fn()}
+        onCredited={onCredited}
+        onRefreshRecovery={vi.fn(async () => recovery)}
+        onAbandon={vi.fn(async () => undefined)}
+      />,
+    );
+
+    await waitFor(() => expect(onCredited).toHaveBeenCalledOnce());
+    expect(await screen.findByText('原任务恢复失败，请重试。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试原任务' })).toBeEnabled();
+    expect(
+      screen.queryByRole('button', { name: '余额仍不足？新建一笔充值' }),
+    ).not.toBeInTheDocument();
+    expect(mocks.createRecoveryOrder).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试原任务' }));
+    await waitFor(() => expect(onCredited).toHaveBeenCalledTimes(2));
+    expect(mocks.createRecoveryOrder).not.toHaveBeenCalled();
+  });
+
   it('keeps the dialog on server abandon 409 and closes only after a successful abandon', async () => {
     const recovery = pendingRecovery();
     const onClose = vi.fn();

@@ -697,6 +697,7 @@ export function RecoveryRechargeDialog({
             retrying={replacementPending}
             paymentDisabled={frozenAmountCents === null}
             allowInactiveReplacement={false}
+            allowCreditedRechargeAgain={false}
             resumeState={resumeState}
             resumeError={resumeError}
             onAbandon={() => void abandon()}
@@ -723,6 +724,7 @@ function RechargeOrderProgress({
   retrying,
   paymentDisabled = false,
   allowInactiveReplacement = true,
+  allowCreditedRechargeAgain = true,
   resumeState,
   resumeError,
   onAbandon,
@@ -736,6 +738,7 @@ function RechargeOrderProgress({
   retrying: boolean;
   paymentDisabled?: boolean;
   allowInactiveReplacement?: boolean;
+  allowCreditedRechargeAgain?: boolean;
   resumeState: 'idle' | 'resuming' | 'failed' | 'completed';
   resumeError: string | null;
   onAbandon: () => void;
@@ -757,14 +760,16 @@ function RechargeOrderProgress({
             <button type="button" className="rt-recharge-dialog__primary" onClick={onRetryResume}>
               重试原任务
             </button>
-            <button
-              type="button"
-              className="rt-toolbar-pill"
-              disabled={retrying || paymentDisabled}
-              onClick={onRechargeAgain}
-            >
-              余额仍不足？新建一笔充值
-            </button>
+            {allowCreditedRechargeAgain && (
+              <button
+                type="button"
+                className="rt-toolbar-pill"
+                disabled={retrying || paymentDisabled}
+                onClick={onRechargeAgain}
+              >
+                余额仍不足？新建一笔充值
+              </button>
+            )}
           </>
         ) : (
           <span>
