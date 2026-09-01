@@ -22,6 +22,7 @@ export const policyPaths = Object.freeze([
   'scripts/README.md',
   'scripts/acceptance-smoke.sh',
   'scripts/node-test-truth-reporter.mjs',
+  'scripts/playwright-test-truth.mjs',
   'scripts/smoke-status.test.mjs',
   'scripts/smoke.sh',
   'scripts/test-truth.mjs',
