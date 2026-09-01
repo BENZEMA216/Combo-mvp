@@ -171,6 +171,32 @@ export interface AgentUsageReceiptRowF {
   created_at: string;
 }
 
+export interface PendingUsageRecoveryRowF {
+  owner_user_id: string;
+  usage_id: string;
+  session_id: string;
+  capability_id: string;
+  request_text: string | null;
+  request_fingerprint: string;
+  product_kind: 'knowledge_agent_test';
+  capability_protocol: string;
+  release_id: string;
+  package_digest: string;
+  release_scope: 'controlled_test';
+  knowledge_resource_path: string;
+  knowledge_resource_digest: string;
+  billing_policy_version: string;
+  validator_policy_version: string;
+  unit_price_cents: bigint;
+  free_limit_snapshot: number;
+  active_recharge_intent_id: string;
+  recovery_status: 'active' | 'accepted' | 'abandoned';
+  terminal_turn_id: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AgentPackageRowF {
   package_digest: string;
   protocol: 'combo.agent-package/1';
@@ -315,6 +341,7 @@ export class FakeDb implements Queryable, TxPool {
   usageCharges = new Map<string, UsageChargeRowF>();
   walletLedger = new Map<string, WalletLedgerRowF>();
   agentUsageReceipts = new Map<string, AgentUsageReceiptRowF>();
+  pendingUsageRecoveries = new Map<string, PendingUsageRecoveryRowF>();
   agentPackages = new Map<string, AgentPackageRowF>();
   agentPackageReleases = new Map<string, AgentPackageReleaseRowF>();
   /** 事务轨迹（断言 BEGIN/COMMIT/ROLLBACK 收口）。 */
@@ -374,6 +401,42 @@ export class FakeDb implements Queryable, TxPool {
     return row;
   }
 
+  seedPendingUsageRecovery(
+    input: Omit<
+      PendingUsageRecoveryRowF,
+      | 'active_recharge_intent_id'
+      | 'recovery_status'
+      | 'terminal_turn_id'
+      | 'expires_at'
+      | 'created_at'
+      | 'updated_at'
+    > &
+      Partial<
+        Pick<
+          PendingUsageRecoveryRowF,
+          | 'active_recharge_intent_id'
+          | 'recovery_status'
+          | 'terminal_turn_id'
+          | 'expires_at'
+          | 'created_at'
+          | 'updated_at'
+        >
+      >,
+  ): PendingUsageRecoveryRowF {
+    const now = nowIso();
+    const row: PendingUsageRecoveryRowF = {
+      ...input,
+      active_recharge_intent_id: input.active_recharge_intent_id ?? input.usage_id,
+      recovery_status: input.recovery_status ?? 'active',
+      terminal_turn_id: input.terminal_turn_id ?? null,
+      expires_at: input.expires_at ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+      created_at: input.created_at ?? now,
+      updated_at: input.updated_at ?? now,
+    };
+    this.pendingUsageRecoveries.set(`${row.owner_user_id}:${row.usage_id}`, row);
+    return row;
+  }
+
   seedAgentPackageRegistry(input: {
     packageDigest: string;
     releaseId: string;
@@ -423,6 +486,160 @@ export class FakeDb implements Queryable, TxPool {
     // ---------- usage billing ----------
     if (s.startsWith('SELECT pg_advisory_xact_lock')) {
       return { rows: [{}] as R[], rowCount: 1 };
+    }
+    if (s.startsWith('INSERT INTO pending_usage_recoveries')) {
+      const [
+        ownerUserId,
+        usageId,
+        sessionId,
+        capabilityId,
+        requestText,
+        requestFingerprint,
+        capabilityProtocol,
+        releaseId,
+        packageDigest,
+        releaseScope,
+        knowledgeResourcePath,
+        knowledgeResourceDigest,
+        billingPolicyVersion,
+        validatorPolicyVersion,
+        unitPriceRaw,
+        freeLimitSnapshot,
+      ] = params as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        'controlled_test',
+        string,
+        string,
+        string,
+        string,
+        string,
+        number,
+      ];
+      const key = `${ownerUserId}:${usageId}`;
+      const activeForSession = [...this.pendingUsageRecoveries.values()].find(
+        (row) => row.session_id === sessionId && row.recovery_status === 'active',
+      );
+      if (this.pendingUsageRecoveries.has(key) || activeForSession) {
+        return { rows: [], rowCount: 0 };
+      }
+      const now = nowIso();
+      const row: PendingUsageRecoveryRowF = {
+        owner_user_id: ownerUserId,
+        usage_id: usageId,
+        session_id: sessionId,
+        capability_id: capabilityId,
+        request_text: requestText,
+        request_fingerprint: requestFingerprint,
+        product_kind: 'knowledge_agent_test',
+        capability_protocol: capabilityProtocol,
+        release_id: releaseId,
+        package_digest: packageDigest,
+        release_scope: releaseScope,
+        knowledge_resource_path: knowledgeResourcePath,
+        knowledge_resource_digest: knowledgeResourceDigest,
+        billing_policy_version: billingPolicyVersion,
+        validator_policy_version: validatorPolicyVersion,
+        unit_price_cents: BigInt(unitPriceRaw),
+        free_limit_snapshot: freeLimitSnapshot,
+        active_recharge_intent_id: usageId,
+        recovery_status: 'active',
+        terminal_turn_id: null,
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+        created_at: now,
+        updated_at: now,
+      };
+      this.pendingUsageRecoveries.set(key, row);
+      return { rows: [{ ...row, is_unexpired: true }] as R[], rowCount: 1 };
+    }
+    if (
+      s.startsWith(
+        'SELECT owner_user_id, usage_id, session_id, capability_id, request_text, request_fingerprint, product_kind, capability_protocol, release_id,',
+      ) &&
+      s.includes('FROM pending_usage_recoveries')
+    ) {
+      let rows = [...this.pendingUsageRecoveries.values()];
+      if (s.includes('WHERE owner_user_id = $1 AND usage_id = $2')) {
+        rows = rows.filter((row) => row.owner_user_id === params[0] && row.usage_id === params[1]);
+      } else if (s.includes('WHERE owner_user_id = $1 AND session_id = $2')) {
+        rows = rows.filter(
+          (row) =>
+            row.owner_user_id === params[0] &&
+            row.session_id === params[1] &&
+            row.recovery_status === 'active',
+        );
+      } else {
+        rows = rows.filter(
+          (row) =>
+            row.owner_user_id === params[0] &&
+            row.recovery_status === 'active' &&
+            new Date(row.expires_at).getTime() > Date.now() &&
+            (params[1] === null || row.session_id === params[1]),
+        );
+        rows.sort(
+          (left, right) =>
+            right.updated_at.localeCompare(left.updated_at) ||
+            left.usage_id.localeCompare(right.usage_id),
+        );
+        rows = rows.slice(0, 100);
+      }
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          is_unexpired: new Date(row.expires_at).getTime() > Date.now(),
+        })) as R[],
+        rowCount: rows.length,
+      };
+    }
+    if (s.startsWith('SELECT owner_user_id, usage_id, session_id FROM pending_usage_recoveries')) {
+      const rows = [...this.pendingUsageRecoveries.values()]
+        .filter(
+          (row) =>
+            row.recovery_status === 'active' && new Date(row.expires_at).getTime() <= Date.now(),
+        )
+        .sort(
+          (left, right) =>
+            left.expires_at.localeCompare(right.expires_at) ||
+            left.owner_user_id.localeCompare(right.owner_user_id) ||
+            left.usage_id.localeCompare(right.usage_id),
+        )
+        .slice(0, Number(params[0]));
+      return {
+        rows: rows.map((row) => ({
+          owner_user_id: row.owner_user_id,
+          usage_id: row.usage_id,
+          session_id: row.session_id,
+        })) as R[],
+        rowCount: rows.length,
+      };
+    }
+    if (s.startsWith('SELECT EXISTS ( SELECT 1 FROM usage_charges')) {
+      const exists = [...this.usageCharges.values()].some(
+        (row) => row.owner_user_id === params[0] && row.usage_id === params[1],
+      );
+      return { rows: [{ exists }] as R[], rowCount: 1 };
+    }
+    if (s.startsWith('UPDATE pending_usage_recoveries')) {
+      const key = `${String(params[0])}:${String(params[1])}`;
+      const row = this.pendingUsageRecoveries.get(key);
+      if (!row || row.recovery_status !== 'active') return { rows: [], rowCount: 0 };
+      row.request_text = null;
+      if (s.includes('recovery_status = $3')) {
+        row.recovery_status = params[2] as 'accepted' | 'abandoned';
+        row.terminal_turn_id = String(params[3]);
+      } else {
+        row.recovery_status = 'abandoned';
+        row.terminal_turn_id = params[2] === null ? null : String(params[2]);
+      }
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO billing_accounts')) {
       const ownerUserId = params[0] as string;
@@ -559,6 +776,28 @@ export class FakeDb implements Queryable, TxPool {
               candidate.owner_user_id === params[0] && candidate.usage_id === params[1],
           );
       return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith(
+        'SELECT owner_user_id, usage_id, session_id FROM usage_charges WHERE turn_id = $1',
+      )
+    ) {
+      const row = [...this.usageCharges.values()].find(
+        (candidate) =>
+          candidate.turn_id === params[0] && candidate.product_kind === 'knowledge_agent_test',
+      );
+      return row
+        ? {
+            rows: [
+              {
+                owner_user_id: row.owner_user_id,
+                usage_id: row.usage_id,
+                session_id: row.session_id,
+              },
+            ] as R[],
+            rowCount: 1,
+          }
+        : { rows: [], rowCount: 0 };
     }
     if (s.startsWith('SELECT product_kind FROM usage_charges WHERE turn_id = $1')) {
       const row = [...this.usageCharges.values()].find(

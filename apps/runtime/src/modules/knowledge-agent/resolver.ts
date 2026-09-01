@@ -51,6 +51,12 @@ import {
   type KnowledgeExecutionOutcome,
   type UsageChargeRecord,
 } from '../billing/repo.js';
+import { lockUsageId } from '../billing/repo.js';
+import {
+  closePendingUsageRecoveryForTerminal,
+  findPendingUsageRecovery,
+  readUsageIdentityByTurn,
+} from '../billing/pending-recovery.js';
 import {
   finishTurnCas,
   lockRunningTurn,
@@ -759,7 +765,8 @@ async function insertReceipt(
 
 /**
  * Commits the only authoritative knowledge terminal. The transaction follows the database lock
- * order Session -> Turn -> usage charge -> response Message and appends Redis only after return.
+ * order Session -> owner/usage advisory -> pending recovery -> Turn -> usage charge -> response
+ * Message and appends Redis only after return.
  */
 export async function finishKnowledgeTurn(
   db: RuntimeDb,
@@ -774,6 +781,17 @@ export async function finishKnowledgeTurn(
     db,
     async (transaction) => {
       await lockTurnSession(transaction, input.sessionId);
+      const usageIdentity = await readUsageIdentityByTurn(transaction, input.turnId);
+      if (!usageIdentity || usageIdentity.sessionId !== input.sessionId) {
+        throw new Error('knowledge usage identity is invalid');
+      }
+      await lockUsageId(transaction, usageIdentity.ownerUserId, usageIdentity.usageId);
+      await findPendingUsageRecovery(
+        transaction,
+        usageIdentity.ownerUserId,
+        usageIdentity.usageId,
+        true,
+      );
       if (!(await lockRunningTurn(transaction, input.turnId, input.sessionId))) {
         return { won: false };
       }
@@ -820,6 +838,12 @@ export async function finishKnowledgeTurn(
         await releaseUsageCharge(transaction, charge, input.outcome);
       }
       const receiptId = await insertReceipt(transaction, resolvedInput, charge, response);
+      await closePendingUsageRecoveryForTerminal(transaction, {
+        ownerUserId: usageIdentity.ownerUserId,
+        usageId: usageIdentity.usageId,
+        turnId: input.turnId,
+        outcome: input.outcome,
+      });
       return { won: true, turnStatus: status, response, receiptId };
     },
     options.transaction,

@@ -299,7 +299,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
   function knowledgeRunner(
     chain: SeededKnowledgeChain,
     script: Parameters<typeof makeFakeAgentFactory>[0],
-    policy: { freeUses: number; unitPriceCents: number },
+    policy: { freeUses: number; unitPriceCents: number; version?: string },
+    usageId = randomUUID(),
   ) {
     const agent = makeFakeAgentFactory(script);
     const runner = createTurnRunner({
@@ -314,7 +315,6 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
       runtimeSourceSha: RUNTIME_SOURCE_SHA,
       log: silentLog,
     });
-    const usageId = randomUUID();
     const start = (id = usageId) =>
       runner.startTurn({
         session: chain.session,
@@ -945,26 +945,38 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
 
   it('resumes the original knowledge usageId after real PostgreSQL 402 and settles once', async () => {
     const chain = await seedKnowledgeChain();
-    const context = knowledgeRunner(
-      chain,
-      {
-        invokeNamedTools: [
-          { name: 'knowledge_search', params: { query: '免费额度' } },
-          {
-            name: 'submit_knowledge_answer',
-            params: {
-              status: 'answered',
-              answer: chain.answer,
-              citationChunkIds: [chain.chunkId],
-            },
+    const script = {
+      invokeNamedTools: [
+        { name: 'knowledge_search', params: { query: '免费额度' } },
+        {
+          name: 'submit_knowledge_answer',
+          params: {
+            status: 'answered' as const,
+            answer: chain.answer,
+            citationChunkIds: [chain.chunkId],
           },
-        ],
-      },
-      { freeUses: 0, unitPriceCents: 101 },
+        },
+      ],
+    };
+    const blockerSession = await createSession(runtimeDb, {
+      capabilityId: chain.capabilityId,
+      ownerUserId: chain.consumerUserId,
+    });
+    const blocker = await reserveFreeUsage(
+      { ...chain, session: blockerSession },
+      '占用冻结免费额度',
     );
+    const context = knowledgeRunner(chain, script, {
+      freeUses: 1,
+      unitPriceCents: 101,
+      version: 'runtime-frozen-v1',
+    });
+    let retryContext: ReturnType<typeof knowledgeRunner> | undefined;
     try {
       await expect(context.start()).resolves.toEqual({
         status: 'recharge_required',
+        recoveryUsageId: context.usageId,
+        rechargeIntentId: context.usageId,
         balanceCents: 100n,
         requiredCents: 101n,
       });
@@ -989,6 +1001,44 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         reserved_cents: '0',
       });
       expect(context.agent.calls).toHaveLength(0);
+      const pending = await runtimeDb.query<{
+        request_text: string | null;
+        request_fingerprint: string;
+        active_recharge_intent_id: string;
+        recovery_status: string;
+        billing_policy_version: string;
+        validator_policy_version: string;
+        unit_price_cents: string;
+        free_limit_snapshot: number;
+      }>(
+        `SELECT request_text, request_fingerprint, active_recharge_intent_id,
+                recovery_status, billing_policy_version, validator_policy_version,
+                unit_price_cents::text, free_limit_snapshot
+           FROM pending_usage_recoveries
+          WHERE owner_user_id = $1 AND usage_id = $2`,
+        [chain.consumerUserId, context.usageId],
+      );
+      expect(pending.rows).toEqual([
+        {
+          request_text: chain.question,
+          request_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          active_recharge_intent_id: context.usageId,
+          recovery_status: 'active',
+          billing_policy_version: 'runtime-frozen-v1',
+          validator_policy_version: chain.gate.validatorPolicyVersion,
+          unit_price_cents: '101',
+          free_limit_snapshot: 1,
+        },
+      ]);
+
+      await withTransaction(runtimeDb, async (transaction) => {
+        await lockTurnSession(transaction, blockerSession.id);
+        expect(await lockRunningTurn(transaction, blocker.turnId, blockerSession.id)).toBe(true);
+        expect(await finishTurnCas(transaction, { id: blocker.turnId, status: 'failed' })).toBe(
+          true,
+        );
+        await blocker.billing.releaseUsage(transaction, blocker.turnId);
+      });
 
       const suffix = randomUUID().replaceAll('-', '');
       await withTransaction(db, async (transaction) => {
@@ -1026,7 +1076,19 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         );
       });
 
-      const opened = await Promise.all([context.start(), context.start()]);
+      retryContext = knowledgeRunner(
+        {
+          ...chain,
+          gate: {
+            ...chain.gate,
+            validatorPolicyVersion: 'current-validator-v9',
+          } as unknown as KnowledgeAgentTestGate,
+        },
+        script,
+        { freeUses: 99, unitPriceCents: 999, version: 'runtime-current-v9' },
+        context.usageId,
+      );
+      const opened = await Promise.all([retryContext.start(), retryContext.start()]);
       expect(opened.map((result) => result.status).sort()).toEqual(['replayed', 'started']);
       await waitFor(async () => {
         const receipt = await runtimeDb.query<{ count: string }>(
@@ -1037,7 +1099,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         );
         return receipt.rows[0]?.count === '1';
       }, 5_000);
-      const replay = await context.start();
+      const replay = await retryContext.start();
       expect(replay.status).toBe('replayed');
       const accepted = opened.find((result) => result.status === 'started');
       if (accepted?.status === 'started' && replay.status === 'replayed') {
@@ -1058,7 +1120,11 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
              WHERE owner_user_id = $2 AND entry_type = 'usage_debit') AS debit_total,
            max(t.status::text) AS turn_status,
            max(uc.status::text) AS charge_status,
+           max(uc.charge_source::text) AS charge_source,
            max(uc.execution_outcome::text) AS execution_outcome,
+           max(uc.billing_policy_version) AS billing_policy_version,
+           max(uc.validator_policy_version) AS validator_policy_version,
+           max(uc.unit_price_cents)::text AS unit_price_cents,
            max(r.validation_code) AS validation_code,
            max(uc.settled_cents)::text AS settled_cents,
            max(ba.balance_cents)::text AS balance_cents,
@@ -1084,7 +1150,11 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         debit_total: '-101',
         turn_status: 'completed',
         charge_status: 'completed',
+        charge_source: 'wallet',
         execution_outcome: 'answered',
+        billing_policy_version: 'runtime-frozen-v1',
+        validator_policy_version: chain.gate.validatorPolicyVersion,
+        unit_price_cents: '101',
         validation_code: 'accepted',
         settled_cents: '101',
         balance_cents: '0',
@@ -1093,8 +1163,27 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
         charge_package_digest: chain.binding.release.packageDigest,
         receipt_package_digest: chain.binding.release.packageDigest,
       });
-      expect(context.agent.calls).toHaveLength(1);
+      expect(context.agent.calls).toHaveLength(0);
+      expect(retryContext.agent.calls).toHaveLength(1);
+      const recoveryTerminal = await runtimeDb.query<{
+        request_text: string | null;
+        recovery_status: string;
+        terminal_turn_id: string | null;
+      }>(
+        `SELECT request_text, recovery_status, terminal_turn_id
+           FROM pending_usage_recoveries
+          WHERE owner_user_id = $1 AND usage_id = $2`,
+        [chain.consumerUserId, context.usageId],
+      );
+      expect(recoveryTerminal.rows).toEqual([
+        {
+          request_text: null,
+          recovery_status: 'accepted',
+          terminal_turn_id: expect.any(String),
+        },
+      ]);
     } finally {
+      await retryContext?.runner.dispose(AbortSignal.timeout(5_000));
       await context.runner.dispose(AbortSignal.timeout(5_000));
     }
   });

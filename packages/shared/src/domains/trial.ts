@@ -9,6 +9,7 @@ import {
   KnowledgeTurnResultSchema,
   knowledgeBindingsEqual,
 } from './knowledge.js';
+import { PendingUsageRequestTextSchema } from './pending-recovery.js';
 
 export const SessionStatusSchema = z.enum(['active', 'closed']);
 export type SessionStatus = z.infer<typeof SessionStatusSchema>;
@@ -51,7 +52,7 @@ export type UsageId = z.infer<typeof UsageIdSchema>;
 
 export const SendMessageBodySchema = z
   .object({
-    text: z.string().min(1).max(20_000),
+    text: PendingUsageRequestTextSchema,
     usageId: UsageIdSchema,
   })
   .strict();
@@ -63,7 +64,9 @@ const CentsStringSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 export const RechargeRequiredBodySchema = z
   .object({
     rechargeRequired: z.literal(true),
-    /** 与被阻止的 usageId 相同，供充值后继续原任务。 */
+    /** 新 Runtime 返回原待恢复用量；缺失只表示滚动期旧 Runtime。 */
+    recoveryUsageId: UsageIdSchema.optional(),
+    /** 当前有效充值意图；替换失败订单后可能不同于原 recoveryUsageId。 */
     rechargeIntentId: UsageIdSchema,
     balanceCents: CentsStringSchema,
     requiredCents: CentsStringSchema,

@@ -30,7 +30,17 @@ import {
   type UsageBillingPolicy,
   type UsageRequest,
 } from '../billing/service.js';
-import { findUsageCharge, readUsageChargeProductKindByTurn } from '../billing/repo.js';
+import { findUsageCharge, lockUsageId, readUsageChargeProductKindByTurn } from '../billing/repo.js';
+import {
+  PendingUsageRecoveryConflictError,
+  assertPendingUsageRecoveryBindingMatches,
+  assertPendingUsageRecoveryMatches,
+  findPendingUsageRecovery,
+  insertOrFindPendingUsageRecovery,
+  sweepExpiredPendingUsageRecoveries,
+  type PendingUsageRecoveryExpected,
+  type PendingUsageRecoveryRecord,
+} from '../billing/pending-recovery.js';
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
 import {
   createKnowledgeToolSession,
@@ -99,6 +109,7 @@ const TURN_OWNERSHIP_RETRY_MAX_DELAY_MS = 5_000;
 export type TurnAdmissionStage =
   | 'transaction_setup'
   | 'session_lock'
+  | 'pending_recovery_lock'
   | 'usage_prepare'
   | 'usage_replay_lookup'
   | 'running_check'
@@ -164,7 +175,13 @@ export interface TurnRunnerDeps {
 }
 export type StartTurnResult =
   | { status: 'started' | 'replayed'; userMessage: MessageRecord }
-  | { status: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+  | {
+      status: 'recharge_required';
+      recoveryUsageId?: string;
+      rechargeIntentId?: string;
+      balanceCents: bigint;
+      requiredCents: bigint;
+    };
 export interface TurnRunner {
   startTurn(input: {
     session: SessionRow;
@@ -601,6 +618,11 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         await billing.reconcileTerminalReservations(deps.db);
       } catch (err) {
         deps.log.error({ err }, 'billing reservation reconciliation failed');
+      }
+      try {
+        await sweepExpiredPendingUsageRecoveries(deps.db);
+      } catch (err) {
+        deps.log.error({ err }, 'pending usage recovery sweep failed');
       }
     })().finally(() => {
       if (sweepInFlight === run) sweepInFlight = undefined;
@@ -1342,7 +1364,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       type OpenTurnOutcome =
         | { kind: 'started'; userMessage: MessageRecord }
         | { kind: 'replayed'; userMessage: MessageRecord }
-        | { kind: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+        | {
+            kind: 'recharge_required';
+            recoveryUsageId?: string;
+            rechargeIntentId?: string;
+            balanceCents: bigint;
+            requiredCents: bigint;
+          };
       let outcome: OpenTurnOutcome | undefined;
       let repairedTerminal: PublishedStreamEvent | undefined;
       let admissionStage: TurnAdmissionStage = 'transaction_setup';
@@ -1353,12 +1381,70 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         | { kind: 'committed'; outcome: Extract<OpenTurnOutcome, { kind: 'started' }> }
         | { kind: 'absent' }
         | { kind: 'unknown' };
+      const usageRequestForRecovery = (recovery: PendingUsageRecoveryRecord): UsageRequest => {
+        if (!input.knowledge) {
+          throw new PendingUsageRecoveryConflictError();
+        }
+        return {
+          ...usageRequest,
+          knowledge: {
+            ...usageRequest.knowledge!,
+            validatorPolicyVersion: recovery.validatorPolicyVersion,
+          },
+          recovery: {
+            billingPolicyVersion: recovery.billingPolicyVersion,
+            validatorPolicyVersion: recovery.validatorPolicyVersion,
+            unitPriceCents: recovery.unitPriceCents,
+            freeLimitSnapshot: recovery.freeLimitSnapshot,
+          },
+        };
+      };
+      const expectedRecovery = (
+        freeLimitSnapshot: number,
+        request: UsageRequest = usageRequest,
+      ): PendingUsageRecoveryExpected => {
+        if (!input.knowledge || !request.knowledge) {
+          throw new PendingUsageRecoveryConflictError();
+        }
+        return {
+          ownerUserId: usageRequest.ownerUserId,
+          usageId: usageRequest.usageId,
+          sessionId: usageRequest.sessionId,
+          capabilityId: usageRequest.capabilityId,
+          requestText: usageRequest.text,
+          requestFingerprint: usageRequestFingerprint(request),
+          binding: input.knowledge.resolved.binding,
+          billingPolicyVersion: request.recovery?.billingPolicyVersion ?? billing.policy.version,
+          validatorPolicyVersion: request.knowledge.validatorPolicyVersion,
+          unitPriceCents: request.recovery?.unitPriceCents ?? BigInt(billing.policy.unitPriceCents),
+          freeLimitSnapshot: request.recovery?.freeLimitSnapshot ?? freeLimitSnapshot,
+        };
+      };
       const confirmCommittedStart = async (signal: AbortSignal): Promise<CommitConfirmation> => {
         const confirmed = await withTransaction(
           deps.db,
           async (tx) => {
             const lockedSession = await lockActiveSession(tx, sessionId, input.session.ownerUserId);
             if (!lockedSession) return null;
+            await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+            const pending = input.knowledge
+              ? await findPendingUsageRecovery(
+                  tx,
+                  usageRequest.ownerUserId,
+                  usageRequest.usageId,
+                  true,
+                )
+              : null;
+            const confirmedUsageRequest = pending ? usageRequestForRecovery(pending) : usageRequest;
+            if (pending) {
+              assertPendingUsageRecoveryBindingMatches(
+                pending,
+                expectedRecovery(pending.freeLimitSnapshot, confirmedUsageRequest),
+              );
+              if (pending.recoveryStatus !== 'active') {
+                throw new PendingUsageRecoveryConflictError();
+              }
+            }
             const charge = await findUsageCharge(
               tx,
               usageRequest.ownerUserId,
@@ -1369,7 +1455,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               charge.turnId !== runId ||
               charge.sessionId !== sessionId ||
               charge.status !== 'reserved' ||
-              charge.requestFingerprint !== usageRequestFingerprint(usageRequest) ||
+              charge.requestFingerprint !== usageRequestFingerprint(confirmedUsageRequest) ||
               (await getRunningTurnId(tx, sessionId)) !== runId
             ) {
               return null;
@@ -1473,8 +1559,33 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               }
               // usageId 锁跨 Session 生效；完全相同的重试优先于 SESSION_BUSY，
               // 因而原 Turn 仍运行时也能稳定返回原 user Message。
+              let lockedRecovery: PendingUsageRecoveryRecord | null = null;
+              let billableUsageRequest = usageRequest;
+              if (input.knowledge) {
+                admissionStage = 'pending_recovery_lock';
+                await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+                lockedRecovery = await findPendingUsageRecovery(
+                  tx,
+                  usageRequest.ownerUserId,
+                  usageRequest.usageId,
+                  true,
+                );
+                if (lockedRecovery) {
+                  billableUsageRequest = usageRequestForRecovery(lockedRecovery);
+                  assertPendingUsageRecoveryBindingMatches(
+                    lockedRecovery,
+                    expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
+                  );
+                  if (lockedRecovery.recoveryStatus === 'active' && !lockedRecovery.isUnexpired) {
+                    assertPendingUsageRecoveryMatches(
+                      lockedRecovery,
+                      expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
+                    );
+                  }
+                }
+              }
               admissionStage = 'usage_prepare';
-              const preparation = await billing.prepareUsage(tx, usageRequest);
+              const preparation = await billing.prepareUsage(tx, billableUsageRequest);
               if (preparation.kind === 'replay') {
                 admissionStage = 'usage_replay_lookup';
                 const messages = await getMessages(tx, sessionId);
@@ -1509,18 +1620,48 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 );
               }
               if (preparation.kind === 'insufficient') {
+                if (!input.knowledge) {
+                  admissionStage = 'commit';
+                  return {
+                    kind: 'recharge_required' as const,
+                    balanceCents: preparation.balanceCents,
+                    requiredCents: preparation.requiredCents,
+                  };
+                }
+                const authoritative = lockedRecovery
+                  ? (() => {
+                      assertPendingUsageRecoveryMatches(
+                        lockedRecovery,
+                        expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
+                      );
+                      return lockedRecovery;
+                    })()
+                  : (
+                      await insertOrFindPendingUsageRecovery(
+                        tx,
+                        expectedRecovery(preparation.freeLimitSnapshot),
+                      )
+                    ).recovery;
                 admissionStage = 'commit';
                 return {
                   kind: 'recharge_required' as const,
+                  recoveryUsageId: authoritative.usageId,
+                  rechargeIntentId: authoritative.activeRechargeIntentId,
                   balanceCents: preparation.balanceCents,
                   requiredCents: preparation.requiredCents,
                 };
+              }
+              if (lockedRecovery) {
+                assertPendingUsageRecoveryMatches(
+                  lockedRecovery,
+                  expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
+                );
               }
               admissionStage = 'turn_insert';
               await createTurn(tx, { id: runId, sessionId });
               admissionStage = 'usage_reservation';
               await billing.reservePreparedUsage(tx, {
-                ...usageRequest,
+                ...billableUsageRequest,
                 turnId: runId,
                 preparation,
               });
@@ -1633,6 +1774,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         if (outcome.kind === 'recharge_required') {
           return {
             status: 'recharge_required',
+            ...(outcome.recoveryUsageId ? { recoveryUsageId: outcome.recoveryUsageId } : {}),
+            ...(outcome.rechargeIntentId ? { rechargeIntentId: outcome.rechargeIntentId } : {}),
             balanceCents: outcome.balanceCents,
             requiredCents: outcome.requiredCents,
           };

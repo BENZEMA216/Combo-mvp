@@ -37,12 +37,23 @@ export interface UsageRequest {
     binding: KnowledgeAgentBinding;
     validatorPolicyVersion: string;
   };
+  recovery?: {
+    billingPolicyVersion: string;
+    validatorPolicyVersion: string;
+    unitPriceCents: bigint;
+    freeLimitSnapshot: number;
+  };
 }
 
 export type UsagePreparation =
   | { kind: 'new'; source: UsageChargeSource; balanceCents: bigint; freeLimitSnapshot: number }
   | { kind: 'replay'; turnId: string }
-  | { kind: 'insufficient'; balanceCents: bigint; requiredCents: bigint };
+  | {
+      kind: 'insufficient';
+      balanceCents: bigint;
+      requiredCents: bigint;
+      freeLimitSnapshot: number;
+    };
 
 export class UsageRequestConflictError extends Error {
   constructor() {
@@ -52,6 +63,7 @@ export class UsageRequestConflictError extends Error {
 }
 
 export interface UsageBillingService {
+  readonly policy: Readonly<Required<UsageBillingPolicy>>;
   prepareUsage(db: Queryable, input: UsageRequest): Promise<UsagePreparation>;
   reservePreparedUsage(
     db: Queryable,
@@ -117,6 +129,7 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
   const requiredCents = BigInt(policy.unitPriceCents);
 
   return {
+    policy,
     async prepareUsage(db, input) {
       await lockUsageId(db, input.ownerUserId, input.usageId);
       const fingerprint = usageRequestFingerprint(input);
@@ -134,6 +147,27 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
       }
 
       const account = await ensureAndLockBillingAccount(db, input.ownerUserId);
+      if (input.recovery) {
+        if (
+          !input.knowledge ||
+          input.knowledge.validatorPolicyVersion !== input.recovery.validatorPolicyVersion
+        ) {
+          throw new UsageRequestConflictError();
+        }
+        return account.balanceCents < input.recovery.unitPriceCents
+          ? {
+              kind: 'insufficient',
+              balanceCents: account.balanceCents,
+              requiredCents: input.recovery.unitPriceCents,
+              freeLimitSnapshot: input.recovery.freeLimitSnapshot,
+            }
+          : {
+              kind: 'new',
+              source: 'wallet',
+              balanceCents: account.balanceCents,
+              freeLimitSnapshot: input.recovery.freeLimitSnapshot,
+            };
+      }
       if (input.ownerUserId === input.capabilityOwnerUserId) {
         return {
           kind: 'new',
@@ -162,6 +196,7 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
           kind: 'insufficient',
           balanceCents: account.balanceCents,
           requiredCents,
+          freeLimitSnapshot: allowance.freeLimitSnapshot,
         };
       }
       return {
@@ -173,7 +208,8 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
     },
 
     async reservePreparedUsage(db, input) {
-      const reservedCents = input.preparation.source === 'wallet' ? requiredCents : 0n;
+      const unitPriceCents = input.recovery?.unitPriceCents ?? requiredCents;
+      const reservedCents = input.preparation.source === 'wallet' ? unitPriceCents : 0n;
       await insertReservedUsageCharge(db, {
         ownerUserId: input.ownerUserId,
         usageId: input.usageId,
@@ -182,15 +218,16 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
         turnId: input.turnId,
         requestFingerprint: usageRequestFingerprint(input),
         chargeSource: input.preparation.source,
-        unitPriceCents: requiredCents,
+        unitPriceCents,
         freeLimitSnapshot: input.preparation.freeLimitSnapshot,
         reservedCents,
         ...(input.knowledge
           ? {
               knowledge: {
                 binding: input.knowledge.binding,
-                billingPolicyVersion: policy.version,
-                validatorPolicyVersion: input.knowledge.validatorPolicyVersion,
+                billingPolicyVersion: input.recovery?.billingPolicyVersion ?? policy.version,
+                validatorPolicyVersion:
+                  input.recovery?.validatorPolicyVersion ?? input.knowledge.validatorPolicyVersion,
               },
             }
           : {}),

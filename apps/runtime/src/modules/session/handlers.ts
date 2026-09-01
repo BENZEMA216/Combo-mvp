@@ -27,6 +27,10 @@ import { loadCapability, readAccessibleCapabilitySummary } from '../capability/l
 import { sendLoadFailure } from '../capability/handlers.js';
 import { SessionInactiveError, TurnAdmissionUnavailableError } from '../agent/run-turn.js';
 import { UsageRequestConflictError } from '../billing/service.js';
+import {
+  PendingUsageRecoveryConflictError,
+  PendingUsageRecoveryExpiredError,
+} from '../billing/pending-recovery.js';
 import { adoptExistingConsumeUiArtifact, seedCapabilityUiArtifact } from '../artifact/repo.js';
 import {
   archiveSession,
@@ -582,7 +586,11 @@ export function sendMessageHandler(): RouteHandlerMethod {
           userMessage: '这条会话仍在生成，请停止或等待完成后再发送。',
         });
       }
-      if (err instanceof UsageRequestConflictError) {
+      if (
+        err instanceof UsageRequestConflictError ||
+        err instanceof PendingUsageRecoveryConflictError ||
+        err instanceof PendingUsageRecoveryExpiredError
+      ) {
         return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
       }
       if (err instanceof TurnAdmissionUnavailableError) {
@@ -603,7 +611,8 @@ export function sendMessageHandler(): RouteHandlerMethod {
     if (result.status === 'recharge_required') {
       const body: RechargeRequiredBody = {
         rechargeRequired: true,
-        rechargeIntentId: parsed.data.usageId,
+        ...(knowledge && result.recoveryUsageId ? { recoveryUsageId: result.recoveryUsageId } : {}),
+        rechargeIntentId: result.rechargeIntentId ?? parsed.data.usageId,
         balanceCents: result.balanceCents.toString(),
         requiredCents: result.requiredCents.toString(),
       };

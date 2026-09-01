@@ -33,6 +33,12 @@ import {
 } from '../modules/session/handlers.js';
 import { CAPABILITY_BUCKET } from '../modules/capability/loader.js';
 import { artifactContentHandler } from '../modules/artifact/handlers.js';
+import {
+  abandonPendingUsageRecoveryHandler,
+  getPendingUsageRecoveryHandler,
+  listPendingUsageRecoveriesHandler,
+} from '../modules/billing/pending-recovery-handlers.js';
+import { sweepExpiredPendingUsageRecoveries } from '../modules/billing/pending-recovery.js';
 import { createArtifactTool } from '../modules/artifact/tool.js';
 import {
   ARTIFACT_BUCKET,
@@ -106,8 +112,8 @@ async function createDirectArtifactTool(input: {
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 11 endpoints (capability 1 + session 9 + artifact 1)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(11);
+  it('registers exactly 14 endpoints (capability 1 + session 9 + artifact 1 + recovery 3)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(14);
   });
 
   it('no duplicate (method,url) pairs', () => {
@@ -150,6 +156,9 @@ function makeReply(): FastifyReply {
       return this;
     },
     type() {
+      return this;
+    },
+    header() {
       return this;
     },
   };
@@ -1656,13 +1665,218 @@ describe('knowledge Agent handler closed loop', () => {
       statusCode: 402,
       body: {
         rechargeRequired: true,
+        recoveryUsageId: rechargeUsageId,
         rechargeIntentId: rechargeUsageId,
         balanceCents: '0',
         requiredCents: '1',
       },
     });
-    expect(agent.calls).toHaveLength(3);
-    expect(db.agentUsageReceipts.size).toBe(3);
+    const pending = db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`);
+    expect(pending).toMatchObject({
+      owner_user_id: consumer,
+      usage_id: rechargeUsageId,
+      session_id: sessionId,
+      capability_id: capabilityId,
+      request_text: question,
+      request_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      package_digest: packageDigest,
+      billing_policy_version: 'runtime-usage-v1',
+      validator_policy_version: gate.validatorPolicyVersion,
+      unit_price_cents: 1n,
+      free_limit_snapshot: 3,
+      active_recharge_intent_id: rechargeUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+    });
+    expect(db.turns.size).toBe(3);
+    expect(db.usageCharges.size).toBe(3);
+
+    const differentUsageId = '00000000-0000-4000-8000-000000000108';
+    const reused = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: '不能覆盖的另一条请求', usageId: differentUsageId },
+      }),
+    );
+    expect(reused).toMatchObject({
+      statusCode: 402,
+      body: {
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+      },
+    });
+    expect(db.pendingUsageRecoveries.size).toBe(1);
+
+    const listed = await call(
+      listPendingUsageRecoveriesHandler(),
+      makeReq({ db, objectStore: store, env, turns, userId: consumer }),
+    );
+    expect(listed).toMatchObject({
+      statusCode: 200,
+      body: {
+        data: {
+          recoveries: [
+            {
+              usageId: rechargeUsageId,
+              sessionId,
+              requestText: question,
+              activeRechargeIntentId: rechargeUsageId,
+            },
+          ],
+        },
+      },
+    });
+    const exact = await call(
+      getPendingUsageRecoveryHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { usageId: rechargeUsageId },
+      }),
+    );
+    expect(exact.statusCode).toBe(200);
+    expect(JSON.stringify(exact.body)).not.toContain(consumer);
+    expect(
+      (
+        await call(
+          getPendingUsageRecoveryHandler(),
+          makeReq({
+            db,
+            objectStore: store,
+            env,
+            turns,
+            userId: '00000000-0000-4000-8000-000000000199',
+            params: { usageId: rechargeUsageId },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+
+    const account = db.billingAccounts.get(consumer);
+    if (!account) throw new Error('missing consumer billing account');
+    account.balance_cents = 1n;
+    const accepted = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId: rechargeUsageId },
+      }),
+    );
+    const replay = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId: rechargeUsageId },
+      }),
+    );
+    expect(accepted).toMatchObject({ statusCode: 202, body: { data: { replayed: false } } });
+    expect(replay).toMatchObject({ statusCode: 202, body: { data: { replayed: true } } });
+    await waitFor(() => db.agentUsageReceipts.size === 4);
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: null,
+      recovery_status: 'accepted',
+      terminal_turn_id: expect.any(String),
+    });
+    expect(
+      [...db.usageCharges.values()].filter((charge) => charge.usage_id === rechargeUsageId),
+    ).toHaveLength(1);
+    expect(
+      [...db.walletLedger.values()].filter(
+        (entry) =>
+          entry.entry_type === 'usage_debit' &&
+          db.usageCharges.get(entry.usage_charge_id)?.usage_id === rechargeUsageId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      (
+        await call(
+          getPendingUsageRecoveryHandler(),
+          makeReq({
+            db,
+            objectStore: store,
+            env,
+            turns,
+            userId: consumer,
+            params: { usageId: rechargeUsageId },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+
+    const cancelSessionId = '00000000-0000-4000-8000-000000000109';
+    const cancelUsageId = '00000000-0000-4000-8000-000000000110';
+    const sourceSession = db.sessions.get(sessionId);
+    if (!sourceSession || !pending) throw new Error('missing recovery fixture');
+    db.sessions.set(cancelSessionId, { ...sourceSession, id: cancelSessionId });
+    db.seedPendingUsageRecovery({
+      ...pending,
+      usage_id: cancelUsageId,
+      session_id: cancelSessionId,
+      request_text: '取消这条待恢复请求',
+      active_recharge_intent_id: cancelUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const cancelled = await call(
+      abandonPendingUsageRecoveryHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { usageId: cancelUsageId },
+      }),
+    );
+    expect(cancelled).toMatchObject({
+      statusCode: 200,
+      body: { data: { abandoned: true } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${cancelUsageId}`)).toMatchObject({
+      request_text: null,
+      recovery_status: 'abandoned',
+    });
+
+    const expiredSessionId = '00000000-0000-4000-8000-000000000111';
+    const expiredUsageId = '00000000-0000-4000-8000-000000000112';
+    db.sessions.set(expiredSessionId, { ...sourceSession, id: expiredSessionId });
+    db.seedPendingUsageRecovery({
+      ...pending,
+      usage_id: expiredUsageId,
+      session_id: expiredSessionId,
+      request_text: '已经过期的请求',
+      active_recharge_intent_id: expiredUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+      expires_at: '2026-01-01T00:00:00.000Z',
+    });
+    expect(await sweepExpiredPendingUsageRecoveries(db)).toBe(1);
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${expiredUsageId}`)).toMatchObject({
+      request_text: null,
+      recovery_status: 'abandoned',
+    });
+    expect(agent.calls).toHaveLength(4);
+    expect(db.agentUsageReceipts.size).toBe(4);
     await turns.dispose();
   });
 });
