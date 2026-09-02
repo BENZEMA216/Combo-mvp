@@ -6,7 +6,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const legacyContractPath = 'scripts/vnext-rebaseline-budget.v1.json';
-export const contractPath = 'scripts/vnext-rebaseline-budget.v2.json';
+export const previousContractPath = 'scripts/vnext-rebaseline-budget.v2.json';
+export const contractPath = 'scripts/vnext-rebaseline-budget.v3.json';
 export const policyPaths = Object.freeze([
   '.agents/skills/github-collaboration/SKILL.md',
   '.agents/skills/github-collaboration/references/governance-and-contributions.md',
@@ -16,12 +17,13 @@ export const policyPaths = Object.freeze([
   'AGENTS.md',
   legacyContractPath,
   'package.json',
+  previousContractPath,
   contractPath,
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
 ]);
 
-const protocol = 'combo.vnext-rebaseline-budget/2';
+const protocol = 'combo.vnext-rebaseline-budget/3';
 const shaPattern = /^[0-9a-f]{40}$/;
 const hardCeilings = Object.freeze({
   maxChangedFilesPerPullRequest: 30,
@@ -30,7 +32,7 @@ const hardCeilings = Object.freeze({
   maxChangedLinesFromBase: 15000,
 });
 
-export const previousTrancheLock = Object.freeze({
+export const initialTrancheLock = Object.freeze({
   protocol: 'combo.vnext-rebaseline-budget/1',
   scopeId: 'vnext-r1-r3-test-only',
   baseSha: 'd15a985c67c2b9b5e08a5b8bc03a772fb543aecb',
@@ -39,6 +41,27 @@ export const previousTrancheLock = Object.freeze({
   changedFiles: 300,
   changedLines: 70000,
   contractSha256: 'e0ef9bfa1674c83d3dc8437db63e274f4e8b14810b44ca31bdb56949c4107792',
+});
+
+export const previousTrancheLock = Object.freeze({
+  protocol: 'combo.vnext-rebaseline-budget/2',
+  scopeId: 'vnext-r1-r3-test-only',
+  trancheId: 'fixed-hosted-agent-test-beta',
+  baseSha: 'a1f11aed98d465fa91044beba7ccbcb95629030f',
+  headSha: '353c25a4b318daa1893207e993dd0f1d2067c28e',
+  changedFiles: 84,
+  changedLines: 14798,
+  contractSha256: '729464fa5d3d8538bdebef23c73b9ebe17076758bc74412177eecd545199e9df',
+});
+
+export const platformV2BootstrapLock = Object.freeze({
+  protocol: 'combo.platform-v2-bootstrap/1',
+  previousMainSha: '353c25a4b318daa1893207e993dd0f1d2067c28e',
+  candidateSha: '0cfeb3c981bc7807ff000713b64a6dbf280e274b',
+  rawDiffSha256: '9b9bc134973ae113e2516c97bf479d842e0f491ff7baf13efa4dc9f3e280533d',
+  changedFiles: 90,
+  changedLines: 7929,
+  maxChangedLinesPerFile: 364,
 });
 
 export const productGoalLock = Object.freeze({
@@ -161,6 +184,7 @@ export function parseContract(source) {
       'trancheId',
       'baseSha',
       'previousTranche',
+      'platformV2Bootstrap',
       'compatibility',
       'allowedFiles',
       'allowedPathPrefixes',
@@ -170,17 +194,17 @@ export function parseContract(source) {
     'budget contract',
   );
   invariant(value.protocol === protocol, 'budget protocol changed');
-  invariant(value.schemaVersion === 2, 'budget schemaVersion must be 2');
-  invariant(value.scopeId === 'vnext-r1-r3-test-only', 'budget scopeId changed');
-  invariant(value.trancheId === 'fixed-hosted-agent-test-beta', 'budget trancheId changed');
+  invariant(value.schemaVersion === 3, 'budget schemaVersion must be 3');
+  invariant(value.scopeId === 'vnext-r1-r3-plus-v2-validation', 'budget scopeId changed');
+  invariant(value.trancheId === 'v2-platform-validation-bootstrap', 'budget trancheId changed');
   invariant(shaPattern.test(value.baseSha), 'baseSha must be a full lowercase commit SHA');
   exactKeys(
     value.previousTranche,
     [
       'protocol',
       'scopeId',
+      'trancheId',
       'baseSha',
-      'donorSha',
       'headSha',
       'changedFiles',
       'changedLines',
@@ -192,9 +216,30 @@ export function parseContract(source) {
     JSON.stringify(value.previousTranche) === JSON.stringify(previousTrancheLock),
     'previousTranche changed',
   );
+  exactKeys(
+    value.platformV2Bootstrap,
+    [
+      'protocol',
+      'previousMainSha',
+      'candidateSha',
+      'rawDiffSha256',
+      'changedFiles',
+      'changedLines',
+      'maxChangedLinesPerFile',
+    ],
+    'platformV2Bootstrap',
+  );
   invariant(
-    value.baseSha === value.previousTranche.headSha,
-    'baseSha must continue previousTranche',
+    value.platformV2Bootstrap.candidateSha === value.baseSha,
+    'baseSha must equal the V2 bootstrap candidate',
+  );
+  invariant(
+    JSON.stringify(value.platformV2Bootstrap) === JSON.stringify(platformV2BootstrapLock),
+    'platformV2Bootstrap changed',
+  );
+  invariant(
+    value.platformV2Bootstrap.previousMainSha === value.previousTranche.headSha,
+    'V2 bootstrap must continue previousTranche',
   );
   exactKeys(
     value.compatibility,
@@ -274,6 +319,27 @@ function summarize(entries) {
   };
 }
 
+function maxChangedLines(entries) {
+  return entries.reduce((maximum, entry) => Math.max(maximum, entry.changedLines), 0);
+}
+
+export function isExactPlatformV2Bootstrap({
+  entries,
+  rawDiffSha256,
+  candidateIsAncestor,
+  previousMainIsAncestor,
+}) {
+  const summary = summarize(entries);
+  return (
+    candidateIsAncestor === true &&
+    previousMainIsAncestor === true &&
+    rawDiffSha256 === platformV2BootstrapLock.rawDiffSha256 &&
+    summary.changedFiles === platformV2BootstrapLock.changedFiles &&
+    summary.changedLines === platformV2BootstrapLock.changedLines &&
+    maxChangedLines(entries) === platformV2BootstrapLock.maxChangedLinesPerFile
+  );
+}
+
 export function isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract }) {
   const changedPaths = entries.map(({ path }) => path).sort();
   return (
@@ -283,11 +349,28 @@ export function isExactMaintenanceModeBootstrap({ comparisonBase, entries, contr
   );
 }
 
-export function assessPullRequest(contract, entries, { comparisonBase } = {}) {
+export function assessPullRequest(
+  contract,
+  entries,
+  {
+    comparisonBase,
+    rawDiffSha256,
+    candidateIsAncestor = false,
+    previousMainIsAncestor = false,
+  } = {},
+) {
   const changedPolicyPaths = entries.filter(({ path }) => policyPaths.includes(path));
   const changedMaintenancePaths = entries.filter(({ path }) => path === contract.maintenanceFile);
+  const exactPlatformV2Bootstrap = isExactPlatformV2Bootstrap({
+    entries,
+    rawDiffSha256,
+    candidateIsAncestor,
+    previousMainIsAncestor,
+  });
   let mode;
-  if (isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract })) {
+  if (exactPlatformV2Bootstrap) {
+    mode = 'PLATFORM_V2_BOOTSTRAP';
+  } else if (isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract })) {
     mode = 'GOVERNANCE_MAINTENANCE_BOOTSTRAP';
   } else if (changedPolicyPaths.length > 0) {
     invariant(
@@ -307,14 +390,16 @@ export function assessPullRequest(contract, entries, { comparisonBase } = {}) {
     mode = 'PRODUCT';
   }
   const summary = summarize(entries);
-  invariant(
-    summary.changedFiles <= contract.limits.maxChangedFilesPerPullRequest,
-    'pull request changed-file budget exceeded',
-  );
-  invariant(
-    summary.changedLines <= contract.limits.maxChangedLinesPerPullRequest,
-    'pull request changed-line budget exceeded',
-  );
+  if (!exactPlatformV2Bootstrap) {
+    invariant(
+      summary.changedFiles <= contract.limits.maxChangedFilesPerPullRequest,
+      'pull request changed-file budget exceeded',
+    );
+    invariant(
+      summary.changedLines <= contract.limits.maxChangedLinesPerPullRequest,
+      'pull request changed-line budget exceeded',
+    );
+  }
   for (const entry of entries) {
     invariant(
       entry.changedLines <= contract.limits.maxChangedLinesPerFile,
@@ -349,38 +434,55 @@ function verifyPreviousTranche(contract) {
     isAncestor(previous.baseSha, previous.headSha),
     'previousTranche base must be an ancestor of its head',
   );
-  const donorObjectAvailable = commitExists(previous.donorSha);
-  if (donorObjectAvailable) {
-    invariant(
-      isAncestor(previous.baseSha, previous.donorSha),
-      'previousTranche base must be an ancestor of its donor',
-    );
-    invariant(
-      !isAncestor(previous.donorSha, previous.headSha),
-      'the previous donor branch must never be merged into the rebuild',
-    );
-    invariant(
-      !isAncestor(previous.donorSha, 'HEAD'),
-      'the previous donor branch must never be merged into the active tranche',
-    );
-  }
-  const legacySource = readFileSync(join(repoRoot, legacyContractPath), 'utf8');
+  const previousSource = readFileSync(join(repoRoot, previousContractPath), 'utf8');
   invariant(
-    createHash('sha256').update(legacySource).digest('hex') === previous.contractSha256,
+    createHash('sha256').update(previousSource).digest('hex') === previous.contractSha256,
     'previousTranche contract receipt changed',
   );
-  const committedLegacySource = git(['show', `${previous.headSha}:${legacyContractPath}`]);
+  const committedPreviousSource = git(['show', `${previous.headSha}:${previousContractPath}`]);
   invariant(
-    legacySource === committedLegacySource,
+    previousSource === committedPreviousSource,
     'previousTranche contract must match its committed head',
   );
-  const legacyContract = JSON.parse(legacySource);
+  const previousContract = JSON.parse(previousSource);
+  invariant(
+    JSON.stringify(previousContract.previousTranche) === JSON.stringify(initialTrancheLock),
+    'initial tranche receipt changed',
+  );
+  const donorObjectAvailable = commitExists(initialTrancheLock.donorSha);
+  if (donorObjectAvailable) {
+    invariant(
+      isAncestor(initialTrancheLock.baseSha, initialTrancheLock.donorSha),
+      'initial tranche base must be an ancestor of its donor',
+    );
+    invariant(
+      !isAncestor(initialTrancheLock.donorSha, previous.headSha),
+      'the initial donor branch must never be merged into the rebuild',
+    );
+    invariant(
+      !isAncestor(initialTrancheLock.donorSha, 'HEAD'),
+      'the initial donor branch must never be merged into the active tranche',
+    );
+  }
+  const initialSource = readFileSync(join(repoRoot, legacyContractPath), 'utf8');
+  invariant(
+    createHash('sha256').update(initialSource).digest('hex') === initialTrancheLock.contractSha256,
+    'initial tranche contract receipt changed',
+  );
+  const committedInitialSource = git([
+    'show',
+    `${initialTrancheLock.headSha}:${legacyContractPath}`,
+  ]);
+  invariant(
+    initialSource === committedInitialSource,
+    'initial tranche contract must match its committed head',
+  );
   const entries = collectCommittedDiff(previous.baseSha, previous.headSha);
   for (const { path } of entries) {
     invariant(
       policyPaths.includes(path) ||
-        path === legacyContract.maintenanceFile ||
-        pathAllowed(legacyContract, path),
+        path === previousContract.maintenanceFile ||
+        pathAllowed(previousContract, path),
       `previousTranche path is outside the declared rebuild scope: ${path}`,
     );
   }
@@ -391,6 +493,41 @@ function verifyPreviousTranche(contract) {
     'previousTranche committed totals changed',
   );
   return summary;
+}
+
+function verifyPlatformV2Bootstrap(contract) {
+  const bootstrap = contract.platformV2Bootstrap;
+  invariant(
+    bootstrap.previousMainSha === contract.previousTranche.headSha,
+    'V2 bootstrap previous Main changed',
+  );
+  invariant(bootstrap.candidateSha === contract.baseSha, 'V2 bootstrap candidate changed');
+  if (!commitExists(bootstrap.candidateSha)) {
+    return { status: 'PENDING', candidateAvailable: false, active: false };
+  }
+  invariant(
+    isAncestor(bootstrap.previousMainSha, bootstrap.candidateSha),
+    'V2 bootstrap candidate must descend from previous Main',
+  );
+  const entries = collectCommittedDiff(bootstrap.previousMainSha, bootstrap.candidateSha);
+  const summary = summarize(entries);
+  invariant(
+    summary.changedFiles === bootstrap.changedFiles &&
+      summary.changedLines === bootstrap.changedLines &&
+      maxChangedLines(entries) === bootstrap.maxChangedLinesPerFile,
+    'V2 bootstrap committed totals changed',
+  );
+  invariant(
+    collectCommittedRawDiffSha256(bootstrap.previousMainSha, bootstrap.candidateSha) ===
+      bootstrap.rawDiffSha256,
+    'V2 bootstrap raw diff receipt changed',
+  );
+  const active = isAncestor(bootstrap.candidateSha, 'HEAD');
+  return {
+    status: active ? 'ACTIVE' : 'PENDING',
+    candidateAvailable: true,
+    active,
+  };
 }
 
 export function isExactProductBaselineBootstrap({ comparisonBase, entries, contract }) {
@@ -515,6 +652,24 @@ function collectCommittedDiff(base, head) {
   );
 }
 
+function collectRawDiffSha256(base) {
+  const rawDiff = execFileSync(
+    'git',
+    ['diff', '--cached', '--raw', '-z', '--full-index', '--no-renames', '--abbrev=40', base],
+    { cwd: repoRoot },
+  );
+  return createHash('sha256').update(rawDiff).digest('hex');
+}
+
+function collectCommittedRawDiffSha256(base, head) {
+  const rawDiff = execFileSync(
+    'git',
+    ['diff', '--raw', '-z', '--full-index', '--no-renames', '--abbrev=40', base, head],
+    { cwd: repoRoot },
+  );
+  return createHash('sha256').update(rawDiff).digest('hex');
+}
+
 export function defaultBaseRef(environment = process.env) {
   if (environment.GITHUB_BASE_REF) return environment.BASE_SHA;
   if (environment.GITHUB_EVENT_NAME === 'push' && environment.GITHUB_REF === 'refs/heads/main')
@@ -535,13 +690,28 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
     spawnSync('git', ['diff', '--quiet'], { cwd: repoRoot }).status === 0,
     'budget check requires all tracked changes to be staged',
   );
-  invariant(commitExists(contract.baseSha), 'baseSha commit is unavailable');
-  invariant(isAncestor(contract.baseSha, 'HEAD'), 'baseSha must be an ancestor of HEAD');
   const previousTranche = verifyPreviousTranche(contract);
+  const platformV2Bootstrap = verifyPlatformV2Bootstrap(contract);
   const comparisonBase = git(['merge-base', baseRef, 'HEAD']).trim();
   invariant(shaPattern.test(comparisonBase), 'comparison base is unavailable');
+  const previousMainIsAncestor = isAncestor(
+    contract.platformV2Bootstrap.previousMainSha,
+    comparisonBase,
+  );
+  invariant(previousMainIsAncestor, 'pull request base must descend from previous Main');
   const pullRequestEntries = collectDiff(comparisonBase);
-  const pullRequest = assessPullRequest(contract, pullRequestEntries, { comparisonBase });
+  const pullRequest = assessPullRequest(contract, pullRequestEntries, {
+    comparisonBase,
+    rawDiffSha256: collectRawDiffSha256(comparisonBase),
+    candidateIsAncestor: platformV2Bootstrap.active,
+    previousMainIsAncestor,
+  });
+  if (!platformV2Bootstrap.active) {
+    invariant(
+      pullRequest.mode === 'GOVERNANCE_ONLY',
+      'only governance changes are allowed until the V2 bootstrap candidate is integrated',
+    );
+  }
   const projectPath = join(repoRoot, 'PROJECT.md');
   const agentsPath = join(repoRoot, 'AGENTS.md');
   const engineeringPath = join(repoRoot, 'ENGINEERING.md');
@@ -560,11 +730,14 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
         contract,
       }),
   });
-  const cumulative = assessCumulative(contract, collectDiff(contract.baseSha));
+  const cumulative = platformV2Bootstrap.active
+    ? { status: 'ACTIVE', ...assessCumulative(contract, collectDiff(contract.baseSha)) }
+    : { status: 'PENDING_PLATFORM_V2_BOOTSTRAP', changedFiles: 0, changedLines: 0 };
   return {
     pullRequest,
     productBaseline,
     previousTranche,
+    platformV2Bootstrap,
     cumulative,
   };
 }

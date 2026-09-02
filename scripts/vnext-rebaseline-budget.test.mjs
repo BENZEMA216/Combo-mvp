@@ -10,13 +10,17 @@ import {
   assessPullRequest,
   contractPath,
   defaultBaseRef,
+  initialTrancheLock,
+  isExactPlatformV2Bootstrap,
   isExactProductBaselineBootstrap,
   isExactMaintenanceModeBootstrap,
   legacyContractPath,
   maintenanceModeBootstrap,
   parseContract,
   parseNumstat,
+  platformV2BootstrapLock,
   policyPaths,
+  previousContractPath,
   previousTrancheLock,
   productBaselineBootstrap,
   productGoalLock,
@@ -45,6 +49,75 @@ const authoringBillingRecoveryFiles = Object.freeze([
   'apps/authoring/src/modules/billing/routes.ts',
   'apps/authoring/src/modules/billing/service.ts',
   'apps/authoring/src/modules/billing/types.ts',
+]);
+
+const platformV2Files = Object.freeze([
+  'apps/authz/README.md',
+  'apps/authz/package.json',
+  'apps/authz/src/__tests__/app.test.ts',
+  'apps/authz/src/__tests__/assertion.test.ts',
+  'apps/authz/src/__tests__/crypto.test.ts',
+  'apps/authz/src/__tests__/fakes.ts',
+  'apps/authz/src/__tests__/repo-sql.test.ts',
+  'apps/authz/src/__tests__/resend.test.ts',
+  'apps/authz/src/__tests__/service.test.ts',
+  'apps/authz/src/app.ts',
+  'apps/authz/src/assertion.ts',
+  'apps/authz/src/cache.ts',
+  'apps/authz/src/crypto.ts',
+  'apps/authz/src/env.ts',
+  'apps/authz/src/index.ts',
+  'apps/authz/src/login-page.ts',
+  'apps/authz/src/repo.ts',
+  'apps/authz/src/resend.ts',
+  'apps/authz/src/service.ts',
+  'apps/authz/tsconfig.json',
+  'apps/authz/tsconfig.vitest.json',
+  'apps/authz/vitest.config.ts',
+  'apps/billing/README.md',
+  'apps/billing/package.json',
+  'apps/billing/src/__tests__/app.test.ts',
+  'apps/billing/src/__tests__/fakes.ts',
+  'apps/billing/src/__tests__/service.test.ts',
+  'apps/billing/src/app.ts',
+  'apps/billing/src/env.ts',
+  'apps/billing/src/index.ts',
+  'apps/billing/src/repo.ts',
+  'apps/billing/src/service.ts',
+  'apps/billing/src/sweep.ts',
+  'apps/billing/tsconfig.json',
+  'apps/billing/tsconfig.vitest.json',
+  'apps/billing/vitest.config.ts',
+  'apps/llm-gateway/README.md',
+  'apps/llm-gateway/package.json',
+  'apps/llm-gateway/src/__tests__/app.test.ts',
+  'apps/llm-gateway/src/__tests__/fakes.ts',
+  'apps/llm-gateway/src/__tests__/service.test.ts',
+  'apps/llm-gateway/src/app.ts',
+  'apps/llm-gateway/src/billing.ts',
+  'apps/llm-gateway/src/env.ts',
+  'apps/llm-gateway/src/index.ts',
+  'apps/llm-gateway/src/pricing.ts',
+  'apps/llm-gateway/src/provider.ts',
+  'apps/llm-gateway/src/service.ts',
+  'apps/llm-gateway/src/usage.ts',
+  'apps/llm-gateway/tsconfig.json',
+  'apps/llm-gateway/tsconfig.vitest.json',
+  'apps/llm-gateway/vitest.config.ts',
+  'infra/Dockerfile.v2',
+  'infra/entrypoint-v2.sh',
+  'infra/host/combo-v2-test.conf',
+  'infra/host/release/README.md',
+  'infra/host/release/combo-v2-authz-forward.service',
+  'infra/host/release/combo-v2-restart-life-forward.service',
+  'infra/k8s/v2/authz.yaml',
+  'infra/k8s/v2/billing.yaml',
+  'infra/k8s/v2/job-migrate.yaml',
+  'infra/k8s/v2/llm-gateway.yaml',
+  'infra/k8s/v2/namespace.yaml',
+  'infra/k8s/v2/restart-life.yaml',
+  'scripts/README.md',
+  'scripts/render-v2.mjs',
 ]);
 
 function validProductSource() {
@@ -108,25 +181,35 @@ function approvedNextProjectSource(current = readFileSync(committedProjectPath, 
 }
 
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
-  assert.equal(contract.baseSha, 'a1f11aed98d465fa91044beba7ccbcb95629030f');
+  assert.equal(contract.baseSha, platformV2BootstrapLock.candidateSha);
   assert.deepEqual(contract.previousTranche, previousTrancheLock);
+  assert.deepEqual(contract.platformV2Bootstrap, platformV2BootstrapLock);
   assert.deepEqual(contract.compatibility, {
     preservePostgresMigrationHistory: true,
     preserveWorkerSqliteSchemaHistory: true,
   });
-  assert.equal(contract.scopeId, 'vnext-r1-r3-test-only');
-  assert.equal(contract.trancheId, 'fixed-hosted-agent-test-beta');
+  assert.equal(contract.scopeId, 'vnext-r1-r3-plus-v2-validation');
+  assert.equal(contract.trancheId, 'v2-platform-validation-bootstrap');
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(join(repo, previousContractPath)))
+      .digest('hex'),
+    previousTrancheLock.contractSha256,
+  );
   assert.equal(
     createHash('sha256')
       .update(readFileSync(join(repo, legacyContractPath)))
       .digest('hex'),
-    previousTrancheLock.contractSha256,
+    initialTrancheLock.contractSha256,
   );
   assert.equal(productBaselineBootstrap.paths.includes(legacyContractPath), true);
   assert.equal(maintenanceModeBootstrap.paths.includes(legacyContractPath), true);
+  assert.equal(productBaselineBootstrap.paths.includes(previousContractPath), false);
+  assert.equal(maintenanceModeBootstrap.paths.includes(previousContractPath), false);
   assert.equal(productBaselineBootstrap.paths.includes(contractPath), false);
   assert.equal(maintenanceModeBootstrap.paths.includes(contractPath), false);
   assert.equal(policyPaths.includes(legacyContractPath), true);
+  assert.equal(policyPaths.includes(previousContractPath), true);
   assert.equal(policyPaths.includes(contractPath), true);
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
@@ -172,8 +255,8 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   );
 
   const duplicate = source.replace(
-    '"schemaVersion": 2,',
-    '"schemaVersion": 2,\n  "schemaVersion": 2,',
+    '"schemaVersion": 3,',
+    '"schemaVersion": 3,\n  "schemaVersion": 3,',
   );
   assert.throws(() => parseContract(duplicate), /canonical JSON/);
 
@@ -202,7 +285,14 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   detachedTranche.baseSha = '0'.repeat(40);
   assert.throws(
     () => parseContract(`${JSON.stringify(detachedTranche, null, 2)}\n`),
-    /must continue previousTranche/,
+    /must equal the V2 bootstrap candidate/,
+  );
+
+  const rewrittenV2Bootstrap = structuredClone(contract);
+  rewrittenV2Bootstrap.platformV2Bootstrap.changedLines -= 1;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(rewrittenV2Bootstrap, null, 2)}\n`),
+    /platformV2Bootstrap changed/,
   );
 
   const forgottenMigrationHistory = structuredClone(contract);
@@ -325,6 +415,88 @@ test('the one-time maintenance bootstrap is pinned to one base and four exact pa
   );
 });
 
+test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => {
+  const entries = Array.from({ length: 90 }, (_, index) =>
+    entry(`apps/runtime/src/bootstrap-${index}.ts`, index === 0 ? 364 : 85),
+  );
+  const exactContext = {
+    rawDiffSha256: platformV2BootstrapLock.rawDiffSha256,
+    candidateIsAncestor: true,
+    previousMainIsAncestor: true,
+  };
+
+  assert.equal(isExactPlatformV2Bootstrap({ entries, ...exactContext }), true);
+  assert.deepEqual(assessPullRequest(contract, entries, exactContext), {
+    mode: 'PLATFORM_V2_BOOTSTRAP',
+    changedFiles: 90,
+    changedLines: 7929,
+  });
+  assert.equal(
+    isExactPlatformV2Bootstrap({
+      entries,
+      ...exactContext,
+      rawDiffSha256: `0${platformV2BootstrapLock.rawDiffSha256.slice(1)}`,
+    }),
+    false,
+  );
+  assert.equal(
+    isExactPlatformV2Bootstrap({
+      entries,
+      ...exactContext,
+      candidateIsAncestor: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isExactPlatformV2Bootstrap({
+      entries,
+      ...exactContext,
+      previousMainIsAncestor: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isExactPlatformV2Bootstrap({
+      entries: [...entries.slice(0, -1), entry('apps/runtime/src/bootstrap-89.ts', 84)],
+      ...exactContext,
+    }),
+    false,
+  );
+  assert.throws(() => assessPullRequest(contract, entries), /changed-file budget exceeded/);
+});
+
+test('the V2 validation scope opens only the 66 reviewed paths', () => {
+  assert.equal(platformV2Files.length, 66);
+  assert.deepEqual(platformV2Files, [...platformV2Files].sort());
+
+  for (const path of platformV2Files) {
+    assert.equal(contract.allowedFiles.filter((candidate) => candidate === path).length, 1, path);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
+      false,
+      path,
+    );
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
+
+  for (const path of [
+    'apps/authz/src/new-route.ts',
+    'apps/billing/src/reconcile.ts',
+    'apps/llm-gateway/src/providers/new-provider.ts',
+    'infra/Dockerfile.v2-debug',
+    'infra/host/combo-v2-preview.conf',
+    'infra/host/release/combo-v2-billing-forward.service',
+    'infra/k8s/v2/ingress.yaml',
+    'scripts/render-v2.test.mjs',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+  }
+});
+
 test('product edits must stay inside the declared rebuild surface', () => {
   assert.equal(
     assessPullRequest(contract, [entry('apps/runtime/src/product.ts', 20)]).mode,
@@ -439,7 +611,11 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
+    [
+      ...allowedKnowledgeInfraFiles,
+      ...allowedPublisherInfraFiles,
+      ...platformV2Files.filter((path) => path.startsWith('infra/')),
+    ].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
@@ -657,16 +833,16 @@ test('Authoring billing recovery scope opens only its ten exact tracked paths', 
     /governance-only/,
   );
 
-  const legacySource = readFileSync(join(repo, legacyContractPath), 'utf8');
+  const previousSource = readFileSync(join(repo, previousContractPath), 'utf8');
   assert.equal(
     previousTrancheLock.contractSha256,
-    'e0ef9bfa1674c83d3dc8437db63e274f4e8b14810b44ca31bdb56949c4107792',
+    '729464fa5d3d8538bdebef23c73b9ebe17076758bc74412177eecd545199e9df',
   );
   assert.equal(
-    createHash('sha256').update(legacySource).digest('hex'),
+    createHash('sha256').update(previousSource).digest('hex'),
     previousTrancheLock.contractSha256,
   );
-  const contractBeforeRecovery = structuredClone(contract);
+  const contractBeforeRecovery = JSON.parse(previousSource);
   contractBeforeRecovery.allowedFiles = contractBeforeRecovery.allowedFiles.filter(
     (path) => !authoringBillingRecoveryFiles.includes(path),
   );
@@ -703,6 +879,7 @@ test('Agent Package Publisher Test scope opens only exact config and render wiri
       ...allowedPublisherInfraFiles,
       'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
       'infra/k8s/runtime.yaml',
+      ...platformV2Files.filter((path) => path.startsWith('infra/k8s/')),
     ].sort(),
   );
   assert.deepEqual(
