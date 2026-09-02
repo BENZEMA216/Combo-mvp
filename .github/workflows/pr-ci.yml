@@ -51,6 +51,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Verify the change budget before dependency execution
+        run: node scripts/vnext-rebaseline-budget.mjs
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: apps/sandboxd/go.mod

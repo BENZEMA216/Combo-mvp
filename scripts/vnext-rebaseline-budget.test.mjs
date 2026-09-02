@@ -234,6 +234,15 @@ test('the PR quality job retains full history and the budget-bearing test entryp
     pullRequestWorkflow,
     /PULL_REQUEST_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}/,
   );
+  const earlyBudgetGate = pullRequestWorkflow.indexOf(
+    '- name: Verify the change budget before dependency execution',
+  );
+  const installStep = pullRequestWorkflow.indexOf('- name: Install');
+  assert.ok(earlyBudgetGate > 0 && earlyBudgetGate < installStep);
+  assert.match(
+    pullRequestWorkflow.slice(earlyBudgetGate, installStep),
+    /run: node scripts\/vnext-rebaseline-budget\.mjs/,
+  );
   assert.match(pullRequestWorkflow, /run: pnpm test:fast/);
   assert.match(
     packageJson.scripts['test:workflow-contracts'],

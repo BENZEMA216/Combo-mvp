@@ -717,6 +717,20 @@ function verifyPlatformV2AdmissionShape({ comparisonBase, candidateSha, requireO
   };
 }
 
+function verifyGithubCheckoutIdentity(environment) {
+  if (environment.GITHUB_ACTIONS !== 'true') return;
+  const expectedHeadSha = environment.MERGE_SHA || environment.SOURCE_SHA;
+  invariant(
+    typeof expectedHeadSha === 'string' && shaPattern.test(expectedHeadSha),
+    'GitHub budget gate requires an immutable expected HEAD SHA',
+  );
+  invariant(git(['rev-parse', 'HEAD']).trim() === expectedHeadSha, 'GitHub checkout HEAD changed');
+  invariant(
+    spawnSync('git', ['diff', '--cached', '--quiet', 'HEAD'], { cwd: repoRoot }).status === 0,
+    'GitHub checkout index changed',
+  );
+}
+
 function collectDiff(base) {
   return parseNumstat(
     git(['diff', '--cached', '--no-renames', '--numstat', '-z', base]),
@@ -765,6 +779,7 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
       'budget gate is running in the wrong GitHub repository',
     );
   }
+  verifyGithubCheckoutIdentity(environment);
   const untracked = git(['ls-files', '--others', '--exclude-standard', '-z'])
     .split('\0')
     .filter(Boolean);
