@@ -320,8 +320,8 @@ docker exec "$API" node --input-type=module -e '
     !page.includes("empty environment") ||
     !page.includes("2,000 UTF-8 bytes") ||
     !page.includes("33d94d776e9d4eb0cf2238358857c8e4b33427de655be6a52d33e834d460146d") ||
-    !page.includes("14,507 UTF-8 bytes") ||
-    !page.includes("0f57fd11fc2a45f4cd23f5718fa676e0b607b5c1a3dd10f3073acd444e2b7ca0") ||
+    !page.includes("4,871 UTF-8 bytes") ||
+    !page.includes("0b50ef569b7ceb41816fbba3f7a5ede96323da3ca50ca10709ce660a23c90f05") ||
     !page.includes("1,074 UTF-8 bytes") ||
     !page.includes("7df7bced005edd481e8eaa3169a8cac3dfa278d459942a15ef31bf595fd101fc") ||
     !page.includes("PROJECT_HISTORY_BOOTSTRAP_CONTROLLER_EXEC_FAILED") ||
