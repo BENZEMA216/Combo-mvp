@@ -17,6 +17,11 @@ const booleanFromString = z
 const immutableImagePattern = /@sha256:[a-f0-9]{64}$/;
 const placeholderImagePattern = /@sha256:0{64}$/;
 export const MAX_PUBLIC_APP_ORIGINS = 8;
+export const KNOWLEDGE_AGENT_TEST_GATE_ENV = 'COMBO_KNOWLEDGE_AGENT_TEST_GATE' as const;
+export const KNOWLEDGE_AGENT_VALIDATOR_POLICY = 'knowledge-agent-test-validator-v1' as const;
+export const KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY =
+  'knowledge-agent-grounded-validator-v2' as const;
+const KNOWLEDGE_AGENT_TEST_GATE_MAX_BYTES = 64 * 1_024;
 
 const EnvSchema = z
   .object({
@@ -38,6 +43,7 @@ const EnvSchema = z
     COMBO_WEB_ASSET_MANIFEST: z
       .string()
       .default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_WEB_ASSET_MANIFEST),
+    COMBO_KNOWLEDGE_AGENT_TEST_GATE: z.string().default(''),
 
     // Observability（OpenTelemetry）。默认不启用导出；配置 OTLP endpoint 后才向 Collector 发 traces。
     OTEL_SERVICE_NAME: z.string().default('cb-runtime'),
@@ -79,7 +85,7 @@ const EnvSchema = z
       .int()
       .positive()
       .max(Number.MAX_SAFE_INTEGER)
-      .default(100),
+      .default(1),
     // 从 Turn 中止到数据库、Kubernetes 与连接关闭共用同一个绝对截止时间。
     RUNTIME_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(15_000),
 
@@ -159,6 +165,124 @@ const EnvSchema = z
     }
   });
 export type Env = z.infer<typeof EnvSchema>;
+
+const KnowledgeAgentTestCaseSchema = z
+  .object({
+    questionDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+    answer: z
+      .string()
+      .min(1)
+      .max(16 * 1_024)
+      .refine((value) => value.normalize('NFC') === value && value.trim() === value)
+      .refine((value) => Buffer.byteLength(value, 'utf8') <= 16 * 1_024),
+    citationChunkIds: z
+      .array(z.string().regex(/^chunk[.]knowledge[.][0-9a-f]{32}$/u))
+      .min(1)
+      .max(32),
+  })
+  .strict()
+  .superRefine((candidate, context) => {
+    for (let index = 1; index < candidate.citationChunkIds.length; index += 1) {
+      if (candidate.citationChunkIds[index - 1]! >= candidate.citationChunkIds[index]!) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['citationChunkIds', index],
+          message: 'citationChunkIds must be unique and sorted',
+        });
+      }
+    }
+  })
+  .readonly();
+
+const KnowledgeAgentTestGateV1Schema = z
+  .object({
+    protocol: z.literal('combo.knowledge-agent-runtime-test-gate/1'),
+    sourceSha: z.string().regex(/^[0-9a-f]{40}$/u),
+    publisherUserId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
+    capabilityId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
+    releaseId: z.string().regex(/^release[.]agent-package[.][0-9a-f]{32}$/u),
+    packageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+    validatorPolicyVersion: z.literal(KNOWLEDGE_AGENT_VALIDATOR_POLICY),
+    cases: z.array(KnowledgeAgentTestCaseSchema).min(1).max(16),
+  })
+  .strict();
+
+const KnowledgeAgentTestGateV2Schema = z
+  .object({
+    protocol: z.literal('combo.knowledge-agent-runtime-test-gate/2'),
+    sourceSha: z.string().regex(/^[0-9a-f]{40}$/u),
+    publisherUserId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
+    capabilityId: z
+      .string()
+      .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
+    releaseId: z.string().regex(/^release[.]agent-package[.][0-9a-f]{32}$/u),
+    packageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+    validatorPolicyVersion: z.literal(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY),
+  })
+  .strict();
+
+const KnowledgeAgentTestGateSchema = z
+  .discriminatedUnion('protocol', [KnowledgeAgentTestGateV1Schema, KnowledgeAgentTestGateV2Schema])
+  .superRefine((gate, context) => {
+    if (gate.protocol !== 'combo.knowledge-agent-runtime-test-gate/1') return;
+    for (let index = 1; index < gate.cases.length; index += 1) {
+      if (gate.cases[index - 1]!.questionDigest >= gate.cases[index]!.questionDigest) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cases', index, 'questionDigest'],
+          message: 'cases must be unique and sorted',
+        });
+      }
+    }
+  })
+  .readonly();
+
+export type KnowledgeAgentTestGate = z.infer<typeof KnowledgeAgentTestGateSchema>;
+
+/**
+ * Returns the only controlled knowledge-Agent candidate admitted by this exact Test Runtime.
+ * A missing gate or rolling-node SHA mismatch keeps knowledge execution closed; malformed or
+ * non-Test material fails startup. New nodes continue to parse v1 while v2 rolls out.
+ */
+export function knowledgeAgentTestGateFromEnv(env: Env): KnowledgeAgentTestGate | null {
+  const raw = env.COMBO_KNOWLEDGE_AGENT_TEST_GATE;
+  if (raw === '') return null;
+  if (
+    raw.length > KNOWLEDGE_AGENT_TEST_GATE_MAX_BYTES ||
+    Buffer.byteLength(raw, 'utf8') > KNOWLEDGE_AGENT_TEST_GATE_MAX_BYTES
+  ) {
+    throw new Error(`[env] ${KNOWLEDGE_AGENT_TEST_GATE_ENV} 配置不合法`);
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`[env] ${KNOWLEDGE_AGENT_TEST_GATE_ENV} 配置不合法`);
+  }
+  const parsed = KnowledgeAgentTestGateSchema.safeParse(decoded);
+  if (!parsed.success || JSON.stringify(parsed.data) !== raw) {
+    throw new Error(`[env] ${KNOWLEDGE_AGENT_TEST_GATE_ENV} 配置不合法`);
+  }
+
+  let environment: string;
+  try {
+    environment = releaseMetadataFromEnv(env).environment;
+  } catch {
+    throw new Error(`[env] ${KNOWLEDGE_AGENT_TEST_GATE_ENV} 配置不合法`);
+  }
+  if (environment !== 'test') {
+    throw new Error(`[env] ${KNOWLEDGE_AGENT_TEST_GATE_ENV} 只能用于 Test Runtime`);
+  }
+  if (parsed.data.sourceSha !== env.COMBO_SOURCE_SHA) return null;
+  return parsed.data;
+}
 
 function containsControlCharacter(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
@@ -262,7 +386,10 @@ export function loadEnv(): Env {
     const sandboxSetting = process.env.SANDBOX_TOOLS_ENABLED?.trim();
     const sandboxWasRequested =
       sandboxSetting !== undefined && sandboxSetting !== '' && sandboxSetting !== 'false';
-    if (isProduction || sandboxWasRequested) {
+    const knowledgeGateWasRequested =
+      process.env.COMBO_KNOWLEDGE_AGENT_TEST_GATE !== undefined &&
+      process.env.COMBO_KNOWLEDGE_AGENT_TEST_GATE !== '';
+    if (isProduction || sandboxWasRequested || knowledgeGateWasRequested) {
       throw new Error(
         `[env] 环境变量校验失败：${Object.keys(parsed.error.flatten().fieldErrors).join(', ')}`,
       );
@@ -273,12 +400,14 @@ export function loadEnv(): Env {
     );
     cached = EnvSchema.parse({});
     assertReleaseMetadata(cached);
+    knowledgeAgentTestGateFromEnv(cached);
     return cached;
   }
 
   const env = parsed.data;
   cached = env;
   assertReleaseMetadata(env);
+  knowledgeAgentTestGateFromEnv(env);
 
   let publicOrigins: readonly string[];
   try {

@@ -87,7 +87,6 @@ jobs:
             scripts/*.sh \
             scripts/integration/*.sh \
             infra/entrypoint.sh \
-            infra/entrypoint-v2.sh \
             infra/minio/init-buckets.sh \
             infra/k8s/overlays/sandbox-tools/maintenance/*.sh
 
@@ -127,7 +126,10 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build shared first
+      - name: Build creator agent protocol first
+        run: pnpm -F @cb/creator-agent-protocol build
+
+      - name: Build shared
         run: pnpm -F @cb/shared build
 
       - name: Install database client
@@ -142,8 +144,6 @@ jobs:
           POSTGRES_API_PASSWORD: ci-api-role-password
           POSTGRES_WORKER_PASSWORD: ci-worker-role-password
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
-          POSTGRES_AUTHZ_PASSWORD: ci-authz-role-password
-          POSTGRES_BILLING_PASSWORD: ci-billing-role-password
         run: bash scripts/integration/db-migrate.sh
 
       - name: Authoring billing PostgreSQL invariants

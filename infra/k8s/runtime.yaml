@@ -104,6 +104,14 @@ spec:
             - name: RUNTIME_LLM_MODEL
               valueFrom:
                 secretKeyRef: { name: combo-env, key: RUNTIME_LLM_MODEL, optional: true }
+            # 受控 Knowledge Agent Test 候选只通过 namespace 内既有 combo-env Secret 注入。
+            # 键缺失时不注入环境变量，Runtime 保持默认关闭；清单不保存 gate JSON 内容。
+            - name: COMBO_KNOWLEDGE_AGENT_TEST_GATE
+              valueFrom:
+                secretKeyRef:
+                  name: combo-env
+                  key: COMBO_KNOWLEDGE_AGENT_TEST_GATE
+                  optional: true
           ports:
             - name: http
               containerPort: 3100

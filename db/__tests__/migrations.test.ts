@@ -80,7 +80,7 @@ describe('migrations', () => {
     }
   });
 
-  it('the full chain creates only the current data model', () => {
+  it('the full chain creates the current model plus the deployed compatibility prefix', () => {
     const created = [...allSql().matchAll(/CREATE TABLE\s+([a-z][a-z0-9_]*)\s*\(/gi)]
       .map((match) => match[1]!.toLowerCase())
       .sort();
@@ -99,16 +99,27 @@ describe('migrations', () => {
         'payment_attempts',
         'payment_callback_events',
         'wallet_ledger',
-        'v2_users',
-        'v2_identities',
-        'v2_auth_challenges',
-        'v2_sessions',
-        'v2_wallets',
-        'v2_ledger',
-        'v2_orders',
-        'v2_packages',
-        'v2_holds',
-        'v2_metering_events',
+        // The canonical Registry is the current Agent Package product model.
+        'agent_packages',
+        'agent_package_releases',
+        'agent_usage_receipts',
+        'pending_usage_recoveries',
+        // Test already applied 0012-0016. These tables remain a legacy compatibility
+        // prefix and do not define the current Agent Package product model.
+        'agent_projects',
+        'agent_revisions',
+        'agent_releases',
+        'oauth_clients',
+        'oauth_authorization_requests',
+        'oauth_authorization_codes',
+        'oauth_access_tokens',
+        'oauth_refresh_tokens',
+        'agent_tests',
+        'agent_test_reviews',
+        'project_agent_shares',
+        'project_history_agent_drafts',
+        'project_history_agent_confirmations',
+        'project_history_agent_shares',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -194,17 +205,25 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
+  it('keeps authentication, roles, billing, the Test prefix, Registry, receipts, and recovery in sequence', () => {
     const list = files();
-    expect(list.slice(-8)).toEqual([
+    const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
+
+    expect(firstCurrentIndex).toBeGreaterThan(0);
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 13)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
-      '0012_v2_end_user_identity.sql',
-      '0013_v2_billing.sql',
-      '0014_v2_email_login.sql',
+      '0012_agent_builder_v1.sql',
+      '0013_external_mcp_oauth.sql',
+      '0014_agent_test_reviews.sql',
+      '0015_project_agent_shares.sql',
+      '0016_project_history_agent_flow.sql',
+      '0017_agent_package_registry.sql',
+      '0018_agent_session_usage_receipts.sql',
+      '0019_pending_usage_recovery.sql',
     ]);
   });
 

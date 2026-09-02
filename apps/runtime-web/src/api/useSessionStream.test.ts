@@ -1,9 +1,12 @@
 import type { MessageView, ReleaseMetadata, SessionDetail } from '@cb/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
-import { createElement, type PropsWithChildren, type ReactElement } from 'react';
+import { createElement, StrictMode, type PropsWithChildren, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReleaseMetadataProvider } from '../shell/releaseIdentity.js';
+import { ApiError } from './client.js';
+import { resolvePendingRecoveryForSession } from './recovery.js';
+import type * as RecoveryApi from './recovery.js';
 import {
   readRechargeRequired,
   sendSessionMessage,
@@ -16,13 +19,23 @@ vi.mock('./runtime.js', () => ({
   readRechargeRequired: vi.fn(() => null),
   sendSessionMessage: vi.fn(),
 }));
+vi.mock('./recovery.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof RecoveryApi>();
+  return {
+    ...actual,
+    resolvePendingRecoveryForSession: vi.fn(),
+  };
+});
 
 const sendSessionMessageMock = vi.mocked(sendSessionMessage);
 const readRechargeRequiredMock = vi.mocked(readRechargeRequired);
+const resolvePendingRecoveryForSessionMock = vi.mocked(resolvePendingRecoveryForSession);
 const SESSION_A = '11111111-1111-4111-8111-111111111111';
 const SESSION_B = '22222222-2222-4222-8222-222222222222';
 const TURN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const TURN_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const REPLACEMENT_INTENT = '77777777-7777-4777-8777-777777777777';
+const DETAIL_A = sessionDetail(SESSION_A);
 const PREVIEW_METADATA: ReleaseMetadata = {
   schemaVersion: 1,
   environment: 'preview',
@@ -61,11 +74,40 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  const localValues = new Map<string, string>();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      get length() {
+        return localValues.size;
+      },
+      clear: () => localValues.clear(),
+      getItem: (key: string) => localValues.get(key) ?? null,
+      key: (index: number) => [...localValues.keys()][index] ?? null,
+      removeItem: (key: string) => localValues.delete(key),
+      setItem: (key: string, value: string) => localValues.set(key, value),
+    } satisfies Storage,
+  });
   window.sessionStorage.clear();
   sendSessionMessageMock.mockReset();
   readRechargeRequiredMock.mockReset();
   readRechargeRequiredMock.mockReturnValue(null);
+  resolvePendingRecoveryForSessionMock.mockReset();
+  resolvePendingRecoveryForSessionMock.mockResolvedValue(null);
 });
+
+function recognizeRechargeForExpectedUsage(): void {
+  readRechargeRequiredMock.mockImplementation((error, usageId) =>
+    error instanceof ApiError && error.status === 402
+      ? {
+          rechargeRequired: true,
+          rechargeIntentId: usageId,
+          balanceCents: '25',
+          requiredCents: '100',
+        }
+      : null,
+  );
+}
 
 describe('runtime session EventSource fixed-session behavior', () => {
   it('uses the shared HttpOnly cookie and never calls a refresh endpoint', () => {
@@ -113,6 +155,92 @@ describe('runtime session EventSource fixed-session behavior', () => {
 
     expect(source.close).toHaveBeenCalled();
     expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it('discards knowledge candidate text and refetches authoritative detail after a terminal event', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    const queryClient = testQueryClient();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result, rerender } = renderHook(
+      ({ detail }: { detail: SessionDetail | undefined }) => useSessionStream(SESSION_A, detail),
+      {
+        initialProps: { detail: undefined as SessionDetail | undefined },
+        wrapper: testWrapper(queryClient),
+      },
+    );
+    const source = MockEventSource.instances[0]!;
+
+    act(() => {
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'TEXT_MESSAGE_START', runId: TURN_A }),
+        }),
+      );
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'TEXT_MESSAGE_CONTENT',
+            runId: TURN_A,
+            delta: 'FORGED_SSE_CANDIDATE',
+          }),
+        }),
+      );
+    });
+    expect(result.current.streamingText).toBe('FORGED_SSE_CANDIDATE');
+
+    rerender({ detail: knowledgeSessionDetail(SESSION_A) });
+    await vi.waitFor(() => expect(result.current.streamingText).toBeNull());
+    act(() => {
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'RUN_STARTED', runId: TURN_A }),
+        }),
+      );
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'TEXT_MESSAGE_CONTENT',
+            runId: TURN_A,
+            delta: 'ANOTHER_FORGED_SSE_CANDIDATE',
+          }),
+        }),
+      );
+    });
+    expect(result.current.running).toBe(true);
+    expect(result.current.streamingText).toBeNull();
+
+    act(() => {
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'RUN_FINISHED', runId: TURN_A }),
+        }),
+      );
+    });
+    expect(result.current.running).toBe(false);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', SESSION_A] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+  });
+
+  it('exposes a safe closed-stream flag and reconnects with an authoritative detail refetch', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    const queryClient = testQueryClient();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const detail = knowledgeSessionDetail(SESSION_A);
+    const { result } = renderHook(() => useSessionStream(SESSION_A, detail), {
+      wrapper: testWrapper(queryClient),
+    });
+    const firstSource = MockEventSource.instances[0]!;
+
+    act(() => firstSource.failClosed());
+    expect(result.current.streamConnectionFailed).toBe(true);
+    expect(result.current.errorMessage).toBe('事件流连接不上，请刷新页面重试。');
+
+    act(() => result.current.retryStreamConnection());
+    expect(result.current.streamConnectionFailed).toBe(false);
+    expect(result.current.errorMessage).toBeNull();
+    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(2));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', SESSION_A] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
   });
 });
 
@@ -280,6 +408,331 @@ describe('runtime session generation fencing', () => {
     );
   });
 
+  it('resumes a credited recharge with the exact original text and usageId', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('recharge', 402))
+      .mockResolvedValueOnce(gatewayResponse(TURN_A));
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('  original question  ')).rejects.toThrow('免费次数已用完');
+    });
+    const usageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    expect(result.current.activeRechargeIntentId).toBe(usageId);
+
+    await act(async () => {
+      await result.current.resumeAfterRecharge(usageId!);
+    });
+
+    expect(sendSessionMessageMock.mock.calls[1]).toEqual([SESSION_A, 'original question', usageId]);
+    expect(result.current.rechargeRequired).toBeNull();
+    expect(result.current.activeRechargeIntentId).toBeNull();
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it('rejects a credited callback whose intent does not exactly match the persisted order', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    sendSessionMessageMock.mockRejectedValueOnce(new ApiError('recharge', 402));
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('original question')).rejects.toThrow('免费次数已用完');
+    });
+    await act(async () => {
+      await expect(result.current.resumeAfterRecharge(REPLACEMENT_INTENT)).rejects.toThrow(
+        '充值订单与待恢复任务不匹配',
+      );
+    });
+
+    expect(sendSessionMessageMock).toHaveBeenCalledTimes(1);
+    expect(result.current.rechargeRequired).not.toBeNull();
+  });
+
+  it('deduplicates StrictMode credited effects into one resume POST', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    const resumed = deferred<SendSessionMessageResult>();
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('recharge', 402))
+      .mockReturnValueOnce(resumed.promise);
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: strictTestWrapper(testQueryClient()),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('strict resume')).rejects.toThrow('免费次数已用完');
+    });
+    const usageId = result.current.activeRechargeIntentId!;
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = result.current.resumeAfterRecharge(usageId);
+      second = result.current.resumeAfterRecharge(usageId);
+    });
+    expect(first).toBe(second);
+    expect(sendSessionMessageMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resumed.resolve(gatewayResponse(TURN_A));
+      await Promise.all([first, second]);
+    });
+    expect(sendSessionMessageMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves a replacement payment intent across reload and another 402 for the original usageId', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('first recharge', 402))
+      .mockRejectedValueOnce(new ApiError('reload recharge', 402));
+    const queryClient = testQueryClient();
+    const first = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await expect(first.result.current.send('persist replacement')).rejects.toThrow(
+        '免费次数已用完',
+      );
+    });
+    const originalUsageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    act(() => first.result.current.setActiveRechargeIntent(REPLACEMENT_INTENT));
+    expect(first.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    first.unmount();
+
+    const second = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+    await vi.waitFor(() => expect(second.result.current.pendingRetryAvailable).toBe(true));
+    expect(second.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    await act(async () => {
+      await expect(second.result.current.retryPending()).rejects.toThrow('免费次数已用完');
+    });
+
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(originalUsageId);
+    expect(second.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    expect(
+      JSON.parse(window.sessionStorage.getItem(`combo:pending-usage:v2:${SESSION_A}`) ?? '{}'),
+    ).toMatchObject({
+      version: 2,
+      usageId: originalUsageId,
+      activeRechargeIntentId: REPLACEMENT_INTENT,
+    });
+    second.unmount();
+  });
+
+  it('does not rotate the active intent when a credited resume still receives 402', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('first recharge', 402))
+      .mockRejectedValueOnce(new ApiError('still insufficient', 402));
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('needs two payments')).rejects.toThrow('免费次数已用完');
+    });
+    const usageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    act(() => result.current.setActiveRechargeIntent(REPLACEMENT_INTENT));
+    await act(async () => {
+      await expect(result.current.resumeAfterRecharge(REPLACEMENT_INTENT)).rejects.toThrow(
+        '免费次数已用完',
+      );
+    });
+
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(usageId);
+    expect(result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+  });
+
+  it('preserves credited provenance across close, reload, and repeated deterministic 4xx', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    recognizeRechargeForExpectedUsage();
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('first recharge', 402))
+      .mockRejectedValueOnce(new ApiError('credited state is not ready', 422))
+      .mockRejectedValueOnce(new ApiError('credited state is still not ready', 422))
+      .mockResolvedValueOnce(gatewayResponse(TURN_A));
+    const queryClient = testQueryClient();
+    const first = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await expect(first.result.current.send('retry credited usage')).rejects.toThrow(
+        '免费次数已用完',
+      );
+    });
+    const usageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    act(() => first.result.current.setActiveRechargeIntent(REPLACEMENT_INTENT));
+
+    await act(async () => {
+      await expect(first.result.current.resumeAfterRecharge(REPLACEMENT_INTENT)).rejects.toThrow(
+        'credited state is not ready',
+      );
+    });
+    expect(first.result.current.rechargeRequired).not.toBeNull();
+    expect(first.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    act(() => first.result.current.clearRechargeRequired());
+    first.unmount();
+
+    const second = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+    await vi.waitFor(() => expect(second.result.current.pendingRetryAvailable).toBe(true));
+    expect(second.result.current.rechargeRequired).toBeNull();
+    expect(second.result.current.activeRechargeIntentId).toBe(REPLACEMENT_INTENT);
+    await act(async () => {
+      await expect(second.result.current.retryPending()).rejects.toThrow(
+        'credited state is still not ready',
+      );
+    });
+    expect(
+      JSON.parse(window.sessionStorage.getItem(`combo:pending-usage:v2:${SESSION_A}`) ?? '{}'),
+    ).toMatchObject({ usageId, activeRechargeIntentId: REPLACEMENT_INTENT });
+
+    await act(async () => {
+      await second.result.current.retryPending();
+    });
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(usageId);
+    expect(sendSessionMessageMock.mock.calls[2]?.[2]).toBe(usageId);
+    expect(sendSessionMessageMock.mock.calls[3]?.[2]).toBe(usageId);
+    expect(window.sessionStorage.length).toBe(0);
+    second.unmount();
+  });
+
+  it.each([
+    ['an extra key', { unexpected: true }],
+    ['an uppercase usage UUID', { usageId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA' }],
+    ['non-canonical text', { text: ' injected ' }],
+    ['an intent on an uncertain task', { activeRechargeIntentId: REPLACEMENT_INTENT }],
+  ])('fails closed for hostile PendingUsageV2 with %s', async (_label, override) => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    window.sessionStorage.setItem(
+      `combo:pending-usage:v2:${SESSION_A}`,
+      JSON.stringify({
+        version: 2,
+        sessionId: SESSION_A,
+        text: 'safe text',
+        usageId: '99999999-9999-4999-8999-999999999999',
+        reason: 'uncertain',
+        ...override,
+      }),
+    );
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await vi.waitFor(() => expect(result.current.pendingRetryAvailable).toBe(false));
+    await act(async () => {
+      await expect(result.current.retryPending()).rejects.toThrow('没有需要重试的任务');
+    });
+    expect(sendSessionMessageMock).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(`combo:pending-usage:v2:${SESSION_A}`)).toBeNull();
+  });
+
+  it('does not revive a coexisting V1 after a hostile V2 is rejected', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    const legacyKey = `combo:pending-usage:v1:${SESSION_A}`;
+    const currentKey = `combo:pending-usage:v2:${SESSION_A}`;
+    window.sessionStorage.setItem(
+      legacyKey,
+      JSON.stringify({
+        sessionId: SESSION_A,
+        text: 'stale legacy task',
+        usageId: '88888888-8888-4888-8888-888888888888',
+        reason: 'uncertain',
+      }),
+    );
+    window.sessionStorage.setItem(currentKey, '{"version":2,"unexpected":true}');
+    const queryClient = testQueryClient();
+    const first = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+
+    await vi.waitFor(() => expect(first.result.current.pendingRetryAvailable).toBe(false));
+    expect(window.sessionStorage.getItem(currentKey)).toBeNull();
+    expect(window.sessionStorage.getItem(legacyKey)).toBeNull();
+    await act(async () => {
+      await expect(first.result.current.retryPending()).rejects.toThrow('没有需要重试的任务');
+    });
+    first.unmount();
+
+    const second = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(queryClient),
+    });
+    await vi.waitFor(() => expect(second.result.current.pendingRetryAvailable).toBe(false));
+    await act(async () => {
+      await expect(second.result.current.retryPending()).rejects.toThrow('没有需要重试的任务');
+    });
+    expect(sendSessionMessageMock).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(currentKey)).toBeNull();
+    expect(window.sessionStorage.getItem(legacyKey)).toBeNull();
+    second.unmount();
+  });
+
+  it('migrates V1 without guessing a lost replacement intent and retries the original usageId', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    const legacyUsageId = '99999999-9999-4999-8999-999999999999';
+    window.sessionStorage.setItem(
+      `combo:pending-usage:v1:${SESSION_A}`,
+      JSON.stringify({
+        sessionId: SESSION_A,
+        text: 'legacy recharge',
+        usageId: legacyUsageId,
+        reason: 'recharge_required',
+      }),
+    );
+    sendSessionMessageMock.mockResolvedValueOnce(gatewayResponse(TURN_A, true));
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await vi.waitFor(() => expect(result.current.pendingRetryAvailable).toBe(true));
+    expect(result.current.activeRechargeIntentId).toBeNull();
+    expect(
+      JSON.parse(window.sessionStorage.getItem(`combo:pending-usage:v2:${SESSION_A}`) ?? '{}'),
+    ).toMatchObject({ reason: 'uncertain', usageId: legacyUsageId });
+    expect(window.sessionStorage.getItem(`combo:pending-usage:v1:${SESSION_A}`)).toBeNull();
+
+    await act(async () => {
+      await result.current.retryPending();
+    });
+    expect(sendSessionMessageMock).toHaveBeenCalledWith(
+      SESSION_A,
+      'legacy recharge',
+      legacyUsageId,
+    );
+  });
+
+  it('retains the same usageId after a 409 until the authoritative retry settles it', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new ApiError('仍在确认原请求', 409))
+      .mockResolvedValueOnce(gatewayResponse(TURN_A, true));
+    const { result } = renderHook(() => useSessionStream(SESSION_A, DETAIL_A), {
+      wrapper: testWrapper(testQueryClient()),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('conflicted request')).rejects.toThrow('仍在确认原请求');
+    });
+    const usageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    expect(result.current.pendingRetryAvailable).toBe(true);
+    await act(async () => {
+      await result.current.retryPending();
+    });
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(usageId);
+  });
+
   it('does not let an old session POST completion or stale detail poison the new session', async () => {
     vi.stubGlobal('EventSource', MockEventSource);
     const pendingA = deferred<SendSessionMessageResult>();
@@ -419,6 +872,13 @@ function testWrapper(queryClient: QueryClient) {
   };
 }
 
+function strictTestWrapper(queryClient: QueryClient) {
+  const Wrapper = testWrapper(queryClient);
+  return function StrictTestWrapper({ children }: PropsWithChildren): ReactElement {
+    return createElement(StrictMode, null, createElement(Wrapper, { children }));
+  };
+}
+
 function sessionDetail(sessionId: string, sourceTurnId?: string): SessionDetail {
   return {
     session: {
@@ -451,6 +911,33 @@ function sessionDetail(sessionId: string, sourceTurnId?: string): SessionDetail 
       : [],
     activeTurn: sourceTurnId ? { id: sourceTurnId, createdAt: '2026-07-25T00:00:01.000Z' } : null,
     currentUiArtifactId: null,
+  };
+}
+
+function knowledgeSessionDetail(sessionId: string): SessionDetail {
+  const detail = sessionDetail(sessionId);
+  return {
+    ...detail,
+    session: { ...detail.session, mode: 'consume' },
+    agentBinding: {
+      productKind: 'knowledge_agent_test',
+      capability: {
+        id: detail.capability.id,
+        protocol: 'combo.agent-package-capability/2',
+      },
+      release: {
+        protocol: 'combo.agent-package-release/1',
+        releaseId: `release.agent-package.${'a'.repeat(32)}`,
+        packageDigest: `sha256:${'b'.repeat(64)}`,
+      },
+      releaseScope: 'controlled_test',
+      knowledge: {
+        protocol: 'combo.knowledge-bundle/1',
+        resourcePath: 'skills/knowledge/references/knowledge-bundle.json',
+        resourceDigest: `sha256:${'c'.repeat(64)}`,
+      },
+    },
+    knowledgeResults: [],
   };
 }
 

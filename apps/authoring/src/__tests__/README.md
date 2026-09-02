@@ -18,6 +18,9 @@
 - `browser-origin.test.ts` 验证 CORS、认证请求和 Cookie 鉴权业务写请求的精确来源策略。
 - `observability-redaction.test.ts` 使用内存 span 导出器验证查询凭据、客户端地址、请求头、正文和异常文本在导出前被删除，并验证浏览器事件的敏感 pathname 只形成固定路由桶。
 - `routes.test.ts` 核对端点总数、无重复、认证公开面和前置守卫。
+- `agent-package-object-store.test.ts` 通过 AWS SDK 假件与对抗流验证 Agent Package 对象的条件首次写入、exact-byte 幂等回读、异内容冲突、声明长度与流式上限、取消、流收尾和错误脱敏。
+- `agent-package-release.test.ts` 验证固定三文件知识 Package 的严格 base64 与协议校验、files-first 与 `agent.json`-last exact 回读、并发 exactly-once、owner-only Release 读取、Registry SQL 锁序和只读追加权限面。
+- `env-agent-package-release.test.ts` 验证 Publisher gate 只在 exact Test candidate 上生效，缺失或漂移保持关闭，并拒绝 Preview、Production、worker、非规范 JSON 与额外字段且不回显配置内容。
 - `task-service.test.ts` 验证任务状态机、建任务幂等、重试和过期对账。
 - `pairing.test.ts` 验证配对码、快照准备、分片登记和对象清理。
 - `connect-script.test.ts` 验证本机助手脚本的续传与响应丢失处理。

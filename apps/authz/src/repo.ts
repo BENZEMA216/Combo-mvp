@@ -1,4 +1,4 @@
-// PostgreSQL 事实源实现：SQL 与 db/migrations/0012_v2_end_user_identity.sql 一一对应。
+// PostgreSQL 事实源实现：SQL 与 db/v2-migrations/0012_v2_end_user_identity.sql 一一对应。
 // 表与字段名改动必须先改迁移再改这里。
 import { type Pool, type PoolClient } from 'pg';
 import { codeDigestMatches } from './crypto.js';

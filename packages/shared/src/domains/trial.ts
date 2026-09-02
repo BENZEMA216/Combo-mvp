@@ -4,6 +4,12 @@
 import { z } from 'zod';
 import { IdSchema, IsoDateTimeSchema } from '../core/ids.js';
 import { CapabilityInputFieldSchema } from './capability.js';
+import {
+  AgentBindingSchema,
+  KnowledgeTurnResultSchema,
+  knowledgeBindingsEqual,
+} from './knowledge.js';
+import { PendingUsageRequestTextSchema } from './pending-recovery.js';
 
 export const SessionStatusSchema = z.enum(['active', 'closed']);
 export type SessionStatus = z.infer<typeof SessionStatusSchema>;
@@ -46,7 +52,7 @@ export type UsageId = z.infer<typeof UsageIdSchema>;
 
 export const SendMessageBodySchema = z
   .object({
-    text: z.string().min(1).max(20_000),
+    text: PendingUsageRequestTextSchema,
     usageId: UsageIdSchema,
   })
   .strict();
@@ -58,7 +64,9 @@ const CentsStringSchema = z.string().regex(/^(0|[1-9]\d*)$/);
 export const RechargeRequiredBodySchema = z
   .object({
     rechargeRequired: z.literal(true),
-    /** 与被阻止的 usageId 相同，供充值后继续原任务。 */
+    /** 新 Runtime 返回原待恢复用量；缺失只表示滚动期旧 Runtime。 */
+    recoveryUsageId: UsageIdSchema.optional(),
+    /** 当前有效充值意图；替换失败订单后可能不同于原 recoveryUsageId。 */
     rechargeIntentId: UsageIdSchema,
     balanceCents: CentsStringSchema,
     requiredCents: CentsStringSchema,
@@ -169,30 +177,149 @@ export const TerminalTurnViewSchema = z.discriminatedUnion('status', [
 export type TerminalTurnView = z.infer<typeof TerminalTurnViewSchema>;
 
 /** 会话详情：一次请求把聊天流和画布恢复出来所需的全部。 */
-export const SessionDetailSchema = z.object({
-  session: SessionViewSchema,
-  capability: z.object({
-    id: IdSchema,
-    name: z.string(),
-    summary: z.string(),
-    kind: z.string(),
-    /** 开场表单字段与提示语，来自 MinIO 里的能力定义（定义读不出时为空数组，页面退化为自由输入）。 */
-    inputs: z.array(CapabilityInputFieldSchema),
-    starterPrompts: z.array(z.string()),
-  }),
-  messages: z.array(MessageViewSchema),
-  artifacts: z.array(ArtifactViewSchema),
-  /** PostgreSQL 中仍在运行的 Turn；页面刷新后据此恢复运行态，再由 SSE 补齐事件。 */
-  activeTurn: ActiveTurnViewSchema.nullable(),
-  /**
-   * 最近一次 PostgreSQL 已提交终态。字段保持 optional 以兼容旧 Runtime；新 Runtime
-   * 始终返回。只含安全状态与 allowlist code，用于刷新后及时识别失败而非空等超时。
-   */
-  latestTerminalTurn: TerminalTurnViewSchema.nullable().optional(),
-  /**
-   * Studio 返回会话内与 Agent 生效 UI 对应的 artifact；consume 返回创建会话时
-   * 冻结的 UI 副本 id。没有唯一可确认副本时为 null；字段缺失时前端安全降级。
-   */
-  currentUiArtifactId: IdSchema.nullable().optional(),
-});
+export const SessionDetailSchema = z
+  .object({
+    session: SessionViewSchema,
+    capability: z.object({
+      id: IdSchema,
+      name: z.string(),
+      summary: z.string(),
+      kind: z.string(),
+      /** 开场表单字段与提示语，来自 MinIO 里的能力定义（定义读不出时为空数组，页面退化为自由输入）。 */
+      inputs: z.array(CapabilityInputFieldSchema),
+      starterPrompts: z.array(z.string()),
+    }),
+    messages: z.array(MessageViewSchema),
+    artifacts: z.array(ArtifactViewSchema),
+    /** PostgreSQL 中仍在运行的 Turn；页面刷新后据此恢复运行态，再由 SSE 补齐事件。 */
+    activeTurn: ActiveTurnViewSchema.nullable(),
+    /**
+     * 最近一次 PostgreSQL 已提交终态。字段保持 optional 以兼容旧 Runtime；新 Runtime
+     * 始终返回。只含安全状态与 allowlist code，用于刷新后及时识别失败而非空等超时。
+     */
+    latestTerminalTurn: TerminalTurnViewSchema.nullable().optional(),
+    /**
+     * Studio 返回会话内与 Agent 生效 UI 对应的 artifact；consume 返回创建会话时
+     * 冻结的 UI 副本 id。没有唯一可确认副本时为 null；字段缺失时前端安全降级。
+     */
+    currentUiArtifactId: IdSchema.nullable().optional(),
+    /** 新 Runtime 明确返回的产品绑定；缺失仅表示滚动期旧 Runtime 响应。 */
+    agentBinding: AgentBindingSchema.optional(),
+    /** 知识会话的权威回答/引用/计费投影；空会话仍必须返回空数组。 */
+    knowledgeResults: z.array(KnowledgeTurnResultSchema).optional(),
+  })
+  .superRefine((detail, context) => {
+    const binding = detail.agentBinding;
+    if (binding === undefined) {
+      if (detail.knowledgeResults !== undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['knowledgeResults'],
+          message: 'Knowledge results require an explicit knowledge binding',
+        });
+      }
+      return;
+    }
+    if (binding.productKind === 'legacy_capability') {
+      if (detail.knowledgeResults !== undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['knowledgeResults'],
+          message: 'Legacy Sessions cannot expose knowledge results',
+        });
+      }
+      return;
+    }
+
+    if (detail.knowledgeResults === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['knowledgeResults'],
+        message: 'Knowledge Sessions must return a result collection',
+      });
+      return;
+    }
+    if (
+      detail.session.mode !== 'consume' ||
+      detail.session.capabilityId !== binding.capability.id ||
+      detail.capability.id !== binding.capability.id
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentBinding', 'capability', 'id'],
+        message: 'Knowledge binding must match the consume Session and Capability',
+      });
+    }
+    if (detail.messages.some((message) => message.role !== 'user')) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['messages'],
+        message: 'Knowledge Session messages may expose only user input',
+      });
+    }
+
+    const receiptIds = new Set<string>();
+    const usageIds = new Set<string>();
+    const turnIds = new Set<string>();
+    const responseMessageIds = new Set<string>();
+    const sourceLabels = new Map<string, string>();
+    const chunkSources = new Map<string, string>();
+    for (const [index, result] of detail.knowledgeResults.entries()) {
+      if (!knowledgeBindingsEqual(binding, result.binding)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['knowledgeResults', index, 'binding'],
+          message: 'Knowledge result binding must equal the frozen Session binding',
+        });
+      }
+      for (const [field, seen, value] of [
+        ['receiptId', receiptIds, result.receiptId],
+        ['usageId', usageIds, result.usageId],
+        ['turnId', turnIds, result.turnId],
+      ] as const) {
+        if (seen.has(value)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['knowledgeResults', index, field],
+            message: `Knowledge result ${field} must be unique`,
+          });
+        }
+        seen.add(value);
+      }
+      if (result.answer !== null) {
+        if (responseMessageIds.has(result.answer.messageId)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['knowledgeResults', index, 'answer', 'messageId'],
+            message: 'Knowledge response Message IDs must be unique',
+          });
+        }
+        responseMessageIds.add(result.answer.messageId);
+      }
+      for (const [citationIndex, citation] of result.citations.entries()) {
+        const existingLabel = sourceLabels.get(citation.sourceId);
+        if (existingLabel !== undefined && existingLabel !== citation.displayLabel) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['knowledgeResults', index, 'citations', citationIndex, 'displayLabel'],
+            message: 'A frozen knowledge source must keep one exact citation label',
+          });
+        } else {
+          sourceLabels.set(citation.sourceId, citation.displayLabel);
+        }
+
+        const sourceIdentity = `${citation.sourceId}\u0000${citation.displayLabel}`;
+        const existingSource = chunkSources.get(citation.chunkId);
+        if (existingSource !== undefined && existingSource !== sourceIdentity) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['knowledgeResults', index, 'citations', citationIndex, 'chunkId'],
+            message: 'A frozen knowledge chunk must keep one exact source identity',
+          });
+        } else {
+          chunkSources.set(citation.chunkId, sourceIdentity);
+        }
+      }
+    }
+  });
 export type SessionDetail = z.infer<typeof SessionDetailSchema>;

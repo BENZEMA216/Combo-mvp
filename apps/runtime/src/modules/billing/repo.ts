@@ -1,7 +1,13 @@
 import type { Queryable } from '../../platform/infra/db.js';
+import { KnowledgeAgentBindingSchema, type KnowledgeAgentBinding } from '@cb/shared';
 
 export type UsageChargeSource = 'owner' | 'free' | 'wallet';
 export type UsageChargeStatus = 'reserved' | 'completed' | 'released';
+export type KnowledgeExecutionOutcome =
+  | 'answered'
+  | 'insufficient_evidence'
+  | 'failed'
+  | 'interrupted';
 
 interface UsageChargeDbRow {
   id: string;
@@ -17,6 +23,16 @@ interface UsageChargeDbRow {
   free_limit_snapshot: number;
   reserved_cents: string | number | bigint;
   settled_cents: string | number | bigint;
+  product_kind?: 'legacy_capability' | 'knowledge_agent_test';
+  capability_protocol?: string | null;
+  release_id?: string | null;
+  package_digest?: string | null;
+  release_scope?: string | null;
+  knowledge_resource_path?: string | null;
+  knowledge_resource_digest?: string | null;
+  billing_policy_version?: string | null;
+  validator_policy_version?: string | null;
+  execution_outcome?: KnowledgeExecutionOutcome | null;
 }
 
 export interface UsageChargeRecord {
@@ -33,6 +49,11 @@ export interface UsageChargeRecord {
   freeLimitSnapshot: number;
   reservedCents: bigint;
   settledCents: bigint;
+  productKind: 'legacy_capability' | 'knowledge_agent_test';
+  knowledgeBinding: KnowledgeAgentBinding | null;
+  billingPolicyVersion: string | null;
+  validatorPolicyVersion: string | null;
+  executionOutcome: KnowledgeExecutionOutcome | null;
 }
 
 export interface BillingAccountBalance {
@@ -59,6 +80,28 @@ function toNonNegativeBigInt(value: string | number | bigint, field: string): bi
 }
 
 function toUsageCharge(row: UsageChargeDbRow): UsageChargeRecord {
+  const productKind = row.product_kind ?? 'legacy_capability';
+  const knowledgeBinding =
+    productKind === 'knowledge_agent_test'
+      ? KnowledgeAgentBindingSchema.parse({
+          productKind,
+          capability: {
+            id: row.capability_id,
+            protocol: row.capability_protocol,
+          },
+          release: {
+            protocol: 'combo.agent-package-release/1',
+            releaseId: row.release_id,
+            packageDigest: row.package_digest,
+          },
+          releaseScope: row.release_scope,
+          knowledge: {
+            protocol: 'combo.knowledge-bundle/1',
+            resourcePath: row.knowledge_resource_path,
+            resourceDigest: row.knowledge_resource_digest,
+          },
+        })
+      : null;
   return {
     id: row.id,
     ownerUserId: row.owner_user_id,
@@ -73,6 +116,11 @@ function toUsageCharge(row: UsageChargeDbRow): UsageChargeRecord {
     freeLimitSnapshot: row.free_limit_snapshot,
     reservedCents: toNonNegativeBigInt(row.reserved_cents, 'reserved_cents'),
     settledCents: toNonNegativeBigInt(row.settled_cents, 'settled_cents'),
+    productKind,
+    knowledgeBinding,
+    billingPolicyVersion: row.billing_policy_version ?? null,
+    validatorPolicyVersion: row.validator_policy_version ?? null,
+    executionOutcome: row.execution_outcome ?? null,
   };
 }
 
@@ -101,7 +149,10 @@ export async function findUsageCharge(
   const result = await db.query<UsageChargeDbRow>(
     `SELECT id, owner_user_id, usage_id, capability_id, session_id, turn_id,
             request_fingerprint, charge_source, status, unit_price_cents,
-            free_limit_snapshot, reserved_cents, settled_cents
+            free_limit_snapshot, reserved_cents, settled_cents,
+            product_kind, capability_protocol, release_id, package_digest, release_scope,
+            knowledge_resource_path, knowledge_resource_digest,
+            billing_policy_version, validator_policy_version, execution_outcome
        FROM usage_charges
       WHERE owner_user_id = $1 AND usage_id = $2
       FOR UPDATE`,
@@ -191,6 +242,11 @@ export async function insertReservedUsageCharge(
     unitPriceCents: bigint;
     freeLimitSnapshot: number;
     reservedCents: bigint;
+    knowledge?: {
+      binding: KnowledgeAgentBinding;
+      billingPolicyVersion: string;
+      validatorPolicyVersion: string;
+    };
   },
 ): Promise<string> {
   if (input.chargeSource === 'free') {
@@ -214,26 +270,59 @@ export async function insertReservedUsageCharge(
     if (account.rowCount !== 1) throw new Error('wallet reservation was lost');
   }
 
-  const result = await db.query<{ id: string }>(
-    `INSERT INTO usage_charges
+  const result = input.knowledge
+    ? await db.query<{ id: string }>(
+        `INSERT INTO usage_charges
+       (owner_user_id, usage_id, capability_id, session_id, turn_id,
+        request_fingerprint, charge_source, status, unit_price_cents,
+        free_limit_snapshot, reserved_cents, settled_cents,
+        product_kind, capability_protocol, release_id, package_digest, release_scope,
+        knowledge_resource_path, knowledge_resource_digest,
+        billing_policy_version, validator_policy_version, execution_outcome)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'reserved', $8::bigint, $9, $10::bigint, 0,
+             'knowledge_agent_test', $11, $12, $13, $14, $15, $16, $17, $18, NULL)
+     RETURNING id`,
+        [
+          input.ownerUserId,
+          input.usageId,
+          input.capabilityId,
+          input.sessionId,
+          input.turnId,
+          input.requestFingerprint,
+          input.chargeSource,
+          input.unitPriceCents.toString(),
+          input.freeLimitSnapshot,
+          input.reservedCents.toString(),
+          input.knowledge.binding.capability.protocol,
+          input.knowledge.binding.release.releaseId,
+          input.knowledge.binding.release.packageDigest,
+          input.knowledge.binding.releaseScope,
+          input.knowledge.binding.knowledge.resourcePath,
+          input.knowledge.binding.knowledge.resourceDigest,
+          input.knowledge.billingPolicyVersion,
+          input.knowledge.validatorPolicyVersion,
+        ],
+      )
+    : await db.query<{ id: string }>(
+        `INSERT INTO usage_charges
        (owner_user_id, usage_id, capability_id, session_id, turn_id,
         request_fingerprint, charge_source, status, unit_price_cents,
         free_limit_snapshot, reserved_cents, settled_cents)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'reserved', $8::bigint, $9, $10::bigint, 0)
      RETURNING id`,
-    [
-      input.ownerUserId,
-      input.usageId,
-      input.capabilityId,
-      input.sessionId,
-      input.turnId,
-      input.requestFingerprint,
-      input.chargeSource,
-      input.unitPriceCents.toString(),
-      input.freeLimitSnapshot,
-      input.reservedCents.toString(),
-    ],
-  );
+        [
+          input.ownerUserId,
+          input.usageId,
+          input.capabilityId,
+          input.sessionId,
+          input.turnId,
+          input.requestFingerprint,
+          input.chargeSource,
+          input.unitPriceCents.toString(),
+          input.freeLimitSnapshot,
+          input.reservedCents.toString(),
+        ],
+      );
   const id = result.rows[0]?.id;
   if (!id) throw new Error('usage charge insert returned no row');
   return id;
@@ -246,7 +335,10 @@ export async function findUsageChargeByTurn(
   const result = await db.query<UsageChargeDbRow>(
     `SELECT id, owner_user_id, usage_id, capability_id, session_id, turn_id,
             request_fingerprint, charge_source, status, unit_price_cents,
-            free_limit_snapshot, reserved_cents, settled_cents
+            free_limit_snapshot, reserved_cents, settled_cents,
+            product_kind, capability_protocol, release_id, package_digest, release_scope,
+            knowledge_resource_path, knowledge_resource_digest,
+            billing_policy_version, validator_policy_version, execution_outcome
        FROM usage_charges
       WHERE turn_id = $1
       FOR UPDATE`,
@@ -256,14 +348,38 @@ export async function findUsageChargeByTurn(
   return row ? toUsageCharge(row) : null;
 }
 
-export async function completeUsageCharge(db: Queryable, charge: UsageChargeRecord): Promise<void> {
+/** Immutable discriminator used before choosing a legacy or knowledge terminal transaction. */
+export async function readUsageChargeProductKindByTurn(
+  db: Queryable,
+  turnId: string,
+  signal?: AbortSignal,
+): Promise<'legacy_capability' | 'knowledge_agent_test' | null> {
+  const result = await db.query<{ product_kind: 'legacy_capability' | 'knowledge_agent_test' }>(
+    `SELECT product_kind FROM usage_charges WHERE turn_id = $1`,
+    [turnId],
+    signal,
+  );
+  return result.rows[0]?.product_kind ?? null;
+}
+
+export async function completeUsageCharge(
+  db: Queryable,
+  charge: UsageChargeRecord,
+  outcome?: 'answered',
+): Promise<void> {
+  if (charge.productKind === 'knowledge_agent_test' && outcome !== 'answered') {
+    throw new Error('knowledge usage completion requires answered outcome');
+  }
+  if (charge.productKind === 'legacy_capability' && outcome !== undefined) {
+    throw new Error('legacy usage cannot store a knowledge outcome');
+  }
   const settledCents = charge.chargeSource === 'wallet' ? charge.reservedCents : 0n;
   if (charge.chargeSource === 'free') {
     const allowance = await db.query(
       `UPDATE billing_free_allowances
           SET free_reserved_count = free_reserved_count - 1,
               free_used_count = free_used_count + 1,
-              updated_at = now()
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND capability_id = $2 AND free_reserved_count > 0`,
       [charge.ownerUserId, charge.capabilityId],
     );
@@ -271,7 +387,8 @@ export async function completeUsageCharge(db: Queryable, charge: UsageChargeReco
   } else if (charge.chargeSource === 'wallet') {
     const account = await db.query(
       `UPDATE billing_accounts
-          SET reserved_cents = reserved_cents - $2::bigint, updated_at = now()
+          SET reserved_cents = reserved_cents - $2::bigint,
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND reserved_cents >= $2::bigint`,
       [charge.ownerUserId, charge.reservedCents.toString()],
     );
@@ -286,21 +403,44 @@ export async function completeUsageCharge(db: Queryable, charge: UsageChargeReco
     );
     if (!ledger.rows[0]) throw new Error('usage debit ledger invariant failed');
   }
-  const updated = await db.query(
-    `UPDATE usage_charges
+  const updated =
+    charge.productKind === 'knowledge_agent_test'
+      ? await db.query(
+          `UPDATE usage_charges
         SET status = 'completed', settled_cents = $2::bigint,
-            finished_at = now(), updated_at = now()
+            execution_outcome = 'answered',
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
+      WHERE id = $1 AND status = 'reserved' AND execution_outcome IS NULL`,
+          [charge.id, settledCents.toString()],
+        )
+      : await db.query(
+          `UPDATE usage_charges
+        SET status = 'completed', settled_cents = $2::bigint,
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
       WHERE id = $1 AND status = 'reserved'`,
-    [charge.id, settledCents.toString()],
-  );
+          [charge.id, settledCents.toString()],
+        );
   if (updated.rowCount !== 1) throw new Error('usage completion invariant failed');
 }
 
-export async function releaseUsageCharge(db: Queryable, charge: UsageChargeRecord): Promise<void> {
+export async function releaseUsageCharge(
+  db: Queryable,
+  charge: UsageChargeRecord,
+  outcome?: Exclude<KnowledgeExecutionOutcome, 'answered'>,
+): Promise<void> {
+  if (charge.productKind === 'knowledge_agent_test' && outcome === undefined) {
+    throw new Error('knowledge usage release requires an execution outcome');
+  }
+  if (charge.productKind === 'legacy_capability' && outcome !== undefined) {
+    throw new Error('legacy usage cannot store a knowledge outcome');
+  }
   if (charge.chargeSource === 'free') {
     const allowance = await db.query(
       `UPDATE billing_free_allowances
-          SET free_reserved_count = free_reserved_count - 1, updated_at = now()
+          SET free_reserved_count = free_reserved_count - 1,
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND capability_id = $2 AND free_reserved_count > 0`,
       [charge.ownerUserId, charge.capabilityId],
     );
@@ -310,18 +450,29 @@ export async function releaseUsageCharge(db: Queryable, charge: UsageChargeRecor
       `UPDATE billing_accounts
           SET reserved_cents = reserved_cents - $2::bigint,
               balance_cents = balance_cents + $2::bigint,
-              updated_at = now()
+              updated_at = GREATEST(now(), updated_at)
         WHERE owner_user_id = $1 AND reserved_cents >= $2::bigint`,
       [charge.ownerUserId, charge.reservedCents.toString()],
     );
     if (account.rowCount !== 1) throw new Error('wallet release invariant failed');
   }
-  const updated = await db.query(
-    `UPDATE usage_charges
+  const updated =
+    charge.productKind === 'knowledge_agent_test'
+      ? await db.query(
+          `UPDATE usage_charges
+        SET status = 'released', settled_cents = 0, execution_outcome = $2,
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
+      WHERE id = $1 AND status = 'reserved' AND execution_outcome IS NULL`,
+          [charge.id, outcome],
+        )
+      : await db.query(
+          `UPDATE usage_charges
         SET status = 'released', settled_cents = 0,
-            finished_at = now(), updated_at = now()
+            finished_at = GREATEST(now(), created_at),
+            updated_at = GREATEST(now(), updated_at)
       WHERE id = $1 AND status = 'reserved'`,
-    [charge.id],
-  );
+          [charge.id],
+        );
   if (updated.rowCount !== 1) throw new Error('usage release invariant failed');
 }

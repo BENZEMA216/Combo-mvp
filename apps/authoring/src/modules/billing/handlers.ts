@@ -4,7 +4,16 @@ import type {
   RouteHandlerMethod,
   preHandlerHookHandler,
 } from 'fastify';
-import { ErrorCode, errorBodyFor, type Envelope } from '@cb/shared';
+import {
+  CreateRecoveryRechargeOrderBodySchema,
+  ErrorCode,
+  RechargeOrderViewSchema,
+  RecoveryRechargeOrderViewSchema,
+  errorBodyFor,
+  type Envelope,
+  type RechargeOrderView,
+  type RecoveryRechargeOrderView,
+} from '@cb/shared';
 import { z } from 'zod';
 import { asTxPool } from '../../platform/infra/db-tx.js';
 import { sendError } from '../../platform/http/_helpers.js';
@@ -12,6 +21,7 @@ import { PgBillingRepository } from './repo.js';
 import {
   createRechargeOrder,
   getRechargeOrderByIntentWithReconciliation,
+  getRechargeOrderByRecoveryWithReconciliation,
   getRechargeOrderWithReconciliation,
   getWallet,
   handlePaymentNotification,
@@ -20,43 +30,22 @@ import {
   BillingIdempotencyConflictError,
   BillingNotFoundError,
   BillingRateLimitedError,
+  BillingRecoveryUnavailableError,
   BillingUnavailableError,
   BillingValidationError,
   type RechargeOrder,
 } from './types.js';
 
-export const CreateRechargeOrderSchema = z
-  .object({
-    rechargeIntentId: z.string().uuid(),
-    amountCents: z.number().int().positive().max(99_999_999),
-    channel: z.literal('qr'),
-    payType: z.enum(['wechat', 'alipay']),
-  })
-  .strict();
+export const CreateRechargeOrderSchema = CreateRecoveryRechargeOrderBodySchema;
 
 const RechargeOrderParamsSchema = z.object({ orderId: z.string().uuid() }).strict();
 const RechargeIntentParamsSchema = z.object({ rechargeIntentId: z.string().uuid() }).strict();
-
-interface RechargeOrderView {
-  id: string;
-  rechargeIntentId: string;
-  amountCents: string;
-  channel: RechargeOrder['paymentMethod'];
-  payType?: RechargeOrder['payType'];
-  status: RechargeOrder['paymentStatus'] | 'credited';
-  reconciliationActive: boolean;
-  paymentAction?: {
-    kind: 'redirect' | 'qr_code';
-    url: string;
-  };
-  createdAt: string;
-  updatedAt: string;
-}
+const RecoveryUsageParamsSchema = z.object({ recoveryUsageId: z.string().uuid() }).strict();
 
 function toRechargeOrderView(order: RechargeOrder): RechargeOrderView {
   const status = order.creditStatus === 'credited' ? 'credited' : order.paymentStatus;
   const mayUseAction = status === 'created' || status === 'pending' || status === 'unknown';
-  return {
+  return RechargeOrderViewSchema.parse({
     id: order.id,
     rechargeIntentId: order.clientIdempotencyKey,
     amountCents: order.amountCents.toString(),
@@ -74,7 +63,14 @@ function toRechargeOrderView(order: RechargeOrder): RechargeOrderView {
       : {}),
     createdAt: order.createdAt.toISOString(),
     updatedAt: order.updatedAt.toISOString(),
-  };
+  });
+}
+
+function toRecoveryRechargeOrderView(order: RechargeOrder): RecoveryRechargeOrderView {
+  return RecoveryRechargeOrderViewSchema.parse({
+    ...toRechargeOrderView(order),
+    recoveryUsageId: order.recoveryUsageId,
+  });
 }
 
 function billingRepository(req: FastifyRequest): PgBillingRepository {
@@ -97,6 +93,9 @@ function sendBillingFailure(
   }
   if (error instanceof BillingUnavailableError) {
     return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+  }
+  if (error instanceof BillingRecoveryUnavailableError) {
+    return sendError(req, reply, ErrorCode.STATE_CONFLICT);
   }
   if (error instanceof BillingRateLimitedError) {
     reply.header('retry-after', error.retryAfterSeconds.toString());
@@ -173,8 +172,11 @@ export function createRechargeOrderHandler(): RouteHandlerMethod {
         req.server.infra.billing,
         { ownerUserId, ...parsed.data, amountCents: BigInt(parsed.data.amountCents) },
       );
-      const body: Envelope<RechargeOrderView> = {
-        data: toRechargeOrderView(result.order),
+      const body: Envelope<RechargeOrderView | RecoveryRechargeOrderView> = {
+        data:
+          parsed.data.recoveryUsageId === undefined
+            ? toRechargeOrderView(result.order)
+            : toRecoveryRechargeOrderView(result.order),
         meta: { traceId: req.id },
       };
       const status =
@@ -235,6 +237,33 @@ export function getRechargeOrderByIntentHandler(): RouteHandlerMethod {
       );
       const body: Envelope<RechargeOrderView | null> = {
         data: order ? toRechargeOrderView(order) : null,
+        meta: { traceId: req.id },
+      };
+      return reply.code(200).send(body);
+    } catch (error) {
+      return sendBillingFailure(req, reply, error);
+    }
+  };
+}
+
+export function getRechargeOrderByRecoveryHandler(): RouteHandlerMethod {
+  return async (req, reply) => {
+    const ownerUserId = req.auth?.userId;
+    if (!ownerUserId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
+    const parsed = RecoveryUsageParamsSchema.safeParse(req.params);
+    if (!parsed.success) return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
+    try {
+      const order = await getRechargeOrderByRecoveryWithReconciliation(
+        billingRepository(req),
+        req.server.infra.paymentGateway,
+        {
+          ownerUserId,
+          recoveryUsageId: parsed.data.recoveryUsageId,
+          leaseOwner: `http:${req.id}`,
+        },
+      );
+      const body: Envelope<RecoveryRechargeOrderView | null> = {
+        data: order ? toRecoveryRechargeOrderView(order) : null,
         meta: { traceId: req.id },
       };
       return reply.code(200).send(body);

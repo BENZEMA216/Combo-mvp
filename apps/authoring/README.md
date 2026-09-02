@@ -1,6 +1,6 @@
 # apps/authoring（创作端服务）
 
-本包是创作者业务和余额充值的写入服务。API 进程提供第一方邮箱验证码认证、任务、上传、提取、能力管理、钱包读取与乐收赢充值接口；worker 进程消费提取队列并执行租约对账。只有 API 进程持有邮件供应商、验证码 HMAC 和支付机构密钥，worker 不依赖认证投递或支付配置。
+本包是创作者业务、受控 Test Agent Package 发布和余额充值的写入服务。API 进程提供第一方邮箱验证码认证、任务、上传、提取、能力管理、受控 Package Registry、钱包读取与乐收赢充值接口；worker 进程消费提取队列并执行租约对账。只有 API 进程持有邮件供应商、验证码 HMAC、Test Publisher gate 和支付机构密钥，worker 不依赖这些配置。
 
 ## 目录与文件
 
@@ -14,4 +14,4 @@
 
 ## 上下游关系
 
-authoring 依赖 `@cb/shared` 的接口契约，使用 PostgreSQL 保存业务、认证、充值订单与资金事实，使用 redis_queue 承载 BullMQ 队列，使用 redis_hot 承载事件流、锁和认证软限流，并通过对象存储保存上传与能力产物。浏览器只通过同源 Nginx 访问 API；runtime 不导入本包代码，而是通过同一数据库使用会话、免费额度和钱包事实。乐收赢只由 API 进程通过固定测试或正式基址访问。
+authoring 依赖 `@cb/shared` 的接口契约和 `@cb/creator-agent-protocol` 的 Package 合同，使用 PostgreSQL 保存业务、认证、canonical Package Registry、充值订单与资金事实，使用 redis_queue 承载 BullMQ 队列，使用 redis_hot 承载事件流、锁和认证软限流，并通过对象存储保存上传、能力产物与不可变 Package 字节。浏览器只通过同源 Nginx 访问 API；runtime 不导入本包代码，而是通过同一数据库使用会话、Package Release、免费额度和钱包事实。乐收赢只由 API 进程通过固定测试或正式基址访问。

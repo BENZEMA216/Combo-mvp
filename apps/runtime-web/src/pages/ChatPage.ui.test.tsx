@@ -1,7 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import type { ArtifactView, SessionDetail } from '@cb/shared';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import {
+  KnowledgeTurnResultSchema,
+  type ArtifactView,
+  type KnowledgeTurnResult,
+  type MessageView,
+  type PendingUsageRecoveryView,
+  type SessionDetail,
+} from '@cb/shared';
 import { ChatPage } from './ChatPage.js';
 
 const mocks = vi.hoisted(() => ({
@@ -14,14 +21,28 @@ const mocks = vi.hoisted(() => ({
     message: string;
   } | null,
   errorMessage: null as string | null,
+  streamingText: null as string | null,
+  streamConnectionFailed: false,
+  retryStreamConnection: vi.fn(),
   artifact: null as ArtifactView | null,
   artifactContent: '<!doctype html><html><body><button>运行</button></body></html>',
   send: vi.fn(),
   pendingRetryAvailable: false,
   retryPending: vi.fn(),
-  rechargeRequired: null,
+  rechargeRequired: null as {
+    rechargeRequired: true;
+    rechargeIntentId: string;
+    balanceCents: string;
+    requiredCents: string;
+  } | null,
+  activeRechargeIntentId: null as string | null,
+  pendingRecovery: null as PendingUsageRecoveryView | null,
+  recoveryDialogOpen: false,
   clearRechargeRequired: vi.fn(),
+  resumeAfterRecharge: vi.fn(),
+  setActiveRechargeIntent: vi.fn(),
   abandonRechargeUsage: vi.fn(),
+  refreshPendingRecovery: vi.fn(),
   createTrial: vi.fn(),
   createTrialPending: false,
 }));
@@ -48,7 +69,9 @@ vi.mock('../api/useSessionStream.js', () => ({
       activeArtifactId: artifact?.id ?? null,
       artifacts: Object.fromEntries(artifactList.map((item) => [item.id, item])),
       artifactList,
-      streamingText: null,
+      streamingText: mocks.streamingText,
+      streamConnectionFailed: mocks.streamConnectionFailed,
+      retryStreamConnection: mocks.retryStreamConnection,
       running: mocks.running || restoredTurn !== null,
       activeRunId: mocks.activeRunId ?? restoredTurn?.id ?? null,
       terminalRun: mocks.terminalRun,
@@ -56,13 +79,67 @@ vi.mock('../api/useSessionStream.js', () => ({
       pendingRetryAvailable: mocks.pendingRetryAvailable,
       retryPending: mocks.retryPending,
       rechargeRequired: mocks.rechargeRequired,
+      activeRechargeIntentId: mocks.activeRechargeIntentId,
+      pendingRecovery: mocks.pendingRecovery,
+      recoveryDialogOpen: mocks.recoveryDialogOpen,
       clearRechargeRequired: mocks.clearRechargeRequired,
+      resumeAfterRecharge: mocks.resumeAfterRecharge,
+      setActiveRechargeIntent: mocks.setActiveRechargeIntent,
       abandonRechargeUsage: mocks.abandonRechargeUsage,
+      refreshPendingRecovery: mocks.refreshPendingRecovery,
       send: mocks.send,
       interrupt: vi.fn(),
       selectArtifact: vi.fn(),
     };
   },
+}));
+
+vi.mock('../components/RechargeDialog.js', () => ({
+  RechargeDialog: ({
+    activeRechargeIntentId,
+    onActiveRechargeIntentChange,
+    onCredited,
+  }: {
+    activeRechargeIntentId: string;
+    onActiveRechargeIntentChange: (rechargeIntentId: string) => void;
+    onCredited: (creditedIntentId: string) => Promise<unknown>;
+  }) => (
+    <div data-testid="recharge-dialog" data-active-intent={activeRechargeIntentId}>
+      <button
+        type="button"
+        onClick={() => void onCredited(activeRechargeIntentId).catch(() => undefined)}
+      >
+        模拟到账
+      </button>
+      <button
+        type="button"
+        onClick={() => onActiveRechargeIntentChange('99999999-9999-4999-8999-999999999999')}
+      >
+        模拟替换订单
+      </button>
+    </div>
+  ),
+  RecoveryRechargeDialog: ({
+    recovery,
+    onCredited,
+    onAbandon,
+  }: {
+    recovery: PendingUsageRecoveryView;
+    onCredited: (creditedIntentId: string) => Promise<unknown>;
+    onAbandon: () => Promise<void>;
+  }) => (
+    <div data-testid="recovery-recharge-dialog" data-recovery-usage={recovery.usageId}>
+      <button
+        type="button"
+        onClick={() => void onCredited(recovery.activeRechargeIntentId).catch(() => undefined)}
+      >
+        模拟恢复到账
+      </button>
+      <button type="button" onClick={() => void onAbandon().catch(() => undefined)}>
+        模拟服务端放弃
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../components/SessionSidebar.js', () => ({
@@ -114,13 +191,120 @@ function sessionDetail(mode?: 'consume' | 'studio'): SessionDetail {
   } as SessionDetail;
 }
 
+function pendingRecoveryView(): PendingUsageRecoveryView {
+  return {
+    usageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    capabilityId: '22222222-2222-4222-8222-222222222222',
+    requestText: '服务端保存的问题',
+    requestFingerprint: 'a'.repeat(64),
+    binding: knowledgeSessionDetail().agentBinding as PendingUsageRecoveryView['binding'],
+    billing: {
+      currency: 'CNY',
+      policyVersion: 'runtime-usage-v1',
+      validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
+      unitPriceCents: '100',
+      freeLimitSnapshot: 3,
+    },
+    status: 'active',
+    activeRechargeIntentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    expiresAt: '2026-09-03T00:00:00.000Z',
+    createdAt: '2026-09-02T00:00:00.000Z',
+    updatedAt: '2026-09-02T00:01:00.000Z',
+  };
+}
+
+function knowledgeResult(): KnowledgeTurnResult {
+  const sourceSha = 'd'.repeat(40);
+  return KnowledgeTurnResultSchema.parse({
+    protocol: 'combo.agent-usage-receipt/1',
+    receiptId: '33333333-3333-4333-8333-333333333333',
+    usageId: '44444444-4444-4444-8444-444444444444',
+    turnId: '55555555-5555-4555-8555-555555555555',
+    createdAt: '2026-08-30T01:00:02.000Z',
+    binding: {
+      productKind: 'knowledge_agent_test',
+      capability: {
+        id: '22222222-2222-4222-8222-222222222222',
+        protocol: 'combo.agent-package-capability/2',
+      },
+      release: {
+        protocol: 'combo.agent-package-release/1',
+        releaseId: `release.agent-package.${'a'.repeat(32)}`,
+        packageDigest: `sha256:${'b'.repeat(64)}`,
+      },
+      releaseScope: 'controlled_test',
+      knowledge: {
+        protocol: 'combo.knowledge-bundle/1',
+        resourcePath: 'skills/knowledge/references/knowledge-bundle.json',
+        resourceDigest: `sha256:${'c'.repeat(64)}`,
+      },
+    },
+    outcome: 'answered',
+    validation: { policyVersion: 'knowledge-test-v1', code: 'accepted' },
+    answer: {
+      messageId: '66666666-6666-4666-8666-666666666666',
+      text: 'AUTHORITATIVE_KNOWLEDGE_ANSWER',
+      responseDigest: `sha256:${'e'.repeat(64)}`,
+    },
+    citations: [
+      {
+        chunkId: `chunk.knowledge.${'1'.repeat(32)}`,
+        sourceId: `source.knowledge.${'2'.repeat(32)}`,
+        displayLabel: 'Combo 产品基线',
+      },
+    ],
+    billing: {
+      policyVersion: 'knowledge-test-v1',
+      source: 'wallet',
+      currency: 'CNY',
+      unitPriceCents: '100',
+      settledCents: '100',
+      freeLimitSnapshot: 3,
+    },
+    runtime: {
+      environment: 'test',
+      releaseId: `release-${sourceSha}`,
+      sourceSha,
+    },
+  });
+}
+
+function knowledgeSessionDetail(
+  messages: MessageView[] = [],
+  results: KnowledgeTurnResult[] = [],
+): SessionDetail {
+  const detail = sessionDetail('consume');
+  return {
+    ...detail,
+    capability: {
+      ...detail.capability,
+      name: 'Combo 知识助手',
+      kind: 'anything-hostile-tests-must-ignore',
+    },
+    messages,
+    artifacts: [],
+    agentBinding: knowledgeResult().binding,
+    knowledgeResults: results,
+  } as SessionDetail;
+}
+
 function LocationProbe() {
   const location = useLocation();
   return <output data-testid="location-probe">{`${location.pathname}${location.search}`}</output>;
 }
 
-function renderPage(url: string): ReturnType<typeof render> {
-  return render(
+function SessionSwitcher() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate('/session/22222222-2222-4222-8222-222222222222')}>
+      切换到会话 B
+    </button>
+  );
+}
+
+function pageElement(url: string) {
+  return (
     <MemoryRouter initialEntries={[url]}>
       <Routes>
         <Route
@@ -129,12 +313,28 @@ function renderPage(url: string): ReturnType<typeof render> {
             <>
               <ChatPage />
               <LocationProbe />
+              <SessionSwitcher />
             </>
           }
         />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderPage(url: string): ReturnType<typeof render> {
+  return render(pageElement(url));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -159,6 +359,15 @@ beforeEach(() => {
   mocks.createTrialPending = false;
   mocks.pendingRetryAvailable = false;
   mocks.retryPending.mockResolvedValue(undefined);
+  mocks.rechargeRequired = null;
+  mocks.activeRechargeIntentId = null;
+  mocks.pendingRecovery = null;
+  mocks.recoveryDialogOpen = false;
+  mocks.resumeAfterRecharge.mockResolvedValue(undefined);
+  mocks.abandonRechargeUsage.mockResolvedValue(undefined);
+  mocks.refreshPendingRecovery.mockResolvedValue(undefined);
+  mocks.streamingText = null;
+  mocks.streamConnectionFailed = false;
 });
 
 describe('ChatPage studio experience', () => {
@@ -480,6 +689,287 @@ describe('ChatPage studio experience', () => {
   });
 });
 
+describe('ChatPage controlled knowledge experience', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.detail = knowledgeSessionDetail();
+    mocks.running = false;
+    mocks.activeRunId = null;
+    mocks.terminalRun = null;
+    mocks.errorMessage = null;
+    mocks.streamingText = null;
+    mocks.artifact = null;
+  });
+
+  it('recognizes an empty bound Session and mounts one full-height knowledge conversation', () => {
+    mocks.artifact = {
+      id: '77777777-7777-4777-8777-777777777777',
+      kind: 'html',
+      title: 'FORGED_ARTIFACT_TITLE',
+      createdAt: '2026-08-30T01:00:00.000Z',
+      updatedAt: '2026-08-30T01:00:00.000Z',
+    };
+
+    const page = renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Combo 知识助手' })).toBeInTheDocument();
+    expect(screen.getByText('已发布知识 · 权威使用收据')).toBeInTheDocument();
+    expect(screen.getByTestId('session-sidebar')).toHaveAttribute('data-experience', 'knowledge');
+    expect(screen.getByRole('region', { name: '知识问答' })).toBeInTheDocument();
+    expect(screen.getByText('从一个问题开始').closest('[role="status"]')).toBeInTheDocument();
+    expect(page.container.querySelector('.rt-knowledge-layout')).toBeInTheDocument();
+    expect(page.container.querySelector('.rt-genui__canvas')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_ARTIFACT_TITLE')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '开始生成 →' })).not.toBeInTheDocument();
+  });
+
+  it('uses the server recovery dialog without falling back to the legacy recharge dialog', async () => {
+    const recovery = pendingRecoveryView();
+    mocks.pendingRecovery = recovery;
+    mocks.recoveryDialogOpen = true;
+    mocks.pendingRetryAvailable = true;
+
+    const page = renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTestId('recovery-recharge-dialog')).toHaveAttribute(
+      'data-recovery-usage',
+      recovery.usageId,
+    );
+    expect(screen.queryByTestId('recharge-dialog')).not.toBeInTheDocument();
+    expect(page.container.querySelector('.rt-recharge-background')).toHaveAttribute(
+      'aria-hidden',
+      'true',
+    );
+    expect(screen.queryByRole('button', { name: '重试原任务' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟恢复到账' }));
+    await waitFor(() =>
+      expect(mocks.resumeAfterRecharge).toHaveBeenCalledWith(recovery.activeRechargeIntentId),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '模拟服务端放弃' }));
+    await waitFor(() => expect(mocks.abandonRechargeUsage).toHaveBeenCalledOnce());
+  });
+
+  it('restores only the authoritative result and hides forged Message, SSE, error, and artifact data', () => {
+    const user: MessageView = {
+      id: '77777777-7777-4777-8777-777777777777',
+      seq: 1,
+      turnId: '55555555-5555-4555-8555-555555555555',
+      role: 'user',
+      content: [{ type: 'text', text: '用户刷新前的问题' }],
+      status: 'completed',
+      createdAt: '2026-08-30T01:00:00.000Z',
+    };
+    const forgedAssistant: MessageView = {
+      id: '88888888-8888-4888-8888-888888888888',
+      seq: 2,
+      turnId: '55555555-5555-4555-8555-555555555555',
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'FORGED_ASSISTANT_CANDIDATE' },
+        { type: 'toolResult', text: 'FORGED_TOOL_CANDIDATE' },
+      ],
+      status: 'completed',
+      createdAt: '2026-08-30T01:00:01.000Z',
+    };
+    mocks.detail = knowledgeSessionDetail([user, forgedAssistant], [knowledgeResult()]);
+    mocks.streamingText = 'FORGED_SSE_CANDIDATE';
+    mocks.errorMessage = 'FORGED_SSE_ERROR';
+    mocks.artifact = {
+      id: '99999999-9999-4999-8999-999999999999',
+      kind: 'html',
+      title: 'FORGED_ARTIFACT_TITLE',
+      createdAt: '2026-08-30T01:00:00.000Z',
+      updatedAt: '2026-08-30T01:00:00.000Z',
+    };
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByText('用户刷新前的问题')).toBeInTheDocument();
+    expect(screen.getByText('AUTHORITATIVE_KNOWLEDGE_ANSWER')).toBeInTheDocument();
+    expect(screen.getByText('Combo 产品基线')).toBeInTheDocument();
+    expect(screen.getByText('使用收据 · 钱包 · 实际结算 ¥1.00')).toBeInTheDocument();
+    expect(screen.queryByText('FORGED_ASSISTANT_CANDIDATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_TOOL_CANDIDATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_SSE_CANDIDATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_SSE_ERROR')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_ARTIFACT_TITLE')).not.toBeInTheDocument();
+  });
+
+  it('fails closed when a bound knowledge detail omits its authoritative result collection', () => {
+    const missingResults = knowledgeSessionDetail();
+    delete missingResults.knowledgeResults;
+    mocks.detail = missingResults;
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('缺少权威知识结果');
+    expect(screen.getByRole('textbox', { name: '输入知识问题' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '开始生成 →' })).not.toBeInTheDocument();
+  });
+
+  it('keeps credited recharge resume bound to the persisted replacement intent', async () => {
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTestId('recharge-dialog')).toHaveAttribute(
+      'data-active-intent',
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() =>
+      expect(mocks.resumeAfterRecharge).toHaveBeenCalledWith(
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ),
+    );
+    expect(mocks.abandonRechargeUsage).not.toHaveBeenCalled();
+  });
+
+  it('clears a 402 draft only after the same credited usage resumes successfully', async () => {
+    mocks.send.mockRejectedValueOnce(new Error('免费次数已用完，充值后可继续使用。'));
+    const url = '/session/11111111-1111-4111-8111-111111111111';
+    const page = renderPage(url);
+
+    const textbox = screen.getByRole('textbox', { name: '输入知识问题' });
+    fireEvent.change(textbox, { target: { value: '必须只结算一次的问题' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('免费次数已用完'));
+    expect(textbox).toHaveValue('必须只结算一次的问题');
+
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    page.rerender(pageElement(url));
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() => expect(mocks.resumeAfterRecharge).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(page.container.querySelector('textarea[aria-label="输入知识问题"]')).toHaveValue(''),
+    );
+    expect(page.container.querySelector('.rt-knowledge-alert')).not.toBeInTheDocument();
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the 402 draft when credited resume remains uncertain', async () => {
+    mocks.send.mockRejectedValueOnce(new Error('免费次数已用完，充值后可继续使用。'));
+    mocks.resumeAfterRecharge.mockRejectedValueOnce(new Error('原 usageId 仍在确认。'));
+    const url = '/session/11111111-1111-4111-8111-111111111111';
+    const page = renderPage(url);
+
+    const textbox = screen.getByRole('textbox', { name: '输入知识问题' });
+    fireEvent.change(textbox, { target: { value: '失败后仍要保留的问题' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('免费次数已用完'));
+
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    page.rerender(pageElement(url));
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() => expect(mocks.resumeAfterRecharge).toHaveBeenCalledOnce());
+    expect(page.container.querySelector('textarea[aria-label="输入知识问题"]')).toHaveValue(
+      '失败后仍要保留的问题',
+    );
+    expect(page.container.querySelector('.rt-knowledge-alert')).toHaveTextContent('免费次数已用完');
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a late credited success clear the next session draft', async () => {
+    const resumed = deferred<unknown>();
+    mocks.resumeAfterRecharge.mockReturnValueOnce(resumed.promise);
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() => expect(mocks.resumeAfterRecharge).toHaveBeenCalledOnce());
+    mocks.rechargeRequired = null;
+    mocks.activeRechargeIntentId = null;
+    fireEvent.click(screen.getByRole('button', { name: '切换到会话 B' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location-probe')).toHaveTextContent(
+        '/session/22222222-2222-4222-8222-222222222222',
+      ),
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: '输入知识问题' }), {
+      target: { value: '会话 B 的草稿' },
+    });
+
+    await act(async () => {
+      resumed.resolve(undefined);
+      await resumed.promise;
+    });
+    expect(screen.getByRole('textbox', { name: '输入知识问题' })).toHaveValue('会话 B 的草稿');
+  });
+
+  it('does not let a late pending-retry success clear the next session draft', async () => {
+    const retried = deferred<unknown>();
+    mocks.pendingRetryAvailable = true;
+    mocks.retryPending.mockReturnValueOnce(retried.promise);
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    fireEvent.click(screen.getByRole('button', { name: '重试原问题' }));
+    await waitFor(() => expect(mocks.retryPending).toHaveBeenCalledOnce());
+    mocks.pendingRetryAvailable = false;
+    fireEvent.click(screen.getByRole('button', { name: '切换到会话 B' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location-probe')).toHaveTextContent(
+        '/session/22222222-2222-4222-8222-222222222222',
+      ),
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: '输入知识问题' }), {
+      target: { value: '会话 B 仍在编辑' },
+    });
+
+    await act(async () => {
+      retried.resolve(undefined);
+      await retried.promise;
+    });
+    expect(screen.getByRole('textbox', { name: '输入知识问题' })).toHaveValue('会话 B 仍在编辑');
+  });
+
+  it('shows a fixed reconnect action without exposing a stream-provided error string', () => {
+    mocks.streamConnectionFailed = true;
+    mocks.errorMessage = 'FORGED_SSE_ERROR';
+    const user: MessageView = {
+      id: '77777777-7777-4777-8777-777777777777',
+      seq: 1,
+      turnId: '55555555-5555-4555-8555-555555555555',
+      role: 'user',
+      content: [{ type: 'text', text: '等待权威结果的问题' }],
+      status: 'completed',
+      createdAt: '2026-08-30T01:00:00.000Z',
+    };
+    mocks.detail = knowledgeSessionDetail([user]);
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('实时连接已中断');
+    expect(screen.queryByText('FORGED_SSE_ERROR')).not.toBeInTheDocument();
+    expect(screen.queryByText('正在确认权威结果')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新连接' }));
+    expect(mocks.retryStreamConnection).toHaveBeenCalledOnce();
+  });
+});
+
 describe('ChatPage consume Miniapp bridge', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -574,6 +1064,34 @@ describe('ChatPage consume intake regression', () => {
       status: 'completed',
       createdAt: '2026-07-23T01:01:00.000Z',
     });
+  });
+
+  it('binds credited and replacement actions to the persisted active intent, not abandon', async () => {
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: '77777777-7777-4777-8777-777777777777',
+      balanceCents: '25',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = '88888888-8888-4888-8888-888888888888';
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTestId('recharge-dialog')).toHaveAttribute(
+      'data-active-intent',
+      '88888888-8888-4888-8888-888888888888',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() =>
+      expect(mocks.resumeAfterRecharge).toHaveBeenCalledWith(
+        '88888888-8888-4888-8888-888888888888',
+      ),
+    );
+    expect(mocks.abandonRechargeUsage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '模拟替换订单' }));
+    expect(mocks.setActiveRechargeIntent).toHaveBeenCalledWith(
+      '99999999-9999-4999-8999-999999999999',
+    );
   });
 
   it('offers a safe retry entry even before the first consumer conversation exists', async () => {

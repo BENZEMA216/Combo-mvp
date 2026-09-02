@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -10,9 +11,14 @@ import {
   contractPath,
   defaultBaseRef,
   isExactProductBaselineBootstrap,
+  isExactMaintenanceModeBootstrap,
+  legacyContractPath,
+  maintenanceModeBootstrap,
   parseContract,
   parseNumstat,
   policyPaths,
+  previousTrancheLock,
+  productBaselineBootstrap,
   productGoalLock,
   verifyProductBaselineSources,
 } from './vnext-rebaseline-budget.mjs';
@@ -27,6 +33,19 @@ const committedEngineeringPath = join(repo, 'ENGINEERING.md');
 function entry(path, changedLines = 1) {
   return { path, additions: changedLines, deletions: 0, changedLines };
 }
+
+const authoringBillingRecoveryFiles = Object.freeze([
+  'apps/authoring/src/__tests__/billing-handler.test.ts',
+  'apps/authoring/src/__tests__/billing-repo.test.ts',
+  'apps/authoring/src/__tests__/billing-service.test.ts',
+  'apps/authoring/src/__tests__/billing.pg.test.ts',
+  'apps/authoring/src/modules/billing/README.md',
+  'apps/authoring/src/modules/billing/handlers.ts',
+  'apps/authoring/src/modules/billing/repo.ts',
+  'apps/authoring/src/modules/billing/routes.ts',
+  'apps/authoring/src/modules/billing/service.ts',
+  'apps/authoring/src/modules/billing/types.ts',
+]);
 
 function validProductSource() {
   return [
@@ -63,17 +82,59 @@ const validEngineeringSource = [
   '',
 ].join('\n');
 
-test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
-  assert.equal(contract.baseSha, 'd15a985c67c2b9b5e08a5b8bc03a772fb543aecb');
-  assert.equal(contract.donorSha, '871c8f43b0725fa2f471173b2fbcf380ccfba930');
-  assert.deepEqual(contract.compatibility, {
-    preservePostgresMigrationHistory: false,
-    preserveWorkerSqliteSchemaHistory: false,
-  });
-  assert.equal(
-    productGoalLock.projectSha256,
-    '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+function approvedNextProjectSource(current = readFileSync(committedProjectPath, 'utf8')) {
+  const currentSha256 = createHash('sha256').update(current).digest('hex');
+  if (currentSha256 === 'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea') {
+    return current;
+  }
+  assert.equal(currentSha256, '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098');
+  const approvedInstruction = current.replace(
+    '复制一段AGENT的制作指令给自己的Codex，把刚才的工作做成 Agent',
+    '用一句自然语言告诉自己的 Codex，把刚才的工作做成 Agent',
   );
+  const creatorDescription =
+    '创建动作由一句自然语言直接发起，不要求用户理解文件路径、Manifest、Digest、Draft 或冻结命令。Agent Studio 是创作者查看、修订和试跑 Agent 的产品界面，可在codex中被使用。';
+  return approvedInstruction.replace(
+    creatorDescription,
+    [
+      creatorDescription,
+      '',
+      '当前对话是默认创作来源：用户在 Codex Desktop 当前任务发出上述指令时，只同意使用该任务中用户可见的对话，',
+      '不授权读取 Project。系统必须绑定用户正在操作的当前任务，不接受业务调用方、Plugin 或 MCP 通过 task、thread、',
+      'session 标识或 raw transcript 选择其他来源。普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，',
+      '也不需要复制内部协议。Project 或工作旅程只能由用户另行明确选择，不能作为当前对话失败后的自动回退。',
+    ].join('\n'),
+  );
+}
+
+test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
+  assert.equal(contract.baseSha, 'a1f11aed98d465fa91044beba7ccbcb95629030f');
+  assert.deepEqual(contract.previousTranche, previousTrancheLock);
+  assert.deepEqual(contract.compatibility, {
+    preservePostgresMigrationHistory: true,
+    preserveWorkerSqliteSchemaHistory: true,
+  });
+  assert.equal(contract.scopeId, 'vnext-r1-r3-test-only');
+  assert.equal(contract.trancheId, 'fixed-hosted-agent-test-beta');
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(join(repo, legacyContractPath)))
+      .digest('hex'),
+    previousTrancheLock.contractSha256,
+  );
+  assert.equal(productBaselineBootstrap.paths.includes(legacyContractPath), true);
+  assert.equal(maintenanceModeBootstrap.paths.includes(legacyContractPath), true);
+  assert.equal(productBaselineBootstrap.paths.includes(contractPath), false);
+  assert.equal(maintenanceModeBootstrap.paths.includes(contractPath), false);
+  assert.equal(policyPaths.includes(legacyContractPath), true);
+  assert.equal(policyPaths.includes(contractPath), true);
+  assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
+  assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
+  assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
+  assert.deepEqual(productGoalLock.approvedProjectSha256s, [
+    '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+    'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+  ]);
   assert.equal(source, `${JSON.stringify(contract, null, 2)}\n`);
 });
 
@@ -111,8 +172,8 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   );
 
   const duplicate = source.replace(
-    '"schemaVersion": 1,',
-    '"schemaVersion": 1,\n  "schemaVersion": 1,',
+    '"schemaVersion": 2,',
+    '"schemaVersion": 2,\n  "schemaVersion": 2,',
   );
   assert.throws(() => parseContract(duplicate), /canonical JSON/);
 
@@ -128,6 +189,41 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   assert.throws(
     () => parseContract(`${JSON.stringify(relaxed, null, 2)}\n`),
     /from 1 through 5000/,
+  );
+
+  const rewrittenHistory = structuredClone(contract);
+  rewrittenHistory.previousTranche.changedLines = 69999;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(rewrittenHistory, null, 2)}\n`),
+    /previousTranche changed/,
+  );
+
+  const detachedTranche = structuredClone(contract);
+  detachedTranche.baseSha = '0'.repeat(40);
+  assert.throws(
+    () => parseContract(`${JSON.stringify(detachedTranche, null, 2)}\n`),
+    /must continue previousTranche/,
+  );
+
+  const forgottenMigrationHistory = structuredClone(contract);
+  forgottenMigrationHistory.compatibility.preservePostgresMigrationHistory = false;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(forgottenMigrationHistory, null, 2)}\n`),
+    /migration history must be preserved/,
+  );
+
+  const relaxedCumulative = structuredClone(contract);
+  relaxedCumulative.limits.maxChangedLinesFromBase = 15001;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(relaxedCumulative, null, 2)}\n`),
+    /from 1 through 15000/,
+  );
+
+  const overlapping = structuredClone(contract);
+  overlapping.maintenanceFile = 'apps/runtime/src/product.ts';
+  assert.throws(
+    () => parseContract(`${JSON.stringify(overlapping, null, 2)}\n`),
+    /cannot be both product and maintenance/,
   );
 });
 
@@ -148,8 +244,83 @@ test('numstat counts additions and deletions and retains mode-only files', () =>
 test('governance edits cannot share a pull request with product edits', () => {
   const governance = policyPaths.map((path) => entry(path));
   assert.equal(assessPullRequest(contract, governance).mode, 'GOVERNANCE_ONLY');
+  assert.equal(
+    assessPullRequest(contract, [
+      entry('AGENTS.md'),
+      entry('.agents/skills/github-collaboration/SKILL.md'),
+      entry('.agents/skills/github-collaboration/references/governance-and-contributions.md'),
+      entry('.agents/skills/github-collaboration/references/quality-and-pull-requests.md'),
+      entry('.agents/skills/github-collaboration/references/worktree-lifecycle.md'),
+    ]).mode,
+    'GOVERNANCE_ONLY',
+  );
   assert.throws(
     () => assessPullRequest(contract, [...governance, entry('apps/runtime/src/product.ts')]),
+    /governance-only/,
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [...governance, entry('apps/web/src/pages/LoginPage.test.tsx')]),
+    /governance-only/,
+  );
+});
+
+test('maintenance edits use exact paths and cannot share a product pull request', () => {
+  assert.equal(assessPullRequest(contract, []).mode, 'PRODUCT');
+  assert.equal(
+    assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.test.tsx', 2)]).mode,
+    'MAINTENANCE',
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry('apps/web/src/pages/LoginPage.test.tsx'),
+        entry('apps/runtime/src/product.ts'),
+      ]),
+    /maintenance-only/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.tsx')]),
+    /outside the R1-R3 rebuild scope/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.a11y.test.ts')]),
+    /outside the R1-R3 rebuild scope/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.test.tsx', 1201)]),
+    /per-file changed-line budget exceeded/,
+  );
+});
+
+test('the one-time maintenance bootstrap is pinned to one base and four exact paths', () => {
+  const entries = maintenanceModeBootstrap.paths.map((path) => entry(path));
+  assert.equal(
+    isExactMaintenanceModeBootstrap({
+      comparisonBase: maintenanceModeBootstrap.baseSha,
+      entries,
+      contract,
+    }),
+    true,
+  );
+  assert.equal(
+    assessPullRequest(contract, entries, { comparisonBase: maintenanceModeBootstrap.baseSha }).mode,
+    'GOVERNANCE_MAINTENANCE_BOOTSTRAP',
+  );
+  assert.equal(
+    isExactMaintenanceModeBootstrap({
+      comparisonBase: contract.baseSha,
+      entries,
+      contract,
+    }),
+    false,
+  );
+  assert.throws(() => assessPullRequest(contract, entries), /governance-only/);
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [...entries, entry('apps/runtime/src/product.ts')], {
+        comparisonBase: maintenanceModeBootstrap.baseSha,
+      }),
     /governance-only/,
   );
 });
@@ -162,18 +333,425 @@ test('product edits must stay inside the declared rebuild surface', () => {
   assert.equal(
     assessPullRequest(
       contract,
-      ['AGENTS.md', 'ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
+      ['ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
     ).mode,
     'PRODUCT',
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('AGENTS.md'), entry('PROJECT.md')]),
+    /governance-only/,
   );
   assert.throws(
     () => assessPullRequest(contract, [entry('packages/creator-agent-snapshot/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
   );
+});
+
+test('the knowledge Agent Test scope opens only its named surface and exact files', () => {
+  const allowedControlFiles = [
+    '.github/workflows/ci.yml',
+    'docs/deployment-topology.md',
+    'docs/knowledge-agent-test-acceptance.md',
+    'docs/leshouying-test-acceptance.md',
+    'scripts/check-production-artifacts.sh',
+  ];
+  const allowedKnowledgeAuthoringFiles = [
+    'apps/authoring/src/__tests__/README.md',
+    'apps/authoring/src/__tests__/agent-package-object-store.test.ts',
+    'apps/authoring/src/platform/infra/README.md',
+    'apps/authoring/src/platform/infra/object-store.ts',
+  ];
+  const allowedReleaseAuthoringFiles = [
+    'apps/authoring/README.md',
+    'apps/authoring/package.json',
+    'apps/authoring/src/README.md',
+    'apps/authoring/src/__tests__/README.md',
+    'apps/authoring/src/__tests__/agent-package-release.pg.test.ts',
+    'apps/authoring/src/__tests__/agent-package-release.test.ts',
+    'apps/authoring/src/__tests__/routes.test.ts',
+    'apps/authoring/src/bootstrap/README.md',
+    'apps/authoring/src/bootstrap/routes.ts',
+    'apps/authoring/src/modules/README.md',
+    'apps/authoring/tsconfig.json',
+    'apps/authoring/tsconfig.vitest.json',
+  ];
+  const allowedPublisherAuthoringFiles = [
+    'apps/authoring/src/__tests__/env-agent-package-release.test.ts',
+    'apps/authoring/src/platform/config/README.md',
+    'apps/authoring/src/platform/config/env.ts',
+  ];
+  const allowedKnowledgeInfraFiles = [
+    'infra/Dockerfile.api',
+    'infra/Dockerfile.runtime',
+    'infra/README.md',
+    'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+    'infra/k8s/runtime.yaml',
+  ];
+  const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
+  const allowedProductPrefixes = [
+    'apps/authoring/src/modules/agent-package-release/',
+    'apps/runtime-web/',
+  ];
+  const knowledgeAgentTestSlice = [
+    'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
+    ...allowedKnowledgeAuthoringFiles,
+    ...allowedKnowledgeInfraFiles,
+    ...allowedControlFiles,
+  ].map((path) => entry(path));
+
+  assert.equal(policyPaths.includes('.github/workflows/pr-ci.yml'), true);
+  assert.equal(
+    assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml')]).mode,
+    'GOVERNANCE_ONLY',
+  );
+  for (const productPath of [
+    'apps/authoring/src/platform/infra/object-store.ts',
+    'apps/runtime/src/product.ts',
+    'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+    'infra/k8s/runtime.yaml',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml'), entry(productPath)]),
+      /governance-only/,
+    );
+  }
+  assert.equal(assessPullRequest(contract, knowledgeAgentTestSlice).mode, 'PRODUCT');
+  assert.equal(assessPullRequest(contract, [entry('infra/README.md')]).mode, 'PRODUCT');
+  assert.deepEqual(
+    contract.allowedFiles.filter(
+      (path) =>
+        path.startsWith('.github/') ||
+        path.startsWith('docs/') ||
+        path === 'scripts/check-production-artifacts.sh',
+    ),
+    allowedControlFiles,
+  );
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/')),
+    [
+      ...new Set([
+        ...allowedKnowledgeAuthoringFiles,
+        ...allowedPublisherAuthoringFiles,
+        ...allowedReleaseAuthoringFiles,
+        ...authoringBillingRecoveryFiles,
+      ]),
+    ].sort(),
+  );
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('infra/')),
+    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter(
+      (path) =>
+        path.startsWith('apps/authoring') ||
+        path.startsWith('apps/runtime-web') ||
+        path.startsWith('infra'),
+    ),
+    allowedProductPrefixes,
+  );
+
+  for (const path of [
+    '.github/workflows/deploy.yml',
+    '.github/workflows/knowledge-agent.yml',
+    '.github/workflows/pr-ci-extra.yml',
+    'apps/authoring/src/__tests__/README-extra.md',
+    'apps/authoring/src/__tests__/agent-package-object-store.pg.test.ts',
+    'apps/authoring/src/platform/infra/db.ts',
+    'apps/authoring/src/platform/infra/leshouying/index.ts',
+    'apps/authoring/src/platform/infra/object-store-v2.ts',
+    'apps/web/src/pages/KnowledgeAgentPage.tsx',
+    'docs/knowledge-agent-production-acceptance.md',
+    'docs/leshouying-production-acceptance.md',
+    'docs/leshouying-test-acceptance-v2.md',
+    'infra/Dockerfile.resend-mock',
+    'infra/Dockerfile.web',
+    'infra/README-extra.md',
+    'infra/docker-compose.yml',
+    'infra/docker-compose.dev-test.yml',
+    'infra-other/Dockerfile.runtime',
+    'scripts/deploy-env.sh',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+
   assert.throws(
-    () => assessPullRequest(contract, [entry('infra/k8s/production.yaml')]),
+    () => assessPullRequest(contract, [entry('apps/runtime-web-other/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
   );
+});
+
+test('the Knowledge Runtime manifest scope opens only the two synchronized Runtime files', () => {
+  const runtimeManifests = [
+    'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+    'infra/k8s/runtime.yaml',
+  ];
+  assert.equal(
+    assessPullRequest(
+      contract,
+      runtimeManifests.map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
+  );
+  for (const runtimeManifest of runtimeManifests) {
+    assert.equal(contract.allowedFiles.includes(runtimeManifest), true);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => runtimeManifest.startsWith(prefix)),
+      false,
+    );
+  }
+
+  for (const path of [
+    'infra/k8s/runtime-v2.yaml',
+    'infra/k8s/production.yaml',
+    'infra/k8s/other/runtime.yaml',
+    'infra/k8s-other/runtime.yaml',
+    'infra/k8s/overlays/sandbox-tools/runtime-base-v2.yaml',
+    'infra/k8s/overlays/sandbox-tools/production.yaml',
+    'infra/k8s/overlays/other/runtime-base.yaml',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+
+  for (const runtimeManifest of runtimeManifests) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(contractPath), entry(runtimeManifest)]),
+      /governance-only/,
+    );
+  }
+});
+
+test('Agent Package Release scope opens only its named Authoring module and exact wiring files', () => {
+  const allowedReleaseAuthoringFiles = [
+    'apps/authoring/README.md',
+    'apps/authoring/package.json',
+    'apps/authoring/src/README.md',
+    'apps/authoring/src/__tests__/README.md',
+    'apps/authoring/src/__tests__/agent-package-release.pg.test.ts',
+    'apps/authoring/src/__tests__/agent-package-release.test.ts',
+    'apps/authoring/src/__tests__/routes.test.ts',
+    'apps/authoring/src/bootstrap/README.md',
+    'apps/authoring/src/bootstrap/routes.ts',
+    'apps/authoring/src/modules/README.md',
+    'apps/authoring/tsconfig.json',
+    'apps/authoring/tsconfig.vitest.json',
+  ];
+  const allowedKnowledgeAuthoringFiles = [
+    'apps/authoring/src/__tests__/README.md',
+    'apps/authoring/src/__tests__/agent-package-object-store.test.ts',
+    'apps/authoring/src/platform/infra/README.md',
+    'apps/authoring/src/platform/infra/object-store.ts',
+  ];
+  const allowedPublisherAuthoringFiles = [
+    'apps/authoring/src/__tests__/env-agent-package-release.test.ts',
+    'apps/authoring/src/platform/config/README.md',
+    'apps/authoring/src/platform/config/env.ts',
+  ];
+  const allowedAuthoringPrefixes = ['apps/authoring/src/modules/agent-package-release/'];
+  const releaseSlice = [
+    ...allowedReleaseAuthoringFiles,
+    'apps/authoring/src/modules/agent-package-release/service.ts',
+  ].map((path) => entry(path));
+  assert.equal(assessPullRequest(contract, releaseSlice).mode, 'PRODUCT');
+
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/')),
+    [
+      ...new Set([
+        ...allowedKnowledgeAuthoringFiles,
+        ...allowedPublisherAuthoringFiles,
+        ...allowedReleaseAuthoringFiles,
+        ...authoringBillingRecoveryFiles,
+      ]),
+    ].sort(),
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter((path) => path.startsWith('apps/authoring/')),
+    allowedAuthoringPrefixes,
+  );
+  for (const path of [
+    'apps/authoring/src/bootstrap/app.ts',
+    'apps/authoring/src/modules/agent-package-release-legacy/routes.ts',
+    'apps/authoring/src/modules/capability/handlers.ts',
+    'apps/authoring/src/platform/infra/object-store-legacy.ts',
+    'apps/authoring/src/processes/api.ts',
+    'apps/authoring/src/__tests__/account-auth.test.ts',
+    'apps/authoring/src/__tests__/fakes.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+});
+
+test('Authoring billing recovery scope opens only its ten exact tracked paths', () => {
+  assert.equal(authoringBillingRecoveryFiles.length, 10);
+  assert.deepEqual(authoringBillingRecoveryFiles, [...authoringBillingRecoveryFiles].sort());
+
+  for (const path of authoringBillingRecoveryFiles) {
+    assert.equal(contract.allowedFiles.filter((candidate) => candidate === path).length, 1, path);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
+      false,
+      path,
+    );
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
+  assert.equal(
+    assessPullRequest(
+      contract,
+      authoringBillingRecoveryFiles.map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
+  );
+
+  assert.equal(
+    authoringBillingRecoveryFiles.includes('apps/authoring/src/__tests__/routes.test.ts'),
+    false,
+  );
+  assert.equal(
+    contract.allowedFiles.filter((path) => path === 'apps/authoring/src/__tests__/routes.test.ts')
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter((path) =>
+      path.startsWith('apps/authoring/src/modules/billing'),
+    ),
+    [],
+  );
+
+  for (const path of [
+    'apps/authoring/src/__tests__/billing-handler.test.tsx',
+    'apps/authoring/src/__tests__/billing-repo.test.ts.bak',
+    'apps/authoring/src/__tests__/billing-service.tests.ts',
+    'apps/authoring/src/__tests__/billing-pg.test.ts',
+    'apps/authoring/src/__tests__/billing-reconcile.test.ts',
+    'apps/authoring/src/modules/Billing/service.ts',
+    'apps/authoring/src/modules/billing-other/service.ts',
+    'apps/authoring/src/modules/billing/index.ts',
+    'apps/authoring/src/modules/billing/reconcile.ts',
+    'apps/authoring/src/modules/billing/submodule/service.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+  }
+
+  assert.equal(assessPullRequest(contract, [entry(contractPath)]).mode, 'GOVERNANCE_ONLY');
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry(contractPath),
+        entry('apps/authoring/src/modules/billing/service.ts'),
+      ]),
+    /governance-only/,
+  );
+
+  const legacySource = readFileSync(join(repo, legacyContractPath), 'utf8');
+  assert.equal(
+    previousTrancheLock.contractSha256,
+    'e0ef9bfa1674c83d3dc8437db63e274f4e8b14810b44ca31bdb56949c4107792',
+  );
+  assert.equal(
+    createHash('sha256').update(legacySource).digest('hex'),
+    previousTrancheLock.contractSha256,
+  );
+  const contractBeforeRecovery = structuredClone(contract);
+  contractBeforeRecovery.allowedFiles = contractBeforeRecovery.allowedFiles.filter(
+    (path) => !authoringBillingRecoveryFiles.includes(path),
+  );
+  assert.equal(
+    createHash('sha256')
+      .update(`${JSON.stringify(contractBeforeRecovery, null, 2)}\n`)
+      .digest('hex'),
+    'f7f2c7bc3803ebe7516074b76fe8b31661bb55e4178dd723c116abe7274c10d5',
+  );
+});
+
+test('Agent Package Publisher Test scope opens only exact config and render wiring files', () => {
+  const allowedPublisherAuthoringFiles = [
+    'apps/authoring/src/__tests__/env-agent-package-release.test.ts',
+    'apps/authoring/src/platform/config/README.md',
+    'apps/authoring/src/platform/config/env.ts',
+  ];
+  const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
+  const allowedPublisherScriptFiles = ['scripts/render-env.test.mjs'];
+  const publisherSlice = [
+    ...allowedPublisherAuthoringFiles,
+    ...allowedPublisherInfraFiles,
+    ...allowedPublisherScriptFiles,
+  ].map((path) => entry(path));
+
+  assert.equal(assessPullRequest(contract, publisherSlice).mode, 'PRODUCT');
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/src/platform/config/')),
+    allowedPublisherAuthoringFiles.filter((path) => path.includes('/platform/config/')),
+  );
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('infra/k8s/')),
+    [
+      ...allowedPublisherInfraFiles,
+      'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
+      'infra/k8s/runtime.yaml',
+    ].sort(),
+  );
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('scripts/render-env')),
+    allowedPublisherScriptFiles,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter(
+      (path) =>
+        path.startsWith('apps/authoring/src/platform/config') ||
+        path.startsWith('infra/k8s') ||
+        path.startsWith('scripts/render-env'),
+    ),
+    [],
+  );
+
+  assert.equal(
+    assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml')]).mode,
+    'GOVERNANCE_ONLY',
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry('.github/workflows/pr-ci.yml'),
+        entry('apps/authoring/src/platform/config/env.ts'),
+      ]),
+    /governance-only/,
+  );
+
+  for (const path of [
+    'apps/authoring/src/platform/config/env.test.ts',
+    'apps/authoring/src/platform/config/index.ts',
+    'apps/authoring/src/platform/config/secrets.ts',
+    'apps/authoring/src/bootstrap/app.ts',
+    'apps/authoring/src/platform/infra/index.ts',
+    'infra/k8s/worker.yaml',
+    'infra/k8s/runtime-v2.yaml',
+    'infra/k8s/production.yaml',
+    'infra/k8s/other/runtime.yaml',
+    'infra/k8s/overlays/sandbox-tools/runtime-base-v2.yaml',
+    'infra/docker-compose.yml',
+    'scripts/render-env.mjs',
+    'scripts/deploy-env.sh',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
 });
 
 test('per-pull-request file, line, and per-file ceilings are exact', () => {
@@ -201,12 +779,20 @@ test('per-pull-request file, line, and per-file ceilings are exact', () => {
 
 test('the cumulative train has a separate hard ceiling and the same scope boundary', () => {
   assert.equal(
-    assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 70000)]).changedLines,
-    70000,
+    assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 15000)]).changedLines,
+    15000,
   );
   assert.throws(
-    () => assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 70001)]),
+    () => assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 15001)]),
     /cumulative changed-line budget exceeded/,
+  );
+  assert.equal(
+    assessCumulative(contract, [entry('apps/web/src/pages/LoginPage.test.tsx', 2)]).changedLines,
+    2,
+  );
+  assert.throws(
+    () => assessCumulative(contract, [entry('apps/web/src/pages/LoginPage.a11y.test.ts')]),
+    /cumulative path is outside the R1-R3 rebuild scope/,
   );
 });
 
@@ -229,9 +815,62 @@ test(
   },
 );
 
+test(
+  'the exact user-approved conversation-first product baseline is accepted',
+  { skip: !existsSync(committedProjectPath) },
+  () => {
+    const projectSource = approvedNextProjectSource();
+    assert.equal(
+      createHash('sha256').update(projectSource).digest('hex'),
+      'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+    );
+    assert.equal(approvedNextProjectSource(projectSource), projectSource);
+    assert.equal(
+      verifyProductBaselineSources({
+        projectSource,
+        agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+        engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+      }).status,
+      'LOCKED',
+    );
+  },
+);
+
+test(
+  'a one-byte edit and an unknown third product baseline revision fail closed',
+  { skip: !existsSync(committedProjectPath) },
+  () => {
+    const approved = approvedNextProjectSource();
+    const candidates = [
+      approved.replace('Codex Desktop', 'Codex desktop'),
+      approved.replace(
+        '用一句自然语言告诉自己的 Codex，把刚才的工作做成 Agent',
+        '用一句话告诉自己的 Codex，把刚才的工作做成 Agent',
+      ),
+    ];
+    for (const projectSource of candidates) {
+      assert.equal(
+        productGoalLock.approvedProjectSha256s.includes(
+          createHash('sha256').update(projectSource).digest('hex'),
+        ),
+        false,
+      );
+      assert.throws(
+        () =>
+          verifyProductBaselineSources({
+            projectSource,
+            agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+            engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+          }),
+        /PROJECT\.md product baseline changed/,
+      );
+    }
+  },
+);
+
 test('the baseline bootstrap is bound to one base and one exact three-file change', () => {
   const exactEntries = [
-    entry(contractPath),
+    entry(legacyContractPath),
     entry('scripts/vnext-rebaseline-budget.mjs'),
     entry('scripts/vnext-rebaseline-budget.test.mjs'),
   ];

@@ -1,6 +1,6 @@
 # V2 平台验证栈（combo-v2 namespace）：authz / billing / llm-gateway 共用同一镜像，
 # 按 PROCESS=authz|billing|llm-gateway 在 entrypoint 分叉；迁移容器覆盖 command 运行
-# db/scripts/migrate.ts。单镜像与 infra/Dockerfile.api 的「一镜像多入口」模式一致。
+# db/scripts/migrate-v2.ts。单镜像与 infra/Dockerfile.api 的「一镜像多入口」模式一致。
 FROM node:24-slim AS build
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
@@ -32,8 +32,11 @@ COPY --from=build /app/apps/authz/dist ./apps/authz/dist
 COPY --from=build /app/apps/billing/dist ./apps/billing/dist
 COPY --from=build /app/apps/llm-gateway/dist ./apps/llm-gateway/dist
 COPY --from=build /app/db/migrations ./db/migrations
+COPY --from=build /app/db/v2-migrations ./db/v2-migrations
 COPY --from=build /app/db/scripts/migrate.ts ./db/scripts/migrate.ts
+COPY --from=build /app/db/scripts/migrate-v2.ts ./db/scripts/migrate-v2.ts
 COPY --from=build /app/db/scripts/provision-app-roles.ts ./db/scripts/provision-app-roles.ts
+COPY --from=build /app/db/scripts/provision-v2-app-roles.ts ./db/scripts/provision-v2-app-roles.ts
 COPY infra/entrypoint-v2.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 EXPOSE 3000

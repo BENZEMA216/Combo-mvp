@@ -1,6 +1,25 @@
 // 路由注册自检 + session 端点 owner 守卫（非本人与不存在同样 404，不暴露存在性）。
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
+import type { SessionDetail } from '@cb/shared';
+import {
+  CREATOR_AGENT_PACKAGE_PROTOCOL,
+  createCreatorAgentPackageManifest,
+  digestCreatorAgentPackage,
+  digestCreatorAgentPackageFile,
+  serializeCreatorAgentPackageManifest,
+} from '@cb/creator-agent-protocol/agent-package';
+import {
+  createCreatorAgentPackageCapability,
+  serializeCreatorAgentPackageCapability,
+} from '@cb/creator-agent-protocol/agent-package-capability';
+import { createCreatorAgentPackageRelease } from '@cb/creator-agent-protocol/agent-package-release';
+import {
+  CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+  CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+  CREATOR_KNOWLEDGE_SKILL_PATH,
+  serializeCreatorKnowledgeBundle,
+} from '@cb/creator-agent-protocol/knowledge-bundle';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 import {
   archiveSessionHandler,
@@ -14,6 +33,13 @@ import {
 } from '../modules/session/handlers.js';
 import { CAPABILITY_BUCKET } from '../modules/capability/loader.js';
 import { artifactContentHandler } from '../modules/artifact/handlers.js';
+import {
+  abandonPendingUsageRecoveryHandler,
+  getPendingUsageRecoveryHandler,
+  listPendingUsageRecoveriesHandler,
+} from '../modules/billing/pending-recovery-handlers.js';
+import { sweepExpiredPendingUsageRecoveries } from '../modules/billing/pending-recovery.js';
+import { usageRequestFingerprint } from '../modules/billing/service.js';
 import { createArtifactTool } from '../modules/artifact/tool.js';
 import {
   ARTIFACT_BUCKET,
@@ -27,7 +53,20 @@ import {
   getOrCreateStudioSession,
 } from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
-import { createTurnRunner } from '../modules/agent/run-turn.js';
+import { createTurnRunner, type TurnRunner } from '../modules/agent/run-turn.js';
+import {
+  AGENT_PACKAGE_OBJECT_BUCKET,
+  agentPackageObjectKey,
+  resolveKnowledgeAgentPackage,
+} from '../modules/knowledge-agent/resolver.js';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  KNOWLEDGE_AGENT_VALIDATOR_POLICY,
+  knowledgeAgentTestGateFromEnv,
+  type Env,
+  type KnowledgeAgentTestGate,
+} from '../platform/config/env.js';
+import type { Queryable } from '../platform/infra/db.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
 import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
@@ -37,11 +76,14 @@ import {
   FakeSessionEventLog,
   makeFakeAgentFactory,
   silentLog,
+  waitFor,
 } from './fakes.js';
 
 const ME = 'user-me';
 const OTHER = 'user-other';
 const USAGE_ID = '11111111-1111-4111-8111-111111111111';
+const PACKAGE_DIGEST = `sha256:${'a'.repeat(64)}`;
+const RELEASE_ID = `release.agent-package.${'1'.repeat(32)}`;
 let directArtifactTurnSequence = 0;
 
 async function createDirectArtifactTool(input: {
@@ -72,8 +114,17 @@ async function createDirectArtifactTool(input: {
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 11 endpoints (capability 1 + session 9 + artifact 1)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(11);
+  it('registers exactly 16 endpoints including the fixed hosted Agent descriptor and start', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(16);
+    expect(ALL_ENDPOINTS).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ method: 'GET', url: '/runtime/agents/combo-knowledge' }),
+        expect.objectContaining({
+          method: 'POST',
+          url: '/runtime/agents/combo-knowledge/start',
+        }),
+      ]),
+    );
   });
 
   it('no duplicate (method,url) pairs', () => {
@@ -101,12 +152,14 @@ describe('route registry self-check', () => {
 interface Captured {
   statusCode: number;
   body: unknown;
+  headers: Record<string, string>;
 }
 
 function makeReply(): FastifyReply {
   const reply = {
     statusCode: 0,
     body: undefined as unknown,
+    headers: {} as Record<string, string>,
     code(n: number) {
       this.statusCode = n;
       return this;
@@ -116,6 +169,10 @@ function makeReply(): FastifyReply {
       return this;
     },
     type() {
+      return this;
+    },
+    header(name: string, value: unknown) {
+      this.headers[name.toLowerCase()] = String(value);
       return this;
     },
   };
@@ -130,17 +187,21 @@ function makeReq(input: {
   query?: Record<string, string>;
   body?: unknown;
   sandbox?: SandboxBackend;
+  env?: Env;
+  turns?: TurnRunner;
 }): FastifyRequest {
-  const turns = createTurnRunner({
-    db: input.db,
-    objectStore: input.objectStore ?? new FakeObjectStore(),
-    bus: createSessionEventBus(),
-    eventLog: new FakeSessionEventLog(),
-    agentFactory: makeFakeAgentFactory().factory,
-    idleTimeoutMs: 60_000,
-    interrupts: createInterruptBus(),
-    log: silentLog,
-  });
+  const turns =
+    input.turns ??
+    createTurnRunner({
+      db: input.db,
+      objectStore: input.objectStore ?? new FakeObjectStore(),
+      bus: createSessionEventBus(),
+      eventLog: new FakeSessionEventLog(),
+      agentFactory: makeFakeAgentFactory().factory,
+      idleTimeoutMs: 60_000,
+      interrupts: createInterruptBus(),
+      log: silentLog,
+    });
   return {
     id: 'trace-test',
     auth: { userId: input.userId, account: 'creator-testerxx', roles: ['creator'] },
@@ -152,6 +213,7 @@ function makeReq(input: {
       infra: {
         db: input.db,
         objectStore: input.objectStore ?? new FakeObjectStore(),
+        ...(input.env ? { env: input.env } : {}),
         ...(input.sandbox ? { sandbox: input.sandbox } : {}),
       },
       turns,
@@ -186,6 +248,25 @@ function seedRunnableDefinition(store: FakeObjectStore, cap: ReturnType<FakeDb['
       instructions: '执行任务',
       inputs: [],
       starterPrompts: [],
+    }),
+  );
+}
+
+function seedUnsupportedV2Definition(
+  store: FakeObjectStore,
+  cap: ReturnType<FakeDb['seedCapability']>,
+) {
+  store.seedText(
+    CAPABILITY_BUCKET,
+    cap.storage_key,
+    JSON.stringify({
+      version: 2,
+      protocol: 'combo.agent-package-capability/2',
+      release: {
+        protocol: 'combo.agent-package-release/1',
+        releaseId: RELEASE_ID,
+        packageDigest: PACKAGE_DIGEST,
+      },
     }),
   );
 }
@@ -390,6 +471,29 @@ describe('POST /runtime/studio/sessions', () => {
 });
 
 describe('POST /runtime/sessions capability UI 快照', () => {
+  it('strict Agent Package Capability v2 在建会话前拒绝，不留任何 Session 或 Artifact', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: ME });
+    seedUnsupportedV2Definition(store, cap);
+
+    const reply = await call(
+      createSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+
+    expect(reply.statusCode).toBe(409);
+    expect(reply.body).toMatchObject({
+      error: {
+        userMessage: '这个能力的格式比当前试用服务更新，暂时无法试用，请等待服务升级。',
+        retriable: false,
+        action: 'change_input',
+      },
+    });
+    expect(db.sessions.size).toBe(0);
+    expect(db.artifacts.size).toBe(0);
+  });
+
   it('有当前 UI 时新 consume 自动复制；无当前 UI 时仍正常创建空会话', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
@@ -464,6 +568,7 @@ describe('session 端点 owner 守卫', () => {
       makeReq({ db, userId: ME, params: { id: sessionId } }),
     );
     expect(mine.statusCode).toBe(200);
+    expect(mine.headers['cache-control']).toBe('private, no-store');
 
     const theirs = await call(
       getSessionDetailHandler(),
@@ -474,6 +579,44 @@ describe('session 端点 owner 守卫', () => {
     const body = theirs.body as { error?: Record<string, unknown> };
     expect(body.error?.userMessage).toBeTruthy();
     expect(body.error && 'code' in body.error).toBe(false);
+    expect(theirs.headers['cache-control']).toBe('private, no-store');
+  });
+
+  it('GET /runtime/sessions/:id：未知 PostgreSQL detail 只记录固定安全码和 trace', async () => {
+    const db = new FakeDb();
+    const sessionId = await seedOwnedSession(db, ME);
+    const sensitive = 'request-text-and-body-must-never-be-logged';
+    const originalQuery = db.query.bind(db);
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      if (sql.replace(/\s+/g, ' ').includes('FROM sessions WHERE id = $1')) {
+        throw Object.assign(new Error(`body=${sensitive}`), {
+          detail: `request_text=${sensitive}`,
+          where: `unnamed portal body=${sensitive}`,
+        });
+      }
+      return originalQuery<R>(sql, params);
+    };
+    const errorLog = vi.fn();
+    const request = makeReq({ db, userId: ME, params: { id: sessionId } });
+    (request as unknown as { log: Record<string, unknown> }).log = {
+      ...silentLog,
+      error: errorLog,
+      warn: vi.fn(),
+    };
+
+    const reply = await call(getSessionDetailHandler(), request);
+
+    expect(reply.statusCode).toBe(500);
+    expect(reply.headers['cache-control']).toBe('private, no-store');
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(
+      { traceId: 'trace-test', detailFailure: 'unexpected_read_failure' },
+      'read session detail failed',
+    );
+    const serializedLog = JSON.stringify(errorLog.mock.calls);
+    expect(serializedLog).not.toContain(sensitive);
+    expect(serializedLog).not.toContain('request_text');
+    expect(serializedLog).not.toContain('body=');
   });
 
   it('GET /runtime/sessions/:id：透出消息 turnId 供前端按轮展示', async () => {
@@ -833,6 +976,37 @@ describe('session 端点 owner 守卫', () => {
     expect(db.messages).toHaveLength(0);
   });
 
+  it('POST /runtime/sessions/:id/messages：strict Agent Package Capability v2 在 Turn 入场前拒绝', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    seedUnsupportedV2Definition(store, cap);
+    const session = await createSession(db, { capabilityId: cap.id, ownerUserId: ME });
+
+    const reply = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        userId: ME,
+        params: { id: session.id },
+        body: { text: '不应执行', usageId: USAGE_ID },
+      }),
+    );
+
+    expect(reply.statusCode).toBe(409);
+    expect(reply.body).toMatchObject({
+      error: {
+        userMessage: '这个能力的格式比当前试用服务更新，暂时无法试用，请等待服务升级。',
+        retriable: false,
+        action: 'change_input',
+      },
+    });
+    expect(db.turns.size).toBe(0);
+    expect(db.messages).toHaveLength(0);
+    expect(db.usageCharges.size).toBe(0);
+  });
+
   it('POST /runtime/sessions/:id/messages：202 user 消息同步透出 turnId', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
@@ -928,7 +1102,7 @@ describe('session 端点 owner 守卫', () => {
       rechargeRequired: true,
       rechargeIntentId: USAGE_ID,
       balanceCents: '0',
-      requiredCents: '100',
+      requiredCents: '1',
     });
     expect(db.turns.size).toBe(0);
     expect(db.messages).toHaveLength(0);
@@ -1280,5 +1454,1247 @@ describe('GET /runtime/sessions/:id 透出开场表单字段', () => {
     ).data.capability;
     expect(capability.inputs).toEqual([]);
     expect(capability.starterPrompts).toEqual([]);
+  });
+});
+
+describe('knowledge Agent handler closed loop', () => {
+  const creator = '00000000-0000-4000-8000-000000000101';
+  const consumer = '00000000-0000-4000-8000-000000000102';
+  const capabilityId = '00000000-0000-4000-8000-000000000103';
+  const usageId = '00000000-0000-4000-8000-000000000104';
+  const sourceSha = '7'.repeat(40);
+  const question = 'Combo 的免费额度可以用于哪些成功回答？';
+  const answer = 'Combo 的免费额度可以用于前三次成功回答。';
+  const chunkId = `chunk.knowledge.${'8'.repeat(32)}`;
+  const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+  it('creates a frozen Session, factory-wires grounded-v2 recovery, then projects only verified detail', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const capability = db.seedCapability({
+      id: capabilityId,
+      owner_user_id: creator,
+      published: true,
+      kind: 'knowledge',
+      name: '公开知识助手',
+      summary: '只回答固定公开资料',
+    });
+    const agentMarkdown = encode('# Knowledge Agent\nAnswer only from retrieved evidence.');
+    const skillMarkdown = encode('# Knowledge\nSearch before submitting an answer.');
+    const content = answer;
+    const knowledge = {
+      protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+      chunks: [
+        {
+          id: chunkId,
+          source: {
+            sourceId: `source.knowledge.${'9'.repeat(32)}`,
+            displayLabel: '公开计费手册',
+          },
+          content,
+          contentDigest: digestCreatorAgentPackageFile(encode(content)),
+        },
+      ],
+    } as const;
+    const bundleBytes = encode(serializeCreatorKnowledgeBundle(knowledge));
+    const manifest = createCreatorAgentPackageManifest({
+      protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+      name: '公开知识助手',
+      description: '只回答固定公开资料',
+      instructions: 'AGENT.md',
+      skills: [CREATOR_KNOWLEDGE_SKILL_PATH],
+      files: [
+        {
+          path: 'AGENT.md',
+          byteLength: agentMarkdown.byteLength,
+          digest: digestCreatorAgentPackageFile(agentMarkdown),
+        },
+        {
+          path: CREATOR_KNOWLEDGE_SKILL_PATH,
+          byteLength: skillMarkdown.byteLength,
+          digest: digestCreatorAgentPackageFile(skillMarkdown),
+        },
+        {
+          path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+          byteLength: bundleBytes.byteLength,
+          digest: digestCreatorAgentPackageFile(bundleBytes),
+        },
+      ],
+    });
+    const packageDigest = digestCreatorAgentPackage(manifest);
+    const release = createCreatorAgentPackageRelease({
+      protocol: 'combo.agent-package-release/1',
+      releaseId: `release.agent-package.${'a'.repeat(32)}`,
+      packageDigest,
+    });
+    const projection = createCreatorAgentPackageCapability({
+      version: 2,
+      protocol: 'combo.agent-package-capability/2',
+      release,
+    });
+    const gate: KnowledgeAgentTestGate = {
+      protocol: 'combo.knowledge-agent-runtime-test-gate/2',
+      sourceSha,
+      publisherUserId: creator,
+      capabilityId,
+      releaseId: release.releaseId,
+      packageDigest,
+      validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
+    };
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: sourceSha,
+      COMBO_RELEASE_ID: `release-${sourceSha}`,
+      COMBO_BUILT_AT: '2026-08-30T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(gate),
+    } as Env;
+
+    store.seedText(
+      CAPABILITY_BUCKET,
+      capability.storage_key,
+      serializeCreatorAgentPackageCapability(projection),
+    );
+    db.seedAgentPackageRegistry({
+      packageDigest,
+      releaseId: release.releaseId,
+      ownerUserId: creator,
+    });
+    for (const [path, bytes] of [
+      ['agent.json', encode(serializeCreatorAgentPackageManifest(manifest))],
+      ['AGENT.md', agentMarkdown],
+      [CREATOR_KNOWLEDGE_SKILL_PATH, skillMarkdown],
+      [CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH, bundleBytes],
+    ] as const) {
+      await store.putObject(
+        AGENT_PACKAGE_OBJECT_BUCKET,
+        agentPackageObjectKey(packageDigest, path),
+        bytes,
+      );
+    }
+
+    const agent = makeFakeAgentFactory({
+      deltas: ['未验证候选文本'],
+      invokeNamedTools: [
+        { name: 'knowledge_search', params: { query: '免费额度' } },
+        {
+          name: 'submit_knowledge_answer',
+          params: { status: 'answered', answer, citationChunkIds: [chunkId] },
+        },
+      ],
+      finalMessages: [{ role: 'assistant', content: [{ type: 'text', text: '伪造 transcript' }] }],
+    });
+    const turns = createTurnRunner({
+      db,
+      objectStore: store,
+      bus: createSessionEventBus(),
+      eventLog: new FakeSessionEventLog(),
+      agentFactory: agent.factory,
+      idleTimeoutMs: 60_000,
+      interrupts: createInterruptBus(),
+      billingPolicy: { freeUses: 3, unitPriceCents: 1 },
+      runtimeSourceSha: sourceSha,
+      log: silentLog,
+    });
+
+    const created = await call(
+      createSessionHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        body: { capabilityId },
+      }),
+    );
+    expect(created.statusCode).toBe(201);
+    const sessionId = (created.body as { data: { id: string } }).data.id;
+    expect(db.sessions.get(sessionId)).toMatchObject({
+      product_kind: 'knowledge_agent_test',
+      release_id: release.releaseId,
+      package_digest: packageDigest,
+      knowledge_resource_path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+    });
+    const frozenObjectReads = vi.spyOn(store, 'getObjectBounded');
+    expect(
+      (
+        await call(
+          getSessionDetailHandler(),
+          makeReq({
+            db,
+            objectStore: store,
+            env,
+            turns,
+            userId: creator,
+            params: { id: sessionId },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+    expect(frozenObjectReads).not.toHaveBeenCalled();
+
+    const sent = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId },
+      }),
+    );
+    expect(sent.statusCode).toBe(202);
+    await waitFor(() => db.agentUsageReceipts.size === 1);
+
+    const readDetail = (detailEnv = env, detailSessionId = sessionId) =>
+      call(
+        getSessionDetailHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env: detailEnv,
+          turns,
+          userId: consumer,
+          params: { id: detailSessionId },
+        }),
+      );
+    const detail = await readDetail();
+    expect(detail.statusCode).toBe(200);
+    const data = (detail.body as { data: SessionDetail }).data;
+    expect(data.messages).toHaveLength(1);
+    expect(data.messages[0]).toMatchObject({ role: 'user' });
+    expect(JSON.stringify(data)).not.toContain('未验证候选文本');
+    expect(JSON.stringify(data)).not.toContain('伪造 transcript');
+    expect(data.artifacts).toEqual([]);
+    expect(data.agentBinding).toMatchObject({
+      productKind: 'knowledge_agent_test',
+      release,
+    });
+    expect(data.knowledgeResults).toEqual([
+      expect.objectContaining({
+        outcome: 'answered',
+        answer: expect.objectContaining({ text: answer }),
+        citations: [
+          expect.objectContaining({
+            displayLabel: '公开计费手册',
+            excerpt: answer,
+          }),
+        ],
+        billing: expect.objectContaining({ source: 'free', settledCents: '0' }),
+        validation: expect.objectContaining({
+          policyVersion: 'knowledge-agent-grounded-validator-v2',
+          code: 'accepted',
+        }),
+      }),
+    ]);
+    const receipt = [...db.agentUsageReceipts.values()][0]!;
+    const frozenBundleObjectKey = agentPackageObjectKey(
+      packageDigest,
+      CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+    );
+    const originalBundleBytes = await store.getObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      frozenBundleObjectKey,
+    );
+    await store.putObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      frozenBundleObjectKey,
+      encode('tampered frozen Knowledge Bundle bytes'),
+    );
+    expect((await readDetail()).statusCode).toBe(503);
+    await store.putObject(AGENT_PACKAGE_OBJECT_BUCKET, frozenBundleObjectKey, originalBundleBytes);
+    const sessionRow = db.sessions.get(sessionId);
+    if (!sessionRow) throw new Error('missing knowledge Session fixture');
+    const resourceDigest = sessionRow.knowledge_resource_digest;
+    sessionRow.knowledge_resource_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    sessionRow.knowledge_resource_digest = resourceDigest;
+    const receiptPackageDigest = receipt.package_digest;
+    receipt.package_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.package_digest = receiptPackageDigest;
+    const responseDigest = receipt.response_digest;
+    receipt.response_digest = `sha256:${'0'.repeat(64)}`;
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.response_digest = responseDigest;
+    const responseMessage = db.messages.find(
+      (message) => message.id === receipt.response_message_id,
+    );
+    if (!responseMessage) throw new Error('missing knowledge response Message fixture');
+    const responseContent = responseMessage.content;
+    responseMessage.content = [{ type: 'text', text: 'tampered response body' }];
+    expect((await readDetail()).statusCode).toBe(503);
+    responseMessage.content = responseContent;
+    const citationChunkIds = receipt.citation_chunk_ids;
+    receipt.citation_chunk_ids = [`chunk.knowledge.${'0'.repeat(32)}`];
+    expect((await readDetail()).statusCode).toBe(503);
+    receipt.citation_chunk_ids = citationChunkIds;
+
+    for (const [index, retryUsageId] of [
+      '00000000-0000-4000-8000-000000000105',
+      '00000000-0000-4000-8000-000000000106',
+    ].entries()) {
+      const free = await call(
+        sendMessageHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env,
+          turns,
+          userId: consumer,
+          params: { id: sessionId },
+          body: { text: question, usageId: retryUsageId },
+        }),
+      );
+      expect(free.statusCode).toBe(202);
+      await waitFor(() => db.agentUsageReceipts.size === index + 2);
+    }
+    const rechargeUsageId = '00000000-0000-4000-8000-000000000107';
+    const recharge = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId: rechargeUsageId },
+      }),
+    );
+    expect(recharge).toMatchObject({
+      statusCode: 402,
+      body: {
+        rechargeRequired: true,
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+        balanceCents: '0',
+        requiredCents: '1',
+      },
+    });
+    const pending = db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`);
+    expect(pending).toMatchObject({
+      owner_user_id: consumer,
+      usage_id: rechargeUsageId,
+      session_id: sessionId,
+      capability_id: capabilityId,
+      request_text: question,
+      request_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      package_digest: packageDigest,
+      billing_policy_version: 'runtime-usage-v1',
+      validator_policy_version: gate.validatorPolicyVersion,
+      unit_price_cents: 1n,
+      free_limit_snapshot: 3,
+      active_recharge_intent_id: rechargeUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+    });
+    expect(db.turns.size).toBe(3);
+    expect(db.usageCharges.size).toBe(3);
+
+    const differentUsageId = '00000000-0000-4000-8000-000000000108';
+    const reused = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: '不能覆盖的另一条请求', usageId: differentUsageId },
+      }),
+    );
+    expect(reused).toMatchObject({
+      statusCode: 402,
+      body: {
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+      },
+    });
+    expect(db.pendingUsageRecoveries.size).toBe(1);
+
+    const listed = await call(
+      listPendingUsageRecoveriesHandler(),
+      makeReq({ db, objectStore: store, env, turns, userId: consumer }),
+    );
+    expect(listed).toMatchObject({
+      statusCode: 200,
+      body: {
+        data: {
+          recoveries: [
+            {
+              usageId: rechargeUsageId,
+              sessionId,
+              requestText: question,
+              activeRechargeIntentId: rechargeUsageId,
+            },
+          ],
+        },
+      },
+    });
+    const exact = await call(
+      getPendingUsageRecoveryHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { usageId: rechargeUsageId },
+      }),
+    );
+    expect(exact.statusCode).toBe(200);
+    expect(JSON.stringify(exact.body)).not.toContain(consumer);
+    expect(
+      (
+        await call(
+          getPendingUsageRecoveryHandler(),
+          makeReq({
+            db,
+            objectStore: store,
+            env,
+            turns,
+            userId: '00000000-0000-4000-8000-000000000199',
+            params: { usageId: rechargeUsageId },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+
+    const recoveryRequest = (requestEnv: Env) =>
+      call(
+        sendMessageHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env: requestEnv,
+          turns,
+          userId: consumer,
+          params: { id: sessionId },
+          body: { text: question, usageId: rechargeUsageId },
+        }),
+      );
+    if (!pending) throw new Error('missing pending recovery fixture');
+    const frozenBinding = {
+      productKind: 'knowledge_agent_test' as const,
+      capability: {
+        id: pending.capability_id,
+        protocol: pending.capability_protocol as 'combo.agent-package-capability/2',
+      },
+      release: {
+        protocol: 'combo.agent-package-release/1' as const,
+        releaseId: pending.release_id as `release.agent-package.${string}`,
+        packageDigest: pending.package_digest as `sha256:${string}`,
+      },
+      releaseScope: pending.release_scope as 'controlled_test',
+      knowledge: {
+        protocol: 'combo.knowledge-bundle/1' as const,
+        resourcePath:
+          pending.knowledge_resource_path as 'skills/knowledge/references/knowledge-bundle.json',
+        resourceDigest: pending.knowledge_resource_digest as `sha256:${string}`,
+      },
+    };
+    const setFrozenValidatorPolicy = (validatorPolicyVersion: string): void => {
+      pending.validator_policy_version = validatorPolicyVersion;
+      pending.request_fingerprint = usageRequestFingerprint({
+        ownerUserId: consumer,
+        capabilityOwnerUserId: creator,
+        capabilityId,
+        sessionId,
+        usageId: rechargeUsageId,
+        text: question,
+        knowledge: { binding: frozenBinding, validatorPolicyVersion },
+      });
+    };
+    setFrozenValidatorPolicy(KNOWLEDGE_AGENT_VALIDATOR_POLICY);
+    const stateBeforePolicyFailures = {
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    };
+    expect(await recoveryRequest(env)).toMatchObject({
+      statusCode: 503,
+      body: { error: { action: 'retry' } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: question,
+      recovery_status: 'active',
+      validator_policy_version: KNOWLEDGE_AGENT_VALIDATOR_POLICY,
+    });
+    expect({
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforePolicyFailures);
+
+    setFrozenValidatorPolicy('knowledge-agent-unknown-validator-v9');
+    expect(await recoveryRequest(env)).toMatchObject({
+      statusCode: 503,
+      body: { error: { action: 'retry' } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: question,
+      recovery_status: 'active',
+      validator_policy_version: 'knowledge-agent-unknown-validator-v9',
+    });
+    expect({
+      turns: db.turns.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforePolicyFailures);
+
+    expect(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY).toBe('knowledge-agent-grounded-validator-v2');
+    setFrozenValidatorPolicy(KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY);
+    const otherPackage = fixture();
+    const otherCapability = db.seedCapability({
+      id: CAPABILITY_ID,
+      owner_user_id: OWNER,
+      published: true,
+      kind: 'knowledge',
+      name: '另一个有效知识 Agent',
+      summary: '用于证明当前 gate 已真实漂移到另一个可解析 Package',
+    });
+    store.seedText(
+      CAPABILITY_BUCKET,
+      otherCapability.storage_key,
+      serializeCreatorAgentPackageCapability(otherPackage.projection),
+    );
+    db.seedAgentPackageRegistry({
+      packageDigest: otherPackage.packageDigest,
+      releaseId: otherPackage.projection.release.releaseId,
+      ownerUserId: OWNER,
+    });
+    await seedPackage(store, otherPackage);
+    const driftedGate: KnowledgeAgentTestGate = {
+      ...otherPackage.gate,
+      sourceSha,
+    };
+    expect(driftedGate.packageDigest).not.toBe(packageDigest);
+    await expect(
+      resolveKnowledgeAgentPackage({
+        db,
+        objectStore: store,
+        capability: {
+          id: otherCapability.id,
+          name: otherCapability.name,
+          summary: otherCapability.summary,
+          kind: otherCapability.kind,
+          published: otherCapability.published,
+          ownerUserId: otherCapability.owner_user_id,
+        },
+        projection: otherPackage.projection,
+        gate: driftedGate,
+      }),
+    ).resolves.toMatchObject({
+      binding: { release: { packageDigest: otherPackage.packageDigest } },
+    });
+    const driftedEnv = {
+      ...env,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(driftedGate),
+    } as Env;
+    expect(knowledgeAgentTestGateFromEnv(driftedEnv)).toMatchObject({
+      capabilityId: otherCapability.id,
+      releaseId: otherPackage.projection.release.releaseId,
+      packageDigest: otherPackage.packageDigest,
+    });
+    const envWithoutKnowledgeGate = {
+      ...env,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: undefined,
+    } as unknown as Env;
+    expect(await recoveryRequest(envWithoutKnowledgeGate)).toMatchObject({
+      statusCode: 402,
+      body: {
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+      },
+    });
+    expect(await recoveryRequest(driftedEnv)).toMatchObject({
+      statusCode: 402,
+      body: {
+        recoveryUsageId: rechargeUsageId,
+        rechargeIntentId: rechargeUsageId,
+      },
+    });
+    expect(agent.calls).toHaveLength(stateBeforePolicyFailures.agentCalls);
+    const stateBeforeActiveDetails = {
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    };
+    for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
+      const activeDetail = await readDetail(detailEnv);
+      expect(activeDetail.statusCode).toBe(200);
+      expect(activeDetail.headers['cache-control']).toBe('private, no-store');
+      const activeData = (activeDetail.body as { data: SessionDetail }).data;
+      expect(activeData.agentBinding).toMatchObject({
+        release: { releaseId: release.releaseId, packageDigest },
+      });
+      expect(activeData.knowledgeResults).toHaveLength(3);
+      expect(
+        activeData.knowledgeResults?.filter((result) => result.usageId === rechargeUsageId),
+      ).toEqual([]);
+      expect(activeData.knowledgeResults?.[0]).toMatchObject({
+        answer: { text: answer },
+        citations: [{ displayLabel: '公开计费手册' }],
+        billing: { source: 'free', settledCents: '0' },
+      });
+    }
+    expect({
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      agentCalls: agent.calls.length,
+    }).toEqual(stateBeforeActiveDetails);
+
+    const account = db.billingAccounts.get(consumer);
+    if (!account) throw new Error('missing consumer billing account');
+    account.balance_cents = 1n;
+    const accepted = await recoveryRequest(driftedEnv);
+    const replay = await recoveryRequest(driftedEnv);
+    expect(accepted).toMatchObject({ statusCode: 202, body: { data: { replayed: false } } });
+    expect(replay).toMatchObject({ statusCode: 202, body: { data: { replayed: true } } });
+    await waitFor(() => db.agentUsageReceipts.size === 4);
+    expect(
+      [...db.agentUsageReceipts.values()].filter((receipt) => receipt.usage_id === rechargeUsageId),
+    ).toEqual([
+      expect.objectContaining({
+        validator_policy_version: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+        execution_outcome: 'answered',
+        validation_code: 'accepted',
+        response_message_id: expect.any(String),
+        citation_chunk_ids: [chunkId],
+      }),
+    ]);
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${rechargeUsageId}`)).toMatchObject({
+      request_text: null,
+      recovery_status: 'accepted',
+      terminal_turn_id: expect.any(String),
+    });
+    expect(
+      db.queries.some(
+        (query) =>
+          query.startsWith('UPDATE billing_free_allowances SET free_reserved_count') &&
+          query.includes('updated_at = GREATEST(now(), updated_at)'),
+      ),
+    ).toBe(true);
+    for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
+      const acceptedDetail = await readDetail(detailEnv);
+      expect(acceptedDetail.statusCode).toBe(200);
+      expect(acceptedDetail.headers['cache-control']).toBe('private, no-store');
+      const acceptedData = (acceptedDetail.body as { data: SessionDetail }).data;
+      expect(acceptedData.knowledgeResults).toHaveLength(4);
+      expect(
+        acceptedData.knowledgeResults?.filter((result) => result.usageId === rechargeUsageId),
+      ).toEqual([
+        expect.objectContaining({
+          outcome: 'answered',
+          answer: expect.objectContaining({ text: answer }),
+          citations: [expect.objectContaining({ displayLabel: '公开计费手册' })],
+          billing: expect.objectContaining({
+            source: 'wallet',
+            unitPriceCents: '1',
+            settledCents: '1',
+          }),
+          validation: expect.objectContaining({
+            policyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+            code: 'accepted',
+          }),
+        }),
+      ]);
+    }
+    const terminalReplayAgent = makeFakeAgentFactory();
+    const terminalReplayTurns = createTurnRunner({
+      db,
+      objectStore: store,
+      bus: createSessionEventBus(),
+      eventLog: new FakeSessionEventLog(),
+      agentFactory: terminalReplayAgent.factory,
+      idleTimeoutMs: 60_000,
+      interrupts: createInterruptBus(),
+      billingPolicy: { freeUses: 99, unitPriceCents: 999 },
+      runtimeSourceSha: sourceSha,
+      log: silentLog,
+    });
+    const terminalReplay = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env: envWithoutKnowledgeGate,
+        turns: terminalReplayTurns,
+        userId: consumer,
+        params: { id: sessionId },
+        body: { text: question, usageId: rechargeUsageId },
+      }),
+    );
+    expect(terminalReplay).toMatchObject({
+      statusCode: 202,
+      body: { data: { replayed: true } },
+    });
+    expect(terminalReplayAgent.calls).toHaveLength(0);
+    await terminalReplayTurns.dispose();
+    expect(
+      [...db.usageCharges.values()].filter((charge) => charge.usage_id === rechargeUsageId),
+    ).toHaveLength(1);
+    expect(
+      [...db.walletLedger.values()].filter(
+        (entry) =>
+          entry.entry_type === 'usage_debit' &&
+          db.usageCharges.get(entry.usage_charge_id)?.usage_id === rechargeUsageId,
+      ),
+    ).toHaveLength(1);
+    const stateBeforeTerminalDetails = {
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      debits: [...db.walletLedger.values()].filter((entry) => entry.entry_type === 'usage_debit')
+        .length,
+    };
+    for (const detailEnv of [envWithoutKnowledgeGate, driftedEnv]) {
+      const terminalDetail = await readDetail(detailEnv);
+      expect(terminalDetail.statusCode).toBe(200);
+      expect(
+        (terminalDetail.body as { data: SessionDetail }).data.knowledgeResults?.filter(
+          (result) => result.usageId === rechargeUsageId,
+        ),
+      ).toHaveLength(1);
+    }
+    expect({
+      receipts: db.agentUsageReceipts.size,
+      charges: db.usageCharges.size,
+      debits: [...db.walletLedger.values()].filter((entry) => entry.entry_type === 'usage_debit')
+        .length,
+    }).toEqual(stateBeforeTerminalDetails);
+    expect(
+      (
+        await call(
+          getPendingUsageRecoveryHandler(),
+          makeReq({
+            db,
+            objectStore: store,
+            env,
+            turns,
+            userId: consumer,
+            params: { usageId: rechargeUsageId },
+          }),
+        )
+      ).statusCode,
+    ).toBe(404);
+
+    // A lost COMMIT response can hand confirmation to the background owner. If an
+    // interrupt terminalizes the exact recovery before its next read, confirmation
+    // must converge once, release the local handle, and never invoke Pi/validation.
+    const commitRaceSessionId = '00000000-0000-4000-8000-000000000113';
+    const commitRaceUsageId = '00000000-0000-4000-8000-000000000114';
+    const sourceSession = db.sessions.get(sessionId);
+    if (!sourceSession || !pending) throw new Error('missing recovery fixture');
+    db.sessions.set(commitRaceSessionId, { ...sourceSession, id: commitRaceSessionId });
+    db.seedPendingUsageRecovery({
+      ...pending,
+      usage_id: commitRaceUsageId,
+      session_id: commitRaceSessionId,
+      request_text: question,
+      request_fingerprint: usageRequestFingerprint({
+        ownerUserId: consumer,
+        capabilityOwnerUserId: creator,
+        capabilityId,
+        sessionId: commitRaceSessionId,
+        usageId: commitRaceUsageId,
+        text: question,
+        knowledge: {
+          binding: frozenBinding,
+          validatorPolicyVersion: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+        },
+      }),
+      validator_policy_version: KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+      active_recharge_intent_id: commitRaceUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    account.balance_cents = 1n;
+    const modelCallsBeforeCommitRace = agent.calls.length;
+    const originalQuery = db.query.bind(db);
+    let loseAdmissionCommitResponse = false;
+    let admissionCommitResponseLost = false;
+    let failSynchronousConfirmation = true;
+    let blockBackgroundConfirmation = true;
+    let backgroundConfirmationBlocked = false;
+    let postCommitBeginCount = 0;
+    let releaseBackgroundConfirmation!: () => void;
+    const backgroundConfirmationRelease = new Promise<void>((resolve) => {
+      releaseBackgroundConfirmation = resolve;
+    });
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      if (admissionCommitResponseLost && normalized === 'BEGIN') {
+        postCommitBeginCount += 1;
+        if (failSynchronousConfirmation) {
+          failSynchronousConfirmation = false;
+          throw new Error('redacted synchronous confirmation transport failure');
+        }
+        if (blockBackgroundConfirmation) {
+          blockBackgroundConfirmation = false;
+          backgroundConfirmationBlocked = true;
+          await backgroundConfirmationRelease;
+        }
+      }
+      const result = await originalQuery<R>(sql, params);
+      if (normalized.startsWith('INSERT INTO usage_charges') && params[1] === commitRaceUsageId) {
+        loseAdmissionCommitResponse = true;
+      }
+      if (normalized === 'COMMIT' && loseAdmissionCommitResponse) {
+        loseAdmissionCommitResponse = false;
+        admissionCommitResponseLost = true;
+        throw new Error('redacted knowledge recovery commit response loss');
+      }
+      return result;
+    };
+    let backgroundReleased = false;
+    try {
+      const commitUnknown = await call(
+        sendMessageHandler(),
+        makeReq({
+          db,
+          objectStore: store,
+          env: envWithoutKnowledgeGate,
+          turns,
+          userId: consumer,
+          params: { id: commitRaceSessionId },
+          body: { text: question, usageId: commitRaceUsageId },
+        }),
+      );
+      expect(commitUnknown).toMatchObject({
+        statusCode: 503,
+        body: { error: { action: 'retry' } },
+      });
+      await waitFor(() => backgroundConfirmationBlocked);
+      expect(await turns.interrupt(commitRaceSessionId)).toBe(true);
+      expect(db.pendingUsageRecoveries.get(`${consumer}:${commitRaceUsageId}`)).toMatchObject({
+        request_text: null,
+        recovery_status: 'abandoned',
+        terminal_turn_id: expect.any(String),
+      });
+      const beginsBeforeBackgroundRelease = postCommitBeginCount;
+      const commitsBeforeBackgroundRelease = db.txLog.filter((entry) => entry === 'COMMIT').length;
+      releaseBackgroundConfirmation();
+      backgroundReleased = true;
+      await waitFor(
+        () =>
+          db.txLog.filter((entry) => entry === 'COMMIT').length > commitsBeforeBackgroundRelease,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(postCommitBeginCount).toBe(beginsBeforeBackgroundRelease);
+    } finally {
+      if (!backgroundReleased) releaseBackgroundConfirmation();
+      db.query = originalQuery;
+    }
+    expect(agent.calls).toHaveLength(modelCallsBeforeCommitRace);
+    expect(
+      [...db.usageCharges.values()].filter(
+        (charge) => charge.usage_id === commitRaceUsageId && charge.status === 'released',
+      ),
+    ).toHaveLength(1);
+    expect(
+      [...db.agentUsageReceipts.values()].filter(
+        (receipt) =>
+          receipt.usage_id === commitRaceUsageId && receipt.execution_outcome === 'interrupted',
+      ),
+    ).toHaveLength(1);
+    const commitRaceReplay = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env: envWithoutKnowledgeGate,
+        turns,
+        userId: consumer,
+        params: { id: commitRaceSessionId },
+        body: { text: question, usageId: commitRaceUsageId },
+      }),
+    );
+    expect(commitRaceReplay).toMatchObject({
+      statusCode: 202,
+      body: { data: { replayed: true } },
+    });
+    expect(agent.calls).toHaveLength(modelCallsBeforeCommitRace);
+
+    const cancelSessionId = '00000000-0000-4000-8000-000000000109';
+    const cancelUsageId = '00000000-0000-4000-8000-000000000110';
+    db.sessions.set(cancelSessionId, { ...sourceSession, id: cancelSessionId });
+    db.seedPendingUsageRecovery({
+      ...pending,
+      usage_id: cancelUsageId,
+      session_id: cancelSessionId,
+      request_text: '取消这条待恢复请求',
+      active_recharge_intent_id: cancelUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const cancelled = await call(
+      abandonPendingUsageRecoveryHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        env,
+        turns,
+        userId: consumer,
+        params: { usageId: cancelUsageId },
+      }),
+    );
+    expect(cancelled).toMatchObject({
+      statusCode: 200,
+      body: { data: { abandoned: true } },
+    });
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${cancelUsageId}`)).toMatchObject({
+      request_text: null,
+      recovery_status: 'abandoned',
+    });
+    const cancelledDetail = await readDetail(envWithoutKnowledgeGate, cancelSessionId);
+    expect(cancelledDetail.statusCode).toBe(200);
+    expect((cancelledDetail.body as { data: SessionDetail }).data.knowledgeResults).toEqual([]);
+    expect(
+      [...db.usageCharges.values()].filter((charge) => charge.usage_id === cancelUsageId),
+    ).toEqual([]);
+    expect(
+      [...db.walletLedger.values()].filter(
+        (entry) => db.usageCharges.get(entry.usage_charge_id)?.usage_id === cancelUsageId,
+      ),
+    ).toEqual([]);
+
+    const expiredSessionId = '00000000-0000-4000-8000-000000000111';
+    const expiredUsageId = '00000000-0000-4000-8000-000000000112';
+    db.sessions.set(expiredSessionId, { ...sourceSession, id: expiredSessionId });
+    db.seedPendingUsageRecovery({
+      ...pending,
+      usage_id: expiredUsageId,
+      session_id: expiredSessionId,
+      request_text: '已经过期的请求',
+      active_recharge_intent_id: expiredUsageId,
+      recovery_status: 'active',
+      terminal_turn_id: null,
+      expires_at: '2026-01-01T00:00:00.000Z',
+    });
+    expect(await sweepExpiredPendingUsageRecoveries(db)).toBe(1);
+    expect(db.pendingUsageRecoveries.get(`${consumer}:${expiredUsageId}`)).toMatchObject({
+      request_text: null,
+      recovery_status: 'abandoned',
+    });
+    expect(agent.calls).toHaveLength(4);
+    expect(db.agentUsageReceipts.size).toBe(5);
+    await turns.dispose();
+  });
+});
+
+const OWNER = '11111111-1111-4111-8111-111111111111';
+const CAPABILITY_ID = '22222222-2222-4222-8222-222222222222';
+const SOURCE_SHA = 'a'.repeat(40);
+
+function bytes(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function fixture() {
+  const agentMarkdown = bytes('# Knowledge Agent\nAnswer only from retrieved evidence.');
+  const skillMarkdown = bytes('# Knowledge\nSearch before submitting an answer.');
+  const content = 'Combo 的受控 Test 知识内容。';
+  const bundleText = serializeCreatorKnowledgeBundle({
+    protocol: CREATOR_KNOWLEDGE_BUNDLE_PROTOCOL,
+    chunks: [
+      {
+        id: `chunk.knowledge.${'1'.repeat(32)}`,
+        source: {
+          sourceId: `source.knowledge.${'2'.repeat(32)}`,
+          displayLabel: '公开测试资料',
+        },
+        content,
+        contentDigest: digestCreatorAgentPackageFile(bytes(content)),
+      },
+    ],
+  });
+  const bundleBytes = bytes(bundleText);
+  const manifest = createCreatorAgentPackageManifest({
+    protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+    name: '受控知识 Agent',
+    description: '只回答固定公开测试资料。',
+    instructions: 'AGENT.md',
+    skills: [CREATOR_KNOWLEDGE_SKILL_PATH],
+    files: [
+      {
+        path: 'AGENT.md',
+        byteLength: agentMarkdown.byteLength,
+        digest: digestCreatorAgentPackageFile(agentMarkdown),
+      },
+      {
+        path: CREATOR_KNOWLEDGE_SKILL_PATH,
+        byteLength: skillMarkdown.byteLength,
+        digest: digestCreatorAgentPackageFile(skillMarkdown),
+      },
+      {
+        path: CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH,
+        byteLength: bundleBytes.byteLength,
+        digest: digestCreatorAgentPackageFile(bundleBytes),
+      },
+    ],
+  });
+  const packageDigest = digestCreatorAgentPackage(manifest);
+  const release = createCreatorAgentPackageRelease({
+    protocol: 'combo.agent-package-release/1',
+    releaseId: `release.agent-package.${'3'.repeat(32)}`,
+    packageDigest,
+  });
+  const projection = createCreatorAgentPackageCapability({
+    version: 2,
+    protocol: 'combo.agent-package-capability/2',
+    release,
+  });
+  const gate: KnowledgeAgentTestGate = {
+    protocol: 'combo.knowledge-agent-runtime-test-gate/1',
+    sourceSha: SOURCE_SHA,
+    publisherUserId: OWNER,
+    capabilityId: CAPABILITY_ID,
+    releaseId: release.releaseId,
+    packageDigest,
+    validatorPolicyVersion: 'knowledge-agent-test-validator-v1',
+    cases: [
+      {
+        questionDigest: `sha256:${'4'.repeat(64)}`,
+        answer: '受控答案。',
+        citationChunkIds: [`chunk.knowledge.${'1'.repeat(32)}`],
+      },
+    ],
+  };
+  return { agentMarkdown, skillMarkdown, bundleBytes, manifest, packageDigest, projection, gate };
+}
+
+function registryDb(
+  candidate = fixture(),
+  overrides: Record<string, string> = {},
+): Queryable & { query: ReturnType<typeof vi.fn> } {
+  return {
+    query: vi.fn(async () => ({
+      rows: [
+        {
+          release_id: candidate.projection.release.releaseId,
+          package_digest: candidate.packageDigest,
+          owner_user_id: OWNER,
+          release_protocol: 'combo.agent-package-release/1',
+          release_scope: 'controlled_test',
+          package_protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+          ...overrides,
+        },
+      ],
+      rowCount: 1,
+    })),
+  } as Queryable & { query: ReturnType<typeof vi.fn> };
+}
+
+async function seedPackage(store: FakeObjectStore, candidate = fixture()): Promise<void> {
+  const entries = [
+    ['agent.json', bytes(serializeCreatorAgentPackageManifest(candidate.manifest))],
+    ['AGENT.md', candidate.agentMarkdown],
+    [CREATOR_KNOWLEDGE_SKILL_PATH, candidate.skillMarkdown],
+    [CREATOR_KNOWLEDGE_BUNDLE_RESOURCE_PATH, candidate.bundleBytes],
+  ] as const;
+  for (const [path, body] of entries) {
+    await store.putObject(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      agentPackageObjectKey(candidate.packageDigest, path),
+      body,
+    );
+  }
+}
+
+function resolveInput(
+  candidate = fixture(),
+  store = new FakeObjectStore(),
+  db = registryDb(candidate),
+) {
+  return {
+    candidate,
+    store,
+    db,
+    input: {
+      db,
+      objectStore: store,
+      capability: {
+        id: CAPABILITY_ID,
+        name: '投影名称',
+        summary: '投影摘要',
+        kind: 'knowledge',
+        published: true,
+        ownerUserId: OWNER,
+      },
+      projection: candidate.projection,
+      gate: candidate.gate,
+    },
+  };
+}
+
+describe('exact knowledge Agent Package resolver', () => {
+  it('keeps a missing or mismatched Test gate closed before DB or object access', async () => {
+    const context = resolveInput();
+    for (const gate of [null, { ...context.candidate.gate, capabilityId: OWNER }]) {
+      await expect(resolveKnowledgeAgentPackage({ ...context.input, gate })).rejects.toMatchObject({
+        failure: 'closed',
+      });
+    }
+    expect(context.db.query).not.toHaveBeenCalled();
+    expect(context.store.objects.size).toBe(0);
+  });
+
+  it.each([
+    ['owner', { owner_user_id: '33333333-3333-4333-8333-333333333333' }],
+    ['release protocol', { release_protocol: 'legacy' }],
+    ['scope', { release_scope: 'production' }],
+    ['package protocol', { package_protocol: 'legacy' }],
+  ])('fails closed on Registry %s drift', async (_label, overrides) => {
+    const candidate = fixture();
+    const context = resolveInput(
+      candidate,
+      new FakeObjectStore(),
+      registryDb(candidate, overrides),
+    );
+    await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+      failure: 'invalid_registry',
+    });
+  });
+
+  it('rejects a manifest whose recomputed digest differs from the Registry selector', async () => {
+    const context = resolveInput();
+    await seedPackage(context.store, context.candidate);
+    const changed = createCreatorAgentPackageManifest({
+      ...context.candidate.manifest,
+      description: '另一份合法但 digest 不同的 Package。',
+    });
+    context.store.seedText(
+      AGENT_PACKAGE_OBJECT_BUCKET,
+      agentPackageObjectKey(context.candidate.packageDigest, 'agent.json'),
+      serializeCreatorAgentPackageManifest(changed),
+    );
+
+    await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+      failure: 'invalid_package',
+    });
+  });
+
+  it('rejects tampered file bytes and invalid UTF-8', async () => {
+    for (const replacement of [bytes('# Knowledge Agenx'), new Uint8Array([0xff])]) {
+      const context = resolveInput();
+      await seedPackage(context.store, context.candidate);
+      await context.store.putObject(
+        AGENT_PACKAGE_OBJECT_BUCKET,
+        agentPackageObjectKey(context.candidate.packageDigest, 'AGENT.md'),
+        replacement,
+      );
+      await expect(resolveKnowledgeAgentPackage(context.input)).rejects.toMatchObject({
+        failure: 'invalid_package',
+      });
+    }
+  });
+
+  it('propagates an abort as a stable category without provider details', async () => {
+    const context = resolveInput();
+    await seedPackage(context.store, context.candidate);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      resolveKnowledgeAgentPackage({ ...context.input, signal: controller.signal }),
+    ).rejects.toMatchObject({ failure: 'aborted' });
+  });
+});
+
+describe('controlled knowledge Agent Test gate configuration', () => {
+  it('accepts only canonical exact-SHA Test material and fails closed elsewhere', () => {
+    const candidate = fixture();
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: SOURCE_SHA,
+      COMBO_RELEASE_ID: `release-${SOURCE_SHA}`,
+      COMBO_BUILT_AT: '2026-07-28T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(candidate.gate),
+    } as Env;
+    expect(knowledgeAgentTestGateFromEnv(env)).toEqual(candidate.gate);
+    const driftSha = 'f'.repeat(40);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_SOURCE_SHA: driftSha,
+        COMBO_RELEASE_ID: `release-${driftSha}`,
+      }),
+    ).toBeNull();
+    expect(() => knowledgeAgentTestGateFromEnv({ ...env, COMBO_ENVIRONMENT: 'preview' })).toThrow(
+      /COMBO_KNOWLEDGE_AGENT_TEST_GATE/u,
+    );
+    expect(() =>
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify({
+          ...candidate.gate,
+          privateMarker: 'must-not-appear',
+        }),
+      }),
+    ).toThrow(/COMBO_KNOWLEDGE_AGENT_TEST_GATE/u);
+  });
+
+  it('parses canonical v2 without oracle cases while preserving canonical v1', () => {
+    const legacy = fixture().gate;
+    const current = {
+      protocol: 'combo.knowledge-agent-runtime-test-gate/2',
+      sourceSha: SOURCE_SHA,
+      publisherUserId: OWNER,
+      capabilityId: CAPABILITY_ID,
+      releaseId: legacy.releaseId,
+      packageDigest: legacy.packageDigest,
+      validatorPolicyVersion: 'knowledge-agent-grounded-validator-v2',
+    };
+    const env = {
+      COMBO_ENVIRONMENT: 'test',
+      COMBO_SOURCE_SHA: SOURCE_SHA,
+      COMBO_RELEASE_ID: `release-${SOURCE_SHA}`,
+      COMBO_BUILT_AT: '2026-07-28T00:00:00.000Z',
+      COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+      COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
+      COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(current),
+    } as Env;
+    expect(knowledgeAgentTestGateFromEnv(env)).toEqual(current);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(legacy),
+      }),
+    ).toEqual(legacy);
+
+    for (const invalid of [
+      { ...current, cases: legacy.cases },
+      { ...current, minimumGroundingCoverage: 0 },
+      { ...current, validatorPolicyVersion: 'knowledge-agent-test-validator-v1' },
+      { ...current, extra: true },
+    ]) {
+      expect(() =>
+        knowledgeAgentTestGateFromEnv({
+          ...env,
+          COMBO_KNOWLEDGE_AGENT_TEST_GATE: JSON.stringify(invalid),
+        }),
+      ).toThrow(/COMBO_KNOWLEDGE_AGENT_TEST_GATE/u);
+    }
+    expect(() =>
+      knowledgeAgentTestGateFromEnv({ ...env, COMBO_ENVIRONMENT: 'production' }),
+    ).toThrow(/只能用于 Test Runtime/u);
+    const driftSha = 'f'.repeat(40);
+    expect(
+      knowledgeAgentTestGateFromEnv({
+        ...env,
+        COMBO_SOURCE_SHA: driftSha,
+        COMBO_RELEASE_ID: `release-${driftSha}`,
+      }),
+    ).toBeNull();
   });
 });

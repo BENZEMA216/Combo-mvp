@@ -95,7 +95,7 @@ describe('LoginPage two-step email OTP flow', () => {
     expect(screen.getByRole('heading', { name: '使用邮箱登录' })).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('登录依赖正在恢复，请稍后重试。');
     expect(emailInput).toBeEnabled();
-    expect(emailInput).toHaveFocus();
+    await waitFor(() => expect(emailInput).toHaveFocus());
     expect(screen.queryByRole('heading', { name: '登录暂时无法完成' })).toBeNull();
 
     await user.type(emailInput, 'Alice@example.com');

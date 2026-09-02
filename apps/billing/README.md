@@ -9,7 +9,7 @@
 - `src/index.ts` 是进程入口，加载配置、装配 PostgreSQL 连接池与 hold 清扫任务，启动 HTTP 监听并处理优雅停机。
 - `src/env.ts` 解析并校验全部环境变量，进程其余部分只读结构化配置。
 - `src/service.ts` 定义持久层端口与纯函数：可用余额推导、先赠后本拆分、流水幂等键约定。
-- `src/repo.ts` 是持久层端口在 pg.Pool 上的实现，每个写方法内部一个事务，钱包行锁把同一用户的并发计费串行化。SQL 与 `db/migrations/0013_v2_billing.sql` 一一对应。
+- `src/repo.ts` 是持久层端口在 pg.Pool 上的实现，每个写方法内部一个事务，钱包行锁把同一用户的并发计费串行化。SQL 与 `db/v2-migrations/0013_v2_billing.sql` 一一对应。
 - `src/sweep.ts` 是 hold 超时清扫周期任务：把到期仍 held 的预授权置 expired 并解冻，失败只记日志不中断。
 - `src/app.ts` 装配 Fastify 路由与 Bearer token 鉴权，进程入口和测试共用同一份装配。
 - `src/__tests__/` 是不依赖外部服务的 vitest 测试，`fakes.ts` 提供复刻事务语义的内存假实现。

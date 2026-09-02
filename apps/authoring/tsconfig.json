@@ -6,7 +6,10 @@
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "types": ["node"]
   },
-  "references": [{ "path": "../../packages/shared" }],
+  "references": [
+    { "path": "../../packages/creator-agent-protocol" },
+    { "path": "../../packages/shared" }
+  ],
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/__tests__/**"]
 }

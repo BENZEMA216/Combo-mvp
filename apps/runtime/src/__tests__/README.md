@@ -9,11 +9,12 @@
 - `env-auth.test.ts` 验证生产配置要求 PostgreSQL、Runtime 基础设施、公开 origin 和发布身份，同时不包含远端身份服务或开发登录配置。
 - `version.test.ts` 验证发布元数据和 `/version.json`。
 - `health.test.ts`、`http-logging.test.ts` 与 `observability-redaction.test.ts` 验证依赖状态、低敏日志和追踪脱敏。
-- `routes.test.ts` 验证端点声明、鉴权与来源守卫、owner 隔离、普通与 Studio Session、UI 恢复和 Artifact 读取。
+- `routes.test.ts` 验证端点声明、鉴权与来源守卫、owner 隔离、普通与 Studio Session、UI 恢复、Artifact 读取，以及登录用户的知识 Session 创建、回答、详情、免费额度与 402 闭环。它也覆盖 Test gate、Registry exact 解析、Package 摘要与 UTF-8 校验和稳定中止分类。
 - `artifact.test.ts`、`session-detail.test.ts`、`session-repo.test.ts` 和 `session-consistency.integration.test.ts` 验证 Artifact 来源、详情快照、会话仓储、UI 晋升和事务约束。
 - `billing.test.ts` 验证免费三次、owner 免计费、钱包结算、`usageId` 幂等、余额不足、失败释放和清扫补偿。
-- `billing.pg.test.ts` 仅在 `BILLING_PG_TEST=1` 且同时提供专用 `BILLING_TEST_DATABASE_URL` 和 `BILLING_RUNTIME_TEST_DATABASE_URL` 时运行。管理员连接只准备与核对随机测试数据，真实 service SQL 必须通过最小 `combo_runtime` 身份执行；用例覆盖免费额度的成功结算与失败释放，也验证同一 Session 或跨 Session 并发提交时，同一用户的 `usageId` 只产生一条用量、一个 Turn 和一笔扣费。测试不清理不可变资金流水，数据库应由外层 fixture 整体重建。
-- `build-agent.test.ts`、`run-turn.test.ts`、`stream-events.test.ts`、`turn-control.test.ts`、`turn-repo.test.ts` 和 `terminal-fence.integration.test.ts` 验证 Pi Agent、Turn 生命周期、Redis 补发与终态栅栏。
+- `billing.pg.test.ts` 仅在 `BILLING_PG_TEST=1` 且同时提供专用 `BILLING_TEST_DATABASE_URL` 和 `BILLING_RUNTIME_TEST_DATABASE_URL` 时运行。管理员连接只准备与核对随机测试数据，真实 service SQL 通过最小 `combo_runtime` 身份执行；除 legacy 并发与账本外，还覆盖知识 Agent 的免费或钱包 answered、insufficient、rejected、402、相同 `usageId` exactly-once 与跨副本 interrupt receipt。测试不清理不可变资金流水，数据库应由外层 fixture 整体重建。
+- `loader.test.ts` 验证 canonical Capability v2 投影与有界对象读取，包括 hostile body、提前超限、流式累计超限、中止清理和错误脱敏。`knowledge-run-turn.test.ts` 验证中文确定性检索、长文本命中窗口、v1 oracle、v2 陌生问题词法支持与引用栅栏、候选隔离、answered-only 结算、replay、关闭和 legacy 清理失败后的知识清扫。
+- `build-agent.test.ts`、`run-turn.test.ts`、`stream-events.test.ts`、`turn-control.test.ts`、`turn-repo.test.ts` 和 `terminal-fence.integration.test.ts` 验证 Pi Agent、legacy Turn 生命周期、Redis 补发与终态栅栏。
 - `sandbox-backend.test.ts`、`sandbox-capability.test.ts`、`sandbox-client.test.ts`、`sandbox-config.test.ts` 和 `sandbox-tools.test.ts` 验证 Kubernetes 后端、内部能力令牌、远程协议、配置门禁和四个模型工具。
 - `fakes.ts` 提供与当前 SQL 守卫一致的内存数据库、Redis 事件日志、对象存储和 Pi Agent 假件。
 

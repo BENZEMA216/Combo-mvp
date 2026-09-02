@@ -1,9 +1,9 @@
-// 会话页（GUI 形态）：产物画布是主界面，聊天是稳定的修改工作区——
+// 会话页（GUI 形态）：知识 Agent 使用单一全高对话；其他 Agent 以产物画布为主界面——
 //   - consume 首屏按能力输入开始真实任务；studio 从左侧对话直接开始第一版 UI；
 //   - 第一轮生成中且还没有任何产物时显示诚实的页面骨架；
 //   - 有产物后画布渲染产物（多产物顶部 chips 切换），左侧对话负责反复微调；
 //   - 恢复：GET /runtime/sessions/:id（详情真源）；实时：/stream SSE（useSessionStream）。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ArtifactView, SessionDetail } from '@cb/shared';
 import { useArtifactContent, useCreateSession, useSession } from '../api/runtime.js';
@@ -15,8 +15,9 @@ import {
 } from '../components/ArtifactRenderer.js';
 import { FloatingChat } from '../components/FloatingChat.js';
 import { GeneratingPageSkeleton } from '../components/GeneratingPageSkeleton.js';
+import { KnowledgeConversation } from '../components/KnowledgeConversation.js';
 import { QueryErrorNotice } from '../components/QueryErrorNotice.js';
-import { RechargeDialog } from '../components/RechargeDialog.js';
+import { RechargeDialog, RecoveryRechargeDialog } from '../components/RechargeDialog.js';
 import { SessionSidebar } from '../components/SessionSidebar.js';
 import { TrialIntakeForm } from '../components/TrialIntakeForm.js';
 import {
@@ -120,6 +121,14 @@ export function ChatPage() {
   const [trialStartError, setTrialStartError] = useState<string | null>(null);
   const [retryResolutionVersion, setRetryResolutionVersion] = useState(0);
   const rechargeBackgroundRef = useRef<HTMLDivElement>(null);
+  const sessionGenerationRef = useRef<{ sessionId: string | undefined }>({ sessionId });
+  useLayoutEffect(() => {
+    if (sessionGenerationRef.current.sessionId !== sessionId) {
+      // Replace the token on every committed route generation, including A -> B -> A. A late
+      // recovery from an older mount must never remount another generation's input source.
+      sessionGenerationRef.current = { sessionId };
+    }
+  }, [sessionId]);
 
   // 普通试用和 Studio 都记住严格校验后的 returnTo，保证反复修改后能继续定价发布。
   const queryReturnTo = safeRuntimeReturnTo(searchParams.get('returnTo'));
@@ -131,10 +140,13 @@ export function ChatPage() {
   const capability = detail?.capability;
   const experience = resolveSessionExperience(detail, searchParams.get('mode'));
   const studioMode = experience === 'studio';
+  const knowledgeMode = experience === 'knowledge';
   const contextualReturnTo = studioMode ? (returnTo ?? '/capabilities') : returnTo;
   const releaseReturnTo = safeCapabilityReleaseRuntimeReturnTo(contextualReturnTo);
   useDocumentTitle(
-    capability ? `${capability.name} · ${studioMode ? 'UI 设计' : 'Combo 试用'}` : undefined,
+    capability
+      ? `${capability.name} · ${studioMode ? 'UI 设计' : knowledgeMode ? '知识问答' : 'Combo 试用'}`
+      : undefined,
   );
   const sidebarCapability = capability
     ? { id: capability.id, name: capability.name }
@@ -197,8 +209,11 @@ export function ChatPage() {
   }, [activeArtifact?.id, activeArtifact?.updatedAt]);
 
   useEffect(() => {
-    rechargeBackgroundRef.current?.toggleAttribute('inert', stream.rechargeRequired !== null);
-  }, [stream.rechargeRequired]);
+    rechargeBackgroundRef.current?.toggleAttribute(
+      'inert',
+      stream.rechargeRequired !== null || stream.recoveryDialogOpen,
+    );
+  }, [stream.rechargeRequired, stream.recoveryDialogOpen]);
 
   useEffect(() => {
     if (!mobileSessionsOpen) return undefined;
@@ -224,17 +239,29 @@ export function ChatPage() {
   );
 
   const retryPendingUsage = useCallback(async (): Promise<void> => {
-    try {
-      await stream.retryPending();
-      // 统一恢复入口持有并重放的是完整原请求。成功确认后重挂载原输入源，
-      // 避免表单、对话草稿或 Miniapp 再把相同内容以新 usageId 发送一次。
+    const requestedGeneration = sessionGenerationRef.current;
+    await stream.retryPending();
+    if (sessionGenerationRef.current !== requestedGeneration) return;
+    // 统一恢复入口持有并重放的是完整原请求。成功确认后重挂载原输入源，
+    // 避免表单、对话草稿或 Miniapp 再把相同内容以新 usageId 发送一次。
+    setRetryResolutionVersion((version) => version + 1);
+    setSelectedElement(null);
+    setInspectionEnabled(false);
+  }, [stream.retryPending]);
+
+  const resumeAfterRecharge = useCallback(
+    async (creditedIntentId: string): Promise<void> => {
+      const requestedGeneration = sessionGenerationRef.current;
+      await stream.resumeAfterRecharge(creditedIntentId);
+      if (sessionGenerationRef.current !== requestedGeneration) return;
+      // Recharge resume bypasses the mounted input source's own onSend success path. Only after
+      // the same usageId is authoritatively accepted may we clear its draft/error by remounting.
       setRetryResolutionVersion((version) => version + 1);
       setSelectedElement(null);
       setInspectionEnabled(false);
-    } catch {
-      // useSessionStream owns the visible error and retains the same usageId for another retry.
-    }
-  }, [stream.retryPending]);
+    },
+    [stream.resumeAfterRecharge],
+  );
 
   const runDesignOperation = useCallback(
     async (operation: StudioDesignOperation): Promise<void> => {
@@ -278,11 +305,15 @@ export function ChatPage() {
   }, [capability, contextualReturnTo, createTrial, navigate, sessionId, studioMode]);
 
   return (
-    <div className={`rt-app rt-trial-app${studioMode ? ' rt-trial-app--studio' : ''}`}>
+    <div
+      className={`rt-app rt-trial-app${studioMode ? ' rt-trial-app--studio' : ''}${
+        knowledgeMode ? ' rt-trial-app--knowledge' : ''
+      }`}
+    >
       <div
         ref={rechargeBackgroundRef}
         className="rt-recharge-background"
-        aria-hidden={stream.rechargeRequired ? true : undefined}
+        aria-hidden={stream.rechargeRequired || stream.recoveryDialogOpen ? true : undefined}
       >
         {!studioMode && (
           <SessionSidebar
@@ -304,8 +335,10 @@ export function ChatPage() {
               <header className="rt-trial__toolbar">
                 <div className="rt-trial__title-group">
                   <h1>
-                    {activeArtifact?.title ??
-                      (studioMode ? `${capability.name} UI` : capability.name)}
+                    {knowledgeMode
+                      ? capability.name
+                      : (activeArtifact?.title ??
+                        (studioMode ? `${capability.name} UI` : capability.name))}
                   </h1>
                   {studioMode ? (
                     <div className="rt-studio-status">
@@ -324,6 +357,8 @@ export function ChatPage() {
                         {studioSaveStatus.label}
                       </span>
                     </div>
+                  ) : knowledgeMode ? (
+                    <span className="rt-source-pill">已发布知识 · 权威使用收据</span>
                   ) : (
                     <span className="rt-source-pill">
                       {capability.name} · {capability.kind}
@@ -384,153 +419,178 @@ export function ChatPage() {
                 </div>
               </header>
 
-              <main className={`rt-genui${showConversation ? ' rt-genui--conversation' : ''}`}>
-                {showConversation && sessionId && (
-                  <FloatingChat
+              {knowledgeMode && sessionId ? (
+                <main className="rt-knowledge-layout">
+                  <KnowledgeConversation
                     key={`${sessionId}:${retryResolutionVersion}`}
                     sessionId={sessionId}
                     messages={messages}
-                    streamingText={stream.streamingText}
+                    results={detail.knowledgeResults ?? []}
                     isRunning={stream.running}
-                    hasArtifact={activeArtifact !== null}
-                    error={stream.errorMessage}
+                    contractError={detail.knowledgeResults === undefined}
+                    pendingRetryAvailable={
+                      stream.pendingRetryAvailable &&
+                      !stream.rechargeRequired &&
+                      !stream.recoveryDialogOpen
+                    }
+                    onRetryPending={retryPendingUsage}
+                    streamConnectionFailed={stream.streamConnectionFailed}
+                    onRetryStreamConnection={stream.retryStreamConnection}
                     onSend={sendConversationMessage}
                     onInterrupt={stream.interrupt}
-                    experience={experience}
-                    formatMessageText={studioMode ? formatStudioAnnotationMessage : undefined}
                   />
-                )}
-                <div className="rt-genui__canvas" data-state={canvasState}>
-                  {stream.pendingRetryAvailable && !stream.rechargeRequired && (
-                    <div className="rt-inline-error" role="alert">
-                      上一次发送结果仍待确认。为避免重复运行或扣费，请先重试原任务。
-                      <button
-                        type="button"
-                        className="rt-toolbar-pill"
-                        disabled={stream.running}
-                        onClick={() => void retryPendingUsage()}
-                      >
-                        重试原任务
-                      </button>
-                    </div>
-                  )}
-                  {studioMode && activeArtifact && (
-                    <StudioDesignToolbar
-                      artifact={activeArtifact}
-                      running={stream.running}
-                      operationPending={operationPending}
-                      inspectionEnabled={inspectionEnabled}
-                      inspectableCount={inspectableElements.length}
-                      selectedElement={selectedElement}
-                      onToggleInspection={() => setInspectionEnabled((enabled) => !enabled)}
-                      onClearSelection={() => {
-                        setSelectedElement(null);
-                        setInspectionEnabled(false);
-                      }}
-                      onOperation={(operation) => void runDesignOperation(operation)}
+                </main>
+              ) : (
+                <main className={`rt-genui${showConversation ? ' rt-genui--conversation' : ''}`}>
+                  {showConversation && sessionId && (
+                    <FloatingChat
+                      key={`${sessionId}:${retryResolutionVersion}`}
+                      sessionId={sessionId}
+                      messages={messages}
+                      streamingText={stream.streamingText}
+                      isRunning={stream.running}
+                      hasArtifact={activeArtifact !== null}
+                      error={stream.errorMessage}
+                      onSend={sendConversationMessage}
+                      onInterrupt={stream.interrupt}
+                      experience={experience}
+                      formatMessageText={studioMode ? formatStudioAnnotationMessage : undefined}
                     />
                   )}
-                  {trialStartError && (
-                    <div className="rt-inline-error" role="alert">
-                      {trialStartError}
-                    </div>
-                  )}
-                  {/* consume 首轮失败时对话尚未挂载，错误必须留在画布；Studio 的错误在左侧对话里。 */}
-                  {stream.errorMessage && !showConversation && (
-                    <div className="rt-inline-error" role="alert">
-                      {stream.errorMessage}
-                    </div>
-                  )}
-                  {(stream.artifactList.length > 1 ||
-                    (studioMode && stream.artifactList.length > 0)) && (
-                    <div
-                      className={`rt-canvas-chips${studioMode ? ' rt-canvas-chips--revisions' : ''}`}
-                      aria-label={studioMode ? 'UI 版本历史' : '产物列表'}
-                    >
-                      {stream.artifactList.map((a, index) => (
-                        <button
-                          key={a.id}
-                          type="button"
-                          className={`rt-artifact-chip${a.id === activeArtifact?.id ? ' is-active' : ''}`}
-                          onClick={() => stream.selectArtifact(a.id)}
-                        >
-                          <span className="rt-artifact-chip__glyph">▤</span>
-                          <span className="rt-artifact-chip__title">
-                            {studioMode ? `版本 ${index + 1}` : (a.title ?? '未命名产物')}
-                          </span>
-                          {studioMode && detail.currentUiArtifactId === a.id && (
-                            <span className="rt-artifact-chip__state">当前 UI</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {activeArtifact ? (
-                    <ArtifactStage
-                      key={`${activeArtifact.id}:${retryResolutionVersion}`}
-                      artifact={activeArtifact}
-                      onRunRequest={
-                        studioMode
-                          ? undefined
-                          : async ({ prompt }) => {
-                              const message = await stream.send(prompt);
-                              if (!message.turnId) {
-                                throw new Error('运行请求缺少轮次标识，请重试。');
-                              }
-                              return { turnId: message.turnId };
-                            }
-                      }
-                      runActive={!studioMode && stream.running}
-                      activeRunId={studioMode ? null : stream.activeRunId}
-                      terminalRun={studioMode ? null : stream.terminalRun}
-                      runDisabledMessage={
-                        studioMode
-                          ? '当前是 UI 设计预览。请返回「我的 Agent」，从真实试用运行 Agent。'
-                          : undefined
-                      }
-                      studioMode={studioMode}
-                      inspectionEnabled={studioMode && inspectionEnabled}
-                      selectedElementKey={studioMode ? (selectedElement?.key ?? null) : null}
-                      onElementSelect={
-                        studioMode
-                          ? (element) => {
-                              setSelectedElement(element);
-                              setInspectionEnabled(false);
-                            }
-                          : undefined
-                      }
-                      onElementManifest={studioMode ? setInspectableElements : undefined}
-                    />
-                  ) : !studioMode && hasStarted && !showGenerating ? (
-                    <div className="rt-empty">这轮还没有生成产物，可以在对话里继续要求。</div>
-                  ) : null}
-                  {(showStudioDefault || (!studioMode && showIntake)) && (
-                    <div
-                      className={`rt-genui__overlay${
-                        studioMode ? ' rt-genui__overlay--studio-default' : ''
-                      }`}
-                    >
-                      {studioMode ? (
-                        <StudioDefaultPreview capability={capability} />
-                      ) : (
-                        <TrialIntakeForm
-                          key={`${sessionId}:${retryResolutionVersion}`}
-                          capability={capability}
-                          disabled={stream.running}
-                          onSubmit={(prompt) => {
-                            void stream.send(prompt).catch(() => undefined);
-                          }}
-                        />
+                  <div className="rt-genui__canvas" data-state={canvasState}>
+                    {stream.pendingRetryAvailable &&
+                      !stream.rechargeRequired &&
+                      !stream.recoveryDialogOpen && (
+                        <div className="rt-inline-error" role="alert">
+                          上一次发送结果仍待确认。为避免重复运行或扣费，请先重试原任务。
+                          <button
+                            type="button"
+                            className="rt-toolbar-pill"
+                            disabled={stream.running}
+                            onClick={() => void retryPendingUsage().catch(() => undefined)}
+                          >
+                            重试原任务
+                          </button>
+                        </div>
                       )}
-                    </div>
-                  )}
-                  {showGenerating && (
-                    <div className="rt-genui__overlay rt-genui__overlay--plain">
-                      <GeneratingPageSkeleton startedAt={runStartedAt} experience={experience} />
-                    </div>
-                  )}
-                </div>
-              </main>
+                    {studioMode && activeArtifact && (
+                      <StudioDesignToolbar
+                        artifact={activeArtifact}
+                        running={stream.running}
+                        operationPending={operationPending}
+                        inspectionEnabled={inspectionEnabled}
+                        inspectableCount={inspectableElements.length}
+                        selectedElement={selectedElement}
+                        onToggleInspection={() => setInspectionEnabled((enabled) => !enabled)}
+                        onClearSelection={() => {
+                          setSelectedElement(null);
+                          setInspectionEnabled(false);
+                        }}
+                        onOperation={(operation) => void runDesignOperation(operation)}
+                      />
+                    )}
+                    {trialStartError && (
+                      <div className="rt-inline-error" role="alert">
+                        {trialStartError}
+                      </div>
+                    )}
+                    {/* consume 首轮失败时对话尚未挂载，错误必须留在画布；Studio 的错误在左侧对话里。 */}
+                    {stream.errorMessage && !showConversation && (
+                      <div className="rt-inline-error" role="alert">
+                        {stream.errorMessage}
+                      </div>
+                    )}
+                    {(stream.artifactList.length > 1 ||
+                      (studioMode && stream.artifactList.length > 0)) && (
+                      <div
+                        className={`rt-canvas-chips${studioMode ? ' rt-canvas-chips--revisions' : ''}`}
+                        aria-label={studioMode ? 'UI 版本历史' : '产物列表'}
+                      >
+                        {stream.artifactList.map((a, index) => (
+                          <button
+                            key={a.id}
+                            type="button"
+                            className={`rt-artifact-chip${a.id === activeArtifact?.id ? ' is-active' : ''}`}
+                            onClick={() => stream.selectArtifact(a.id)}
+                          >
+                            <span className="rt-artifact-chip__glyph">▤</span>
+                            <span className="rt-artifact-chip__title">
+                              {studioMode ? `版本 ${index + 1}` : (a.title ?? '未命名产物')}
+                            </span>
+                            {studioMode && detail.currentUiArtifactId === a.id && (
+                              <span className="rt-artifact-chip__state">当前 UI</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {activeArtifact ? (
+                      <ArtifactStage
+                        key={`${activeArtifact.id}:${retryResolutionVersion}`}
+                        artifact={activeArtifact}
+                        onRunRequest={
+                          studioMode
+                            ? undefined
+                            : async ({ prompt }) => {
+                                const message = await stream.send(prompt);
+                                if (!message.turnId) {
+                                  throw new Error('运行请求缺少轮次标识，请重试。');
+                                }
+                                return { turnId: message.turnId };
+                              }
+                        }
+                        runActive={!studioMode && stream.running}
+                        activeRunId={studioMode ? null : stream.activeRunId}
+                        terminalRun={studioMode ? null : stream.terminalRun}
+                        runDisabledMessage={
+                          studioMode
+                            ? '当前是 UI 设计预览。请返回「我的 Agent」，从真实试用运行 Agent。'
+                            : undefined
+                        }
+                        studioMode={studioMode}
+                        inspectionEnabled={studioMode && inspectionEnabled}
+                        selectedElementKey={studioMode ? (selectedElement?.key ?? null) : null}
+                        onElementSelect={
+                          studioMode
+                            ? (element) => {
+                                setSelectedElement(element);
+                                setInspectionEnabled(false);
+                              }
+                            : undefined
+                        }
+                        onElementManifest={studioMode ? setInspectableElements : undefined}
+                      />
+                    ) : !studioMode && hasStarted && !showGenerating ? (
+                      <div className="rt-empty">这轮还没有生成产物，可以在对话里继续要求。</div>
+                    ) : null}
+                    {(showStudioDefault || (!studioMode && showIntake)) && (
+                      <div
+                        className={`rt-genui__overlay${
+                          studioMode ? ' rt-genui__overlay--studio-default' : ''
+                        }`}
+                      >
+                        {studioMode ? (
+                          <StudioDefaultPreview capability={capability} />
+                        ) : (
+                          <TrialIntakeForm
+                            key={`${sessionId}:${retryResolutionVersion}`}
+                            capability={capability}
+                            disabled={stream.running}
+                            onSubmit={(prompt) => {
+                              void stream.send(prompt).catch(() => undefined);
+                            }}
+                          />
+                        )}
+                      </div>
+                    )}
+                    {showGenerating && (
+                      <div className="rt-genui__overlay rt-genui__overlay--plain">
+                        <GeneratingPageSkeleton startedAt={runStartedAt} experience={experience} />
+                      </div>
+                    )}
+                  </div>
+                </main>
+              )}
             </>
           )}
         </div>
@@ -573,11 +633,22 @@ export function ChatPage() {
           </div>
         )}
       </div>
-      {stream.rechargeRequired && (
+      {stream.rechargeRequired && stream.activeRechargeIntentId && (
         <RechargeDialog
           requirement={stream.rechargeRequired}
+          activeRechargeIntentId={stream.activeRechargeIntentId}
           onClose={stream.clearRechargeRequired}
-          onCredited={stream.abandonRechargeUsage}
+          onActiveRechargeIntentChange={stream.setActiveRechargeIntent}
+          onCredited={resumeAfterRecharge}
+          onAbandon={stream.abandonRechargeUsage}
+        />
+      )}
+      {stream.pendingRecovery && stream.recoveryDialogOpen && (
+        <RecoveryRechargeDialog
+          recovery={stream.pendingRecovery}
+          onClose={stream.clearRechargeRequired}
+          onCredited={resumeAfterRecharge}
+          onRefreshRecovery={stream.refreshPendingRecovery}
           onAbandon={stream.abandonRechargeUsage}
         />
       )}

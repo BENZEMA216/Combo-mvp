@@ -26,6 +26,8 @@ export interface RechargeOrder {
   orderNo: string;
   ownerUserId: string;
   clientIdempotencyKey: string;
+  /** Original Runtime usage whose server-authoritative request this order may recover. */
+  recoveryUsageId?: string;
   packageId: string;
   amountCents: bigint;
   paymentMethod: PaymentChannel;
@@ -57,6 +59,7 @@ export interface RechargeOrder {
 export interface PrepareRechargeInput {
   orderNo: string;
   ownerUserId: string;
+  recoveryUsageId?: string;
   clientIdempotencyKey: string;
   packageId: string;
   amountCents: bigint;
@@ -87,6 +90,10 @@ export interface BillingRepository {
   findRechargeOrderByIntent(
     ownerUserId: string,
     clientIdempotencyKey: string,
+  ): Promise<RechargeOrder | null>;
+  findRechargeOrderByRecovery(
+    ownerUserId: string,
+    recoveryUsageId: string,
   ): Promise<RechargeOrder | null>;
   prepareRecharge(input: PrepareRechargeInput): Promise<PrepareRechargeResult>;
   recordSubmission(
@@ -145,6 +152,13 @@ export class BillingUnavailableError extends Error {
   constructor() {
     super('billing is unavailable');
     this.name = 'BillingUnavailableError';
+  }
+}
+
+export class BillingRecoveryUnavailableError extends Error {
+  constructor() {
+    super('pending usage recovery is unavailable');
+    this.name = 'BillingRecoveryUnavailableError';
   }
 }
 

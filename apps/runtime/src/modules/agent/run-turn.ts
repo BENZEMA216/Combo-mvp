@@ -1,7 +1,11 @@
 // 一轮生成的自治编排：数据库限制单 Session 单 running Turn，HTTP 提交后在进程内异步执行。
 import { randomUUID } from 'node:crypto';
 import { EventType } from '@ag-ui/core';
-import type { CapabilityDefinition, SessionMode } from '@cb/shared';
+import { knowledgeBindingsEqual, type CapabilityDefinition, type SessionMode } from '@cb/shared';
+import {
+  KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY,
+  type KnowledgeAgentTestGate,
+} from '../../platform/config/env.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import type { RuntimeObjectStore } from '../../platform/infra/object-store.js';
 import type { PublishedStreamEvent, SessionEventBus } from '../../platform/infra/event-bus.js';
@@ -29,8 +33,29 @@ import {
   type UsageBillingPolicy,
   type UsageRequest,
 } from '../billing/service.js';
-import { findUsageCharge } from '../billing/repo.js';
+import { findUsageCharge, lockUsageId, readUsageChargeProductKindByTurn } from '../billing/repo.js';
+import {
+  PendingUsageRecoveryConflictError,
+  assertPendingUsageRecoveryBindingMatches,
+  assertPendingUsageRecoveryMatches,
+  findPendingUsageRecovery,
+  insertOrFindPendingUsageRecovery,
+  sweepExpiredPendingUsageRecoveries,
+  type PendingUsageRecoveryExpected,
+  type PendingUsageRecoveryRecord,
+} from '../billing/pending-recovery.js';
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
+import {
+  createKnowledgeToolSession,
+  validateGroundedKnowledgeCandidate,
+  validateKnowledgeCandidate,
+  type KnowledgeAnswerCandidate,
+  type KnowledgeAgentTool,
+  type KnowledgeSearchHit,
+  type KnowledgeValidation,
+  type ResolvedKnowledgeAgent,
+} from '../knowledge-agent/resolver.js';
+import { finishKnowledgeTurn, sweepExpiredKnowledgeTurns } from '../knowledge-agent/resolver.js';
 import { createTurnEmitter, type TurnEmitter, type TurnLogger } from './turn-emitter.js';
 import {
   createTurn,
@@ -48,7 +73,7 @@ import {
   type TurnLastError,
 } from './turn-repo.js';
 
-export type RuntimeAgentTool = ArtifactAgentTool | SandboxAgentTool;
+export type RuntimeAgentTool = ArtifactAgentTool | SandboxAgentTool | KnowledgeAgentTool;
 
 export interface TurnAgentInput {
   definition: CapabilityDefinition;
@@ -57,6 +82,9 @@ export interface TurnAgentInput {
   tools: RuntimeAgentTool[];
   promptText: string;
   hasExistingStudioArtifact: boolean;
+  knowledge?: Pick<ResolvedKnowledgeAgent, 'name' | 'description' | 'instructions'> & {
+    requiresGroundedExtractiveAnswer: boolean;
+  };
 }
 export interface TurnAgent {
   subscribeTextDelta(fn: (delta: string) => void): () => void;
@@ -71,6 +99,24 @@ export class TurnAgentUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'TurnAgentUnavailableError';
+  }
+}
+
+export interface GroundedKnowledgeValidatorInput {
+  question: string;
+  candidate: KnowledgeAnswerCandidate | null;
+  exposedHits: readonly KnowledgeSearchHit[];
+  resolved: ResolvedKnowledgeAgent;
+  turnSignal: AbortSignal;
+}
+export type GroundedKnowledgeValidator = (
+  input: GroundedKnowledgeValidatorInput,
+) => KnowledgeValidation | Promise<KnowledgeValidation>;
+
+export class KnowledgeRecoveryPolicyUnavailableError extends Error {
+  constructor() {
+    super('pending knowledge recovery validator policy is unavailable');
+    this.name = 'KnowledgeRecoveryPolicyUnavailableError';
   }
 }
 
@@ -90,6 +136,7 @@ const TURN_OWNERSHIP_RETRY_MAX_DELAY_MS = 5_000;
 export type TurnAdmissionStage =
   | 'transaction_setup'
   | 'session_lock'
+  | 'pending_recovery_lock'
   | 'usage_prepare'
   | 'usage_replay_lookup'
   | 'running_check'
@@ -149,11 +196,19 @@ export interface TurnRunnerDeps {
   turnAdmissionDatabaseTimeoutMs?: number;
   turnAdmissionDeadlineMs?: number;
   billingPolicy?: UsageBillingPolicy;
+  /** Exact Runtime release identity used by ownerless recovery paths. */
+  runtimeSourceSha?: string;
   log: TurnLogger;
 }
 export type StartTurnResult =
   | { status: 'started' | 'replayed'; userMessage: MessageRecord }
-  | { status: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+  | {
+      status: 'recharge_required';
+      recoveryUsageId?: string;
+      rechargeIntentId?: string;
+      balanceCents: bigint;
+      requiredCents: bigint;
+    };
 export interface TurnRunner {
   startTurn(input: {
     session: SessionRow;
@@ -161,6 +216,14 @@ export interface TurnRunner {
     text: string;
     usageId: string;
     capabilityOwnerUserId: string;
+    knowledge?: {
+      resolved: ResolvedKnowledgeAgent;
+      /** Present only for fresh controlled-Test v1 admission. */
+      gate?: KnowledgeAgentTestGate;
+      /** Present only when an active recovery was selected from its frozen database row. */
+      validatorPolicyVersion?: string;
+      runtimeSourceSha: string;
+    };
     log: TurnLogger;
   }): Promise<StartTurnResult>;
   interrupt(sessionId: string): Promise<boolean>;
@@ -285,6 +348,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     controller: AbortController;
     runId: string;
     completion: Promise<void>;
+    knowledgeRuntimeSourceSha?: string;
   }
   interface StartingTurn {
     sessionId: string;
@@ -444,49 +508,151 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       });
     return pending;
   };
+  const runtimeSourceShaForKnowledge = (candidate?: string): string => {
+    const sourceSha = candidate ?? deps.runtimeSourceSha;
+    if (!sourceSha || !/^[0-9a-f]{40}$/u.test(sourceSha)) {
+      throw new Error('knowledge terminal Runtime identity is unavailable');
+    }
+    return sourceSha;
+  };
+  const readTurnProductKind = async (
+    runId: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<'legacy_capability' | 'knowledge_agent_test' | null> => {
+    const reserved = await readUsageChargeProductKindByTurn(deps.db, runId, signal);
+    if (reserved) return reserved;
+    return (
+      (
+        await deps.db.query<{
+          product_kind: 'legacy_capability' | 'knowledge_agent_test';
+        }>('SELECT product_kind FROM sessions WHERE id = $1', [sessionId], signal)
+      ).rows[0]?.product_kind ?? null
+    );
+  };
+  const finishInterruptedRun = async (input: {
+    sessionId: string;
+    runId: string;
+    lastError: TurnLastError;
+    knowledgeRuntimeSourceSha?: string;
+    beforeFinish?: () => Promise<void>;
+    transaction?: NonNullable<Parameters<typeof finishTurnWithMessage>[2]>['transaction'];
+  }): Promise<boolean> => {
+    const productKind = await readTurnProductKind(
+      input.runId,
+      input.sessionId,
+      input.transaction?.signal,
+    );
+    if (productKind === 'knowledge_agent_test') {
+      const terminal = await finishKnowledgeTurn(
+        deps.db,
+        {
+          sessionId: input.sessionId,
+          turnId: input.runId,
+          outcome: 'interrupted',
+          validationCode: 'not_run',
+          answer: null,
+          citationChunkIds: [],
+          runtimeSourceSha: runtimeSourceShaForKnowledge(input.knowledgeRuntimeSourceSha),
+          lastError: input.lastError,
+        },
+        {
+          beforeFinish: input.beforeFinish
+            ? async () => {
+                await input.beforeFinish?.();
+              }
+            : undefined,
+          transaction: input.transaction,
+        },
+      );
+      return terminal.won;
+    }
+    if (productKind !== 'legacy_capability') {
+      throw new Error('running Turn has no usage reservation');
+    }
+    return finishTurnWithMessage(
+      deps.db,
+      {
+        id: input.runId,
+        sessionId: input.sessionId,
+        idx: 1,
+        status: 'interrupted',
+        content: [{ type: 'text', text: input.lastError.message }],
+        lastError: input.lastError,
+      },
+      {
+        beforeFinish: input.beforeFinish,
+        afterFinish: (transaction) => billing.releaseUsage(transaction, input.runId),
+        transaction: input.transaction,
+      },
+    );
+  };
   const unsubscribeInterrupts = deps.interrupts.subscribe(({ sessionId, runId }) => {
     const running = active.get(sessionId);
     if (running?.runId !== runId) return;
     running.controller.abort();
-    void stopSandboxCommands(sessionId, 'interrupt-broadcast', {
-      localExecution: true,
-    }).catch(() => undefined);
+    if (!running.knowledgeRuntimeSourceSha) {
+      void stopSandboxCommands(sessionId, 'interrupt-broadcast', {
+        localExecution: true,
+      }).catch(() => undefined);
+    }
   });
   let sweepInFlight: Promise<void> | undefined;
   const runSweep = (): Promise<void> => {
     if (sweepInFlight) return sweepInFlight;
     const run = (async () => {
+      const cutoff = new Date(Date.now() - TURN_ABANDON_AFTER_MS);
+      const swept: TerminalTurn[] = [];
       try {
-        const swept = await sweepExpiredTurns(
-          deps.db,
-          new Date(Date.now() - TURN_ABANDON_AFTER_MS),
-          {
-            beforeFinish: async (turn) => {
-              deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
-              // The Session row remains locked until sandboxd confirms its
-              // descendant sweep or the exact Pod UID is observed gone.
-              await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
-                localExecution: active.get(turn.sessionId)?.runId === turn.id,
-              });
-            },
-            afterFinish: (transaction, turn) => billing.releaseUsage(transaction, turn.id),
-          },
-        );
-        // PostgreSQL is the terminal truth. Redis is appended only after each
-        // terminal transaction commits; startTurn repairs a missing event
-        // under the same Session lock before a successor can be created.
-        for (const turn of swept) {
-          await appendCommittedTerminal(turn).catch((err) => {
-            deps.log.error({ err, runId: turn.id }, 'swept terminal event append failed');
+        const beforeLegacyFinish = async (turn: {
+          id: string;
+          sessionId: string;
+        }): Promise<void> => {
+          deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
+          // The Session row remains locked until sandboxd confirms its
+          // descendant sweep or the exact Pod UID is observed gone.
+          await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
+            localExecution: active.get(turn.sessionId)?.runId === turn.id,
           });
-        }
+        };
+        const legacySwept = await sweepExpiredTurns(deps.db, cutoff, {
+          beforeFinish: beforeLegacyFinish,
+          afterFinish: (transaction, turn) => billing.releaseUsage(transaction, turn.id),
+        });
+        swept.push(...legacySwept);
       } catch (err) {
-        deps.log.error({ err }, 'turn sweep failed');
+        deps.log.error({ err }, 'legacy Turn sweep failed');
+      }
+      try {
+        const knowledgeSwept = await sweepExpiredKnowledgeTurns(deps.db, cutoff, {
+          runtimeSourceSha: deps.runtimeSourceSha ?? '',
+          beforeFinish: async (turn) => {
+            // Knowledge tools are read-only, in-memory views of the already verified Bundle. They
+            // never enter sandboxd, so a dead owner does not need a sandbox cleanup proof.
+            deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
+          },
+        });
+        swept.push(...knowledgeSwept);
+      } catch (err) {
+        deps.log.error({ err }, 'knowledge Turn sweep failed');
+      }
+      // PostgreSQL is the terminal truth. Redis is appended only after each
+      // terminal transaction commits; startTurn repairs a missing event
+      // under the same Session lock before a successor can be created.
+      for (const turn of swept) {
+        await appendCommittedTerminal(turn).catch((err) => {
+          deps.log.error({ err, runId: turn.id }, 'swept terminal event append failed');
+        });
       }
       try {
         await billing.reconcileTerminalReservations(deps.db);
       } catch (err) {
         deps.log.error({ err }, 'billing reservation reconciliation failed');
+      }
+      try {
+        await sweepExpiredPendingUsageRecoveries(deps.db);
+      } catch (err) {
+        deps.log.error({ err }, 'pending usage recovery sweep failed');
       }
     })().finally(() => {
       if (sweepInFlight === run) sweepInFlight = undefined;
@@ -530,6 +696,269 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
     }
   };
+
+  async function executeKnowledgeTurn(args: {
+    sessionId: string;
+    definition: CapabilityDefinition;
+    text: string;
+    controller: AbortController;
+    runId: string;
+    knowledge: NonNullable<Parameters<TurnRunner['startTurn']>[0]['knowledge']>;
+    validator: GroundedKnowledgeValidator;
+    requiresGroundedExtractiveAnswer: boolean;
+    log: TurnLogger;
+  }): Promise<void> {
+    const { sessionId, controller, log, runId } = args;
+    const localHandle = active.get(sessionId);
+    if (
+      localHandle?.runId !== runId ||
+      !(await waitForExecutableTurn(sessionId, runId, localHandle))
+    ) {
+      return;
+    }
+    const emitter = createTurnEmitter({
+      eventLog: deps.eventLog,
+      bus: deps.bus,
+      sessionId,
+      log,
+      append: async (event) => {
+        if (controller.signal.aborted || shutdownOwnedRuns.has(runId)) return null;
+        return withTransaction(
+          deps.db,
+          async (transaction) => {
+            await lockTurnSession(transaction, sessionId);
+            if (controller.signal.aborted || shutdownOwnedRuns.has(runId)) return null;
+            if (!(await lockRunningTurn(transaction, runId, sessionId))) return null;
+            return deps.eventLog.append(sessionId, event);
+          },
+          { signal: controller.signal },
+        );
+      },
+    });
+    const base = { threadId: sessionId, runId };
+    const finish = async (input: {
+      outcome: 'answered' | 'insufficient_evidence' | 'failed' | 'interrupted';
+      validationCode:
+        | 'accepted'
+        | 'insufficient_evidence'
+        | 'not_run'
+        | 'rejected'
+        | 'unavailable'
+        | 'protocol_invalid';
+      answer: string | null;
+      citationChunkIds: readonly string[];
+      lastError?: TurnLastError;
+    }): Promise<void> => {
+      if (shutdownOwnedRuns.has(runId)) return;
+      try {
+        await emitter.flush();
+        if (shutdownOwnedRuns.has(runId)) return;
+        const terminal = await finishKnowledgeTurn(deps.db, {
+          sessionId,
+          turnId: runId,
+          binding: args.knowledge.resolved.binding,
+          outcome: input.outcome,
+          validationCode: input.validationCode,
+          answer: input.answer,
+          citationChunkIds: input.citationChunkIds,
+          runtimeSourceSha: args.knowledge.runtimeSourceSha,
+          lastError: input.lastError ?? null,
+        });
+        if (!terminal.won || !terminal.turnStatus) {
+          log.error({ runId }, 'knowledge terminal state already claimed');
+          return;
+        }
+        await appendCommittedTerminal(
+          terminalTurn(runId, sessionId, terminal.turnStatus, input.lastError ?? null),
+        ).catch((err) => {
+          log.error({ err, runId }, 'knowledge terminal event append failed');
+        });
+      } catch (err) {
+        log.error({ err, runId }, 'knowledge terminal transaction failed');
+      }
+    };
+
+    if (controller.signal.aborted) {
+      await finish({
+        outcome: 'interrupted',
+        validationCode: 'not_run',
+        answer: null,
+        citationChunkIds: [],
+        lastError: { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' },
+      });
+      return;
+    }
+
+    emitter.emit({ type: EventType.RUN_STARTED, ...base });
+    const toolSession = createKnowledgeToolSession({
+      knowledge: args.knowledge.resolved.knowledge,
+      turnSignal: controller.signal,
+      requiresGroundedExtractiveAnswer: args.requiresGroundedExtractiveAnswer,
+    });
+    let agent: TurnAgent;
+    try {
+      agent = deps.agentFactory({
+        definition: args.definition,
+        mode: 'consume',
+        history: [],
+        tools: toolSession.tools,
+        promptText: args.text,
+        hasExistingStudioArtifact: false,
+        knowledge: {
+          name: args.knowledge.resolved.name,
+          description: args.knowledge.resolved.description,
+          instructions: args.knowledge.resolved.instructions,
+          requiresGroundedExtractiveAnswer: args.requiresGroundedExtractiveAnswer,
+        },
+      });
+    } catch (err) {
+      log.error({ err }, 'knowledge agent factory failed');
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: { code: 'TURN_AGENT_UNAVAILABLE', message: '对话服务暂时不可用，请重试。' },
+      });
+      return;
+    }
+
+    type PromptOutcome =
+      | { status: 'completed' }
+      | { status: 'failed'; error: unknown }
+      | { status: 'aborted' };
+    let resolveAbort!: (outcome: PromptOutcome) => void;
+    const abortOutcome = new Promise<PromptOutcome>((resolve) => {
+      resolveAbort = resolve;
+    });
+    const onAbort = (): void => {
+      try {
+        agent.abort();
+      } catch (err) {
+        log.error({ err }, 'knowledge agent abort failed');
+      }
+      resolveAbort({ status: 'aborted' });
+    };
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    if (controller.signal.aborted) onAbort();
+    let idleTimedOut = false;
+    let idleTimer: NodeJS.Timeout | undefined;
+    const armIdleWatchdog = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        log.error({ idleTimeoutMs: deps.idleTimeoutMs }, 'knowledge idle watchdog fired');
+        controller.abort();
+      }, deps.idleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    // Model text is candidate material. It only keeps the watchdog alive and never reaches
+    // Redis, PostgreSQL, transcript persistence, or the owner-visible Session detail.
+    const unsubscribeText = agent.subscribeTextDelta(() => armIdleWatchdog());
+    const unsubscribeActivity = agent.subscribeActivity?.(armIdleWatchdog);
+    armIdleWatchdog();
+    const prompt = Promise.resolve()
+      .then(() => agent.prompt(args.text))
+      .then<PromptOutcome, PromptOutcome>(
+        () => ({ status: 'completed' }),
+        (error: unknown) => ({ status: 'failed', error }),
+      );
+    let promptOutcome: PromptOutcome;
+    try {
+      promptOutcome = await Promise.race([prompt, abortOutcome]);
+    } finally {
+      clearTimeout(idleTimer);
+      unsubscribeText();
+      unsubscribeActivity?.();
+      controller.signal.removeEventListener('abort', onAbort);
+    }
+
+    if (controller.signal.aborted || promptOutcome.status === 'aborted') {
+      let graceTimer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        prompt,
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, promptAbortGraceMs);
+          graceTimer.unref?.();
+        }),
+      ]);
+      clearTimeout(graceTimer);
+      // Knowledge tools only mutate turn-local memory and are fenced by turnSignal. A late SDK
+      // completion cannot reach DB/SSE, so terminalization does not depend on sandbox cleanup.
+      if (idleTimedOut) {
+        await finish({
+          outcome: 'failed',
+          validationCode: 'unavailable',
+          answer: null,
+          citationChunkIds: [],
+          lastError: { code: 'TURN_IDLE_TIMEOUT', message: '模型响应停滞，本轮已终止，请重试。' },
+        });
+      } else {
+        await finish({
+          outcome: 'interrupted',
+          validationCode: 'not_run',
+          answer: null,
+          citationChunkIds: [],
+          lastError: { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' },
+        });
+      }
+      return;
+    }
+    if (promptOutcome.status === 'failed' || agent.runtimeError() !== undefined) {
+      if (promptOutcome.status === 'failed') {
+        log.error({ err: promptOutcome.error }, 'knowledge prompt failed');
+      }
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: { code: 'TURN_PROMPT_FAILED', message: '对话生成失败，请重试。' },
+      });
+      return;
+    }
+
+    let validation: KnowledgeValidation;
+    try {
+      validation = await args.validator({
+        question: args.text,
+        candidate: toolSession.candidate(),
+        exposedHits: toolSession.exposedHits(),
+        resolved: args.knowledge.resolved,
+        turnSignal: controller.signal,
+      });
+    } catch {
+      log.error({ runId }, 'knowledge validator failed');
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: {
+          code: 'TURN_KNOWLEDGE_VALIDATOR_UNAVAILABLE',
+          message: '知识验证暂时不可用。',
+        },
+      });
+      return;
+    }
+    await finish({
+      outcome: validation.outcome,
+      validationCode: validation.validationCode,
+      answer: validation.answer,
+      citationChunkIds: validation.citationChunkIds,
+      ...(validation.outcome === 'failed'
+        ? {
+            lastError: {
+              code:
+                validation.validationCode === 'rejected'
+                  ? 'TURN_KNOWLEDGE_REJECTED'
+                  : 'TURN_KNOWLEDGE_PROTOCOL_INVALID',
+              message: '知识答案未通过平台验证。',
+            },
+          }
+        : {}),
+    });
+  }
 
   async function executeTurn(args: {
     sessionId: string;
@@ -949,6 +1378,33 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   return {
     async startTurn(input) {
       if (disposing) throw new Error('turn runner is shutting down');
+      const freshKnowledgeGate = input.knowledge?.gate;
+      const frozenValidatorPolicyVersion = input.knowledge?.validatorPolicyVersion;
+      if (
+        input.knowledge &&
+        (freshKnowledgeGate === undefined) === (frozenValidatorPolicyVersion === undefined)
+      ) {
+        throw new KnowledgeRecoveryPolicyUnavailableError();
+      }
+      const recoveryValidator = (validatorPolicyVersion: string): GroundedKnowledgeValidator => {
+        if (validatorPolicyVersion !== KNOWLEDGE_AGENT_GROUNDED_VALIDATOR_POLICY) {
+          throw new KnowledgeRecoveryPolicyUnavailableError();
+        }
+        return validateGroundedKnowledgeCandidate;
+      };
+      let knowledgeValidator: GroundedKnowledgeValidator | undefined = input.knowledge
+        ? freshKnowledgeGate
+          ? ({ question, candidate, exposedHits }) =>
+              validateKnowledgeCandidate({
+                gate: freshKnowledgeGate,
+                question,
+                candidate,
+                exposedHits,
+              })
+          : undefined
+        : undefined;
+      let requiresGroundedExtractiveAnswer =
+        freshKnowledgeGate?.protocol === 'combo.knowledge-agent-runtime-test-gate/2';
       const sessionId = input.session.id;
       const runId = randomUUID();
       const controller = new AbortController();
@@ -957,6 +1413,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         controller,
         runId,
         completion: Promise.resolve(),
+        ...(input.knowledge ? { knowledgeRuntimeSourceSha: input.knowledge.runtimeSourceSha } : {}),
       };
       let markStartingSettled!: () => void;
       const startingTurn: StartingTurn = {
@@ -977,11 +1434,26 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         sessionId,
         usageId: input.usageId,
         text: input.text,
+        ...(input.knowledge
+          ? {
+              knowledge: {
+                binding: input.knowledge.resolved.binding,
+                validatorPolicyVersion:
+                  freshKnowledgeGate?.validatorPolicyVersion ?? frozenValidatorPolicyVersion!,
+              },
+            }
+          : {}),
       };
       type OpenTurnOutcome =
         | { kind: 'started'; userMessage: MessageRecord }
         | { kind: 'replayed'; userMessage: MessageRecord }
-        | { kind: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+        | {
+            kind: 'recharge_required';
+            recoveryUsageId?: string;
+            rechargeIntentId?: string;
+            balanceCents: bigint;
+            requiredCents: bigint;
+          };
       let outcome: OpenTurnOutcome | undefined;
       let repairedTerminal: PublishedStreamEvent | undefined;
       let admissionStage: TurnAdmissionStage = 'transaction_setup';
@@ -990,14 +1462,80 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       const admissionSignal = AbortSignal.any([transactionController.signal, admissionDeadline]);
       type CommitConfirmation =
         | { kind: 'committed'; outcome: Extract<OpenTurnOutcome, { kind: 'started' }> }
+        | { kind: 'terminal' }
         | { kind: 'absent' }
         | { kind: 'unknown' };
+      const usageRequestForRecovery = (recovery: PendingUsageRecoveryRecord): UsageRequest => {
+        if (!input.knowledge) {
+          throw new PendingUsageRecoveryConflictError();
+        }
+        return {
+          ...usageRequest,
+          knowledge: {
+            ...usageRequest.knowledge!,
+            validatorPolicyVersion: recovery.validatorPolicyVersion,
+          },
+          recovery: {
+            billingPolicyVersion: recovery.billingPolicyVersion,
+            validatorPolicyVersion: recovery.validatorPolicyVersion,
+            unitPriceCents: recovery.unitPriceCents,
+            freeLimitSnapshot: recovery.freeLimitSnapshot,
+          },
+        };
+      };
+      const expectedRecovery = (
+        freeLimitSnapshot: number,
+        request: UsageRequest = usageRequest,
+      ): PendingUsageRecoveryExpected => {
+        if (!input.knowledge || !request.knowledge) {
+          throw new PendingUsageRecoveryConflictError();
+        }
+        return {
+          ownerUserId: usageRequest.ownerUserId,
+          usageId: usageRequest.usageId,
+          sessionId: usageRequest.sessionId,
+          capabilityId: usageRequest.capabilityId,
+          requestText: usageRequest.text,
+          requestFingerprint: usageRequestFingerprint(request),
+          binding: input.knowledge.resolved.binding,
+          billingPolicyVersion: request.recovery?.billingPolicyVersion ?? billing.policy.version,
+          validatorPolicyVersion: request.knowledge.validatorPolicyVersion,
+          unitPriceCents: request.recovery?.unitPriceCents ?? BigInt(billing.policy.unitPriceCents),
+          freeLimitSnapshot: request.recovery?.freeLimitSnapshot ?? freeLimitSnapshot,
+        };
+      };
       const confirmCommittedStart = async (signal: AbortSignal): Promise<CommitConfirmation> => {
         const confirmed = await withTransaction(
           deps.db,
           async (tx) => {
             const lockedSession = await lockActiveSession(tx, sessionId, input.session.ownerUserId);
             if (!lockedSession) return null;
+            await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+            // Establish that this process's admission COMMIT actually created the
+            // exact running Turn before trusting any independently-created pending
+            // row. This is a non-locking read under the already-held Session lock,
+            // so the terminal lock order remains pending -> Turn/charge.
+            if ((await getRunningTurnId(tx, sessionId)) !== runId) {
+              return null;
+            }
+            const pending = input.knowledge
+              ? await findPendingUsageRecovery(
+                  tx,
+                  usageRequest.ownerUserId,
+                  usageRequest.usageId,
+                  true,
+                )
+              : null;
+            const confirmedUsageRequest = pending ? usageRequestForRecovery(pending) : usageRequest;
+            if (pending) {
+              assertPendingUsageRecoveryBindingMatches(
+                pending,
+                expectedRecovery(pending.freeLimitSnapshot, confirmedUsageRequest),
+              );
+              if (pending.recoveryStatus !== 'active') {
+                return { kind: 'terminal' as const };
+              }
+            }
             const charge = await findUsageCharge(
               tx,
               usageRequest.ownerUserId,
@@ -1008,8 +1546,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               charge.turnId !== runId ||
               charge.sessionId !== sessionId ||
               charge.status !== 'reserved' ||
-              charge.requestFingerprint !== usageRequestFingerprint(usageRequest) ||
-              (await getRunningTurnId(tx, sessionId)) !== runId
+              charge.requestFingerprint !== usageRequestFingerprint(confirmedUsageRequest)
             ) {
               return null;
             }
@@ -1027,11 +1564,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             timeoutMs: TURN_OWNERSHIP_CONFIRMATION_DATABASE_TIMEOUT_MS,
           },
         ).catch(() => undefined);
-        return confirmed
-          ? { kind: 'committed', outcome: confirmed }
-          : confirmed === null
-            ? { kind: 'absent' }
-            : { kind: 'unknown' };
+        return confirmed?.kind === 'terminal'
+          ? confirmed
+          : confirmed
+            ? { kind: 'committed', outcome: confirmed }
+            : confirmed === null
+              ? { kind: 'absent' }
+              : { kind: 'unknown' };
       };
       const scheduleCommitRecovery = (): void => {
         retainActiveForRecovery = true;
@@ -1052,20 +1591,34 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               // Preserve the same ordering as the ordinary admission path: a
               // repaired prior terminal must be visible before RUN_STARTED.
               if (repairedTerminal) deps.bus.publish(sessionId, repairedTerminal);
-              await executeTurn({
-                sessionId,
-                capabilityId: input.session.capabilityId,
-                definition: input.definition,
-                mode: input.session.mode,
-                text: input.text,
-                controller,
-                runId,
-                ownerUserId: input.session.ownerUserId,
-                log: input.log,
-              });
+              if (input.knowledge) {
+                await executeKnowledgeTurn({
+                  sessionId,
+                  definition: input.definition,
+                  text: input.text,
+                  controller,
+                  runId,
+                  knowledge: input.knowledge,
+                  validator: knowledgeValidator!,
+                  requiresGroundedExtractiveAnswer,
+                  log: input.log,
+                });
+              } else {
+                await executeTurn({
+                  sessionId,
+                  capabilityId: input.session.capabilityId,
+                  definition: input.definition,
+                  mode: input.session.mode,
+                  text: input.text,
+                  controller,
+                  runId,
+                  ownerUserId: input.session.ownerUserId,
+                  log: input.log,
+                });
+              }
               return;
             }
-            if (confirmation.kind === 'absent') return;
+            if (confirmation.kind === 'absent' || confirmation.kind === 'terminal') return;
             await waitForDelay(retryDelayMs, disposalController.signal);
             retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
           }
@@ -1087,10 +1640,55 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 input.session.ownerUserId,
               );
               if (!lockedSession) throw new SessionInactiveError();
+              if (
+                input.knowledge
+                  ? lockedSession.agentBinding.productKind !== 'knowledge_agent_test' ||
+                    !knowledgeBindingsEqual(
+                      lockedSession.agentBinding,
+                      input.knowledge.resolved.binding,
+                    )
+                  : lockedSession.agentBinding.productKind !== 'legacy_capability'
+              ) {
+                throw new SessionInactiveError();
+              }
               // usageId 锁跨 Session 生效；完全相同的重试优先于 SESSION_BUSY，
               // 因而原 Turn 仍运行时也能稳定返回原 user Message。
+              let lockedRecovery: PendingUsageRecoveryRecord | null = null;
+              let billableUsageRequest = usageRequest;
+              if (input.knowledge) {
+                admissionStage = 'pending_recovery_lock';
+                await lockUsageId(tx, usageRequest.ownerUserId, usageRequest.usageId);
+                lockedRecovery = await findPendingUsageRecovery(
+                  tx,
+                  usageRequest.ownerUserId,
+                  usageRequest.usageId,
+                  true,
+                );
+                if (lockedRecovery) {
+                  if (lockedRecovery.recoveryStatus === 'active') {
+                    // Frozen recovery policy dispatch happens before usage preparation, Turn
+                    // insertion, reservation, or model execution. Current gate semantics are
+                    // deliberately excluded from this branch.
+                    knowledgeValidator = recoveryValidator(lockedRecovery.validatorPolicyVersion);
+                    requiresGroundedExtractiveAnswer = true;
+                  }
+                  billableUsageRequest = usageRequestForRecovery(lockedRecovery);
+                  assertPendingUsageRecoveryBindingMatches(
+                    lockedRecovery,
+                    expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
+                  );
+                  if (lockedRecovery.recoveryStatus === 'active' && !lockedRecovery.isUnexpired) {
+                    assertPendingUsageRecoveryMatches(
+                      lockedRecovery,
+                      expectedRecovery(lockedRecovery.freeLimitSnapshot, billableUsageRequest),
+                    );
+                  }
+                } else if (frozenValidatorPolicyVersion !== undefined) {
+                  throw new KnowledgeRecoveryPolicyUnavailableError();
+                }
+              }
               admissionStage = 'usage_prepare';
-              const preparation = await billing.prepareUsage(tx, usageRequest);
+              const preparation = await billing.prepareUsage(tx, billableUsageRequest);
               if (preparation.kind === 'replay') {
                 admissionStage = 'usage_replay_lookup';
                 const messages = await getMessages(tx, sessionId);
@@ -1125,18 +1723,51 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 );
               }
               if (preparation.kind === 'insufficient') {
+                if (!input.knowledge) {
+                  admissionStage = 'commit';
+                  return {
+                    kind: 'recharge_required' as const,
+                    balanceCents: preparation.balanceCents,
+                    requiredCents: preparation.requiredCents,
+                  };
+                }
+                const authoritative = lockedRecovery
+                  ? (() => {
+                      assertPendingUsageRecoveryMatches(
+                        lockedRecovery,
+                        expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
+                      );
+                      return lockedRecovery;
+                    })()
+                  : (
+                      await insertOrFindPendingUsageRecovery(
+                        tx,
+                        expectedRecovery(preparation.freeLimitSnapshot),
+                      )
+                    ).recovery;
                 admissionStage = 'commit';
                 return {
                   kind: 'recharge_required' as const,
+                  recoveryUsageId: authoritative.usageId,
+                  rechargeIntentId: authoritative.activeRechargeIntentId,
                   balanceCents: preparation.balanceCents,
                   requiredCents: preparation.requiredCents,
                 };
+              }
+              if (lockedRecovery) {
+                assertPendingUsageRecoveryMatches(
+                  lockedRecovery,
+                  expectedRecovery(preparation.freeLimitSnapshot, billableUsageRequest),
+                );
+              }
+              if (input.knowledge && !knowledgeValidator) {
+                throw new KnowledgeRecoveryPolicyUnavailableError();
               }
               admissionStage = 'turn_insert';
               await createTurn(tx, { id: runId, sessionId });
               admissionStage = 'usage_reservation';
               await billing.reservePreparedUsage(tx, {
-                ...usageRequest,
+                ...billableUsageRequest,
                 turnId: runId,
                 preparation,
               });
@@ -1249,6 +1880,8 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         if (outcome.kind === 'recharge_required') {
           return {
             status: 'recharge_required',
+            ...(outcome.recoveryUsageId ? { recoveryUsageId: outcome.recoveryUsageId } : {}),
+            ...(outcome.rechargeIntentId ? { rechargeIntentId: outcome.rechargeIntentId } : {}),
             balanceCents: outcome.balanceCents,
             requiredCents: outcome.requiredCents,
           };
@@ -1258,17 +1891,31 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         if (disposing || transactionController.signal.aborted || shutdownOwnedRuns.has(runId)) {
           throw new Error('turn runner is shutting down');
         }
-        running.completion = executeTurn({
-          sessionId,
-          capabilityId: input.session.capabilityId,
-          definition: input.definition,
-          mode: input.session.mode,
-          text: input.text,
-          controller,
-          runId,
-          ownerUserId: input.session.ownerUserId,
-          log: input.log,
-        })
+        running.completion = (
+          input.knowledge
+            ? executeKnowledgeTurn({
+                sessionId,
+                definition: input.definition,
+                text: input.text,
+                controller,
+                runId,
+                knowledge: input.knowledge,
+                validator: knowledgeValidator!,
+                requiresGroundedExtractiveAnswer,
+                log: input.log,
+              })
+            : executeTurn({
+                sessionId,
+                capabilityId: input.session.capabilityId,
+                definition: input.definition,
+                mode: input.session.mode,
+                text: input.text,
+                controller,
+                runId,
+                ownerUserId: input.session.ownerUserId,
+                log: input.log,
+              })
+        )
           .catch((err) => input.log.error({ err }, 'turn crashed'))
           .finally(() => {
             if (active.get(sessionId) === running) active.delete(sessionId);
@@ -1303,8 +1950,34 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       const local = active.get(sessionId);
       if (local?.runId === runId) {
         local.controller.abort();
-        await stopSandboxCommands(sessionId, 'local-interrupt', { localExecution: true });
-        return true;
+        if (!local.knowledgeRuntimeSourceSha) {
+          await stopSandboxCommands(sessionId, 'local-interrupt', { localExecution: true });
+          return true;
+        }
+      }
+      const productKind = await readTurnProductKind(runId, sessionId);
+      if (productKind === 'knowledge_agent_test') {
+        const lastError = { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' };
+        const won = await finishInterruptedRun({
+          sessionId,
+          runId,
+          lastError,
+          knowledgeRuntimeSourceSha:
+            local?.runId === runId ? local.knowledgeRuntimeSourceSha : undefined,
+          beforeFinish: async () => {
+            // The only knowledge tools are read-only Bundle search/submission state. Publishing
+            // the exact runId aborts a live owner; no sandbox cleanup is necessary.
+            deps.interrupts.publish({ sessionId, runId });
+          },
+        });
+        if (won) {
+          await appendCommittedTerminal(
+            terminalTurn(runId, sessionId, 'interrupted', lastError),
+          ).catch((err) => {
+            deps.log.error({ err, runId }, 'cross-replica terminal event append failed');
+          });
+        }
+        return won;
       }
       if (!sandbox.enabled) {
         // A feature-off replica cannot prove cleanup for a foreign owner itself.
@@ -1312,28 +1985,18 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         // only that Turn's committed interrupted state as the owner's proof.
         return waitForOwnerInterrupt(sessionId, runId);
       }
-      const message = '本轮生成已打断。';
-      const lastError = { code: 'TURN_INTERRUPTED', message };
-      const won = await finishTurnWithMessage(
-        deps.db,
-        {
-          id: runId,
-          sessionId,
-          idx: 1,
-          status: 'interrupted',
-          content: [{ type: 'text', text: message }],
-          lastError,
+      const lastError = { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' };
+      const won = await finishInterruptedRun({
+        sessionId,
+        runId,
+        lastError,
+        beforeFinish: async () => {
+          // Keep the Session and running Turn rows locked until the remote
+          // process namespace is gone. Redis is appended only after COMMIT.
+          deps.interrupts.publish({ sessionId, runId });
+          await stopSandboxCommands(sessionId, 'cross-replica-interrupt');
         },
-        {
-          beforeFinish: async () => {
-            // Keep the Session and running Turn rows locked until the remote
-            // process namespace is gone. Redis is appended only after COMMIT.
-            deps.interrupts.publish({ sessionId, runId });
-            await stopSandboxCommands(sessionId, 'cross-replica-interrupt');
-          },
-          afterFinish: (transaction) => billing.releaseUsage(transaction, runId),
-        },
-      );
+      });
       if (won) {
         await appendCommittedTerminal(
           terminalTurn(runId, sessionId, 'interrupted', lastError),
@@ -1405,8 +2068,14 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         const firstPhase: Promise<unknown>[] = sweepInFlight ? [sweepInFlight] : [];
         firstPhase.push(...startsAtShutdown.map((start) => start.settled));
         for (const { sessionId, running } of shutdownRuns.values()) {
-          cleanupStates.set(running.runId, 'pending');
           running.controller.abort();
+          if (running.knowledgeRuntimeSourceSha) {
+            // Knowledge tools are read-only, turn-local operations and never create sandbox
+            // descendants. Their abort fence is sufficient for terminalization.
+            cleanupStates.set(running.runId, 'safe');
+            continue;
+          }
+          cleanupStates.set(running.runId, 'pending');
           const cleanup = stopSandboxCommands(sessionId, 'runtime-shutdown', {
             localExecution: true,
           }).then(
@@ -1418,64 +2087,58 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           );
           firstPhase.push(cleanup);
         }
-        await waitUntilSignal(Promise.allSettled(firstPhase), shutdownSignal);
-
-        if (!shutdownSignal.aborted) {
-          // StartingTurn.settled is resolved only after startTurn has either
-          // installed its final completion Promise or fenced Pi from starting.
-          await waitUntilSignal(
-            Promise.allSettled([...shutdownRuns.values()].map(({ running }) => running.completion)),
-            shutdownSignal,
-          );
-        }
-
-        if (!shutdownSignal.aborted) {
-          const terminalFallbacks = [...shutdownRuns.values()].map(
-            async ({ sessionId, running }) => {
-              if (cleanupStates.get(running.runId) !== 'safe') {
-                deps.log.error(
-                  { sessionId, runId: running.runId },
-                  'shutdown kept Turn running because sandbox cleanup was unconfirmed',
-                );
-                return;
-              }
-              const remaining = remainingMilliseconds(deadline);
-              if (remaining <= 0 || shutdownSignal.aborted) return;
-              const message = 'Runtime 正在关闭，本轮已终止，请重试。';
-              const lastError = { code: 'TURN_SHUTDOWN', message };
-              const won = await finishTurnWithMessage(
-                deps.db,
-                {
-                  id: running.runId,
-                  sessionId,
-                  idx: 1,
-                  status: 'interrupted',
-                  content: [{ type: 'text', text: message }],
-                  lastError,
-                },
-                {
-                  afterFinish: (transaction) => billing.releaseUsage(transaction, running.runId),
-                  transaction: { signal: shutdownSignal, timeoutMs: remaining },
-                },
-              ).catch((err) => {
-                deps.log.error({ err, runId: running.runId }, 'shutdown terminal fallback failed');
-                return false;
-              });
-              if (won) {
-                await appendCommittedTerminal(
-                  terminalTurn(running.runId, sessionId, 'interrupted', lastError),
-                  shutdownSignal,
-                ).catch((err) => {
-                  deps.log.error(
-                    { err, runId: running.runId },
-                    'shutdown terminal event append failed',
-                  );
-                });
-              }
-            },
-          );
-          await waitUntilSignal(Promise.allSettled(terminalFallbacks), shutdownSignal);
-        }
+        const firstPhaseDone = Promise.allSettled(firstPhase);
+        const openingByRunId = new Map(
+          startsAtShutdown.map((start) => [start.running.runId, start.settled]),
+        );
+        const terminalFallbacks = [...shutdownRuns.values()].map(async ({ sessionId, running }) => {
+          if (running.knowledgeRuntimeSourceSha) {
+            // Wait only for this Turn's admission outcome; unrelated legacy cleanup and
+            // sweeps must not consume its terminal transaction window.
+            await waitUntilSignal(
+              openingByRunId.get(running.runId) ?? Promise.resolve(),
+              shutdownSignal,
+            );
+          } else {
+            await waitUntilSignal(firstPhaseDone, shutdownSignal);
+            await waitUntilSignal(running.completion, shutdownSignal);
+          }
+          if (cleanupStates.get(running.runId) !== 'safe') {
+            deps.log.error(
+              { sessionId, runId: running.runId },
+              'shutdown kept Turn running because sandbox cleanup was unconfirmed',
+            );
+            return;
+          }
+          const remaining = remainingMilliseconds(deadline);
+          if (remaining <= 0 || shutdownSignal.aborted) return;
+          const lastError = {
+            code: 'TURN_SHUTDOWN',
+            message: 'Runtime 正在关闭，本轮已终止，请重试。',
+          };
+          const won = await finishInterruptedRun({
+            sessionId,
+            runId: running.runId,
+            lastError,
+            knowledgeRuntimeSourceSha: running.knowledgeRuntimeSourceSha,
+            transaction: { signal: shutdownSignal, timeoutMs: remaining },
+          }).catch((err) => {
+            deps.log.error({ err, runId: running.runId }, 'shutdown terminal fallback failed');
+            return false;
+          });
+          if (won) {
+            await appendCommittedTerminal(
+              terminalTurn(running.runId, sessionId, 'interrupted', lastError),
+              shutdownSignal,
+            ).catch((err) => {
+              deps.log.error(
+                { err, runId: running.runId },
+                'shutdown terminal event append failed',
+              );
+            });
+          }
+        });
+        await waitUntilSignal(Promise.allSettled(terminalFallbacks), shutdownSignal);
         shutdownSignal.removeEventListener('abort', abortOpeningTransactions);
         active.clear();
       })();

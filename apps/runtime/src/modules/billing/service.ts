@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { KnowledgeAgentBinding } from '@cb/shared';
 import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
 import {
   completeUsageCharge,
@@ -10,11 +11,12 @@ import {
   lockUsageId,
   releaseUsageCharge,
   type UsageChargeSource,
+  type KnowledgeExecutionOutcome,
 } from './repo.js';
 
 export const DEFAULT_USAGE_BILLING_POLICY = {
   freeUses: 3,
-  unitPriceCents: 100,
+  unitPriceCents: 1,
   version: 'runtime-usage-v1',
 } as const;
 
@@ -31,12 +33,27 @@ export interface UsageRequest {
   sessionId: string;
   usageId: string;
   text: string;
+  knowledge?: {
+    binding: KnowledgeAgentBinding;
+    validatorPolicyVersion: string;
+  };
+  recovery?: {
+    billingPolicyVersion: string;
+    validatorPolicyVersion: string;
+    unitPriceCents: bigint;
+    freeLimitSnapshot: number;
+  };
 }
 
 export type UsagePreparation =
   | { kind: 'new'; source: UsageChargeSource; balanceCents: bigint; freeLimitSnapshot: number }
   | { kind: 'replay'; turnId: string }
-  | { kind: 'insufficient'; balanceCents: bigint; requiredCents: bigint };
+  | {
+      kind: 'insufficient';
+      balanceCents: bigint;
+      requiredCents: bigint;
+      freeLimitSnapshot: number;
+    };
 
 export class UsageRequestConflictError extends Error {
   constructor() {
@@ -46,6 +63,7 @@ export class UsageRequestConflictError extends Error {
 }
 
 export interface UsageBillingService {
+  readonly policy: Readonly<Required<UsageBillingPolicy>>;
   prepareUsage(db: Queryable, input: UsageRequest): Promise<UsagePreparation>;
   reservePreparedUsage(
     db: Queryable,
@@ -54,12 +72,32 @@ export interface UsageBillingService {
       preparation: Extract<UsagePreparation, { kind: 'new' }>;
     },
   ): Promise<void>;
-  settleUsage(db: Queryable, turnId: string): Promise<void>;
-  releaseUsage(db: Queryable, turnId: string): Promise<void>;
+  settleUsage(db: Queryable, turnId: string, outcome?: 'answered'): Promise<void>;
+  releaseUsage(
+    db: Queryable,
+    turnId: string,
+    outcome?: Exclude<KnowledgeExecutionOutcome, 'answered'>,
+  ): Promise<void>;
   reconcileTerminalReservations(db: RuntimeDb): Promise<number>;
 }
 
 export function usageRequestFingerprint(input: UsageRequest): string {
+  if (input.knowledge) {
+    return createHash('sha256')
+      .update(
+        JSON.stringify([
+          'combo-runtime-knowledge-usage-v1',
+          input.ownerUserId,
+          input.capabilityId,
+          input.sessionId,
+          input.text,
+          input.knowledge.binding,
+          input.knowledge.validatorPolicyVersion,
+        ]),
+        'utf8',
+      )
+      .digest('hex');
+  }
   return createHash('sha256')
     .update(
       JSON.stringify([
@@ -91,6 +129,7 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
   const requiredCents = BigInt(policy.unitPriceCents);
 
   return {
+    policy,
     async prepareUsage(db, input) {
       await lockUsageId(db, input.ownerUserId, input.usageId);
       const fingerprint = usageRequestFingerprint(input);
@@ -99,7 +138,8 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
         if (
           existing.requestFingerprint !== fingerprint ||
           existing.capabilityId !== input.capabilityId ||
-          existing.sessionId !== input.sessionId
+          existing.sessionId !== input.sessionId ||
+          existing.productKind !== (input.knowledge ? 'knowledge_agent_test' : 'legacy_capability')
         ) {
           throw new UsageRequestConflictError();
         }
@@ -107,6 +147,27 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
       }
 
       const account = await ensureAndLockBillingAccount(db, input.ownerUserId);
+      if (input.recovery) {
+        if (
+          !input.knowledge ||
+          input.knowledge.validatorPolicyVersion !== input.recovery.validatorPolicyVersion
+        ) {
+          throw new UsageRequestConflictError();
+        }
+        return account.balanceCents < input.recovery.unitPriceCents
+          ? {
+              kind: 'insufficient',
+              balanceCents: account.balanceCents,
+              requiredCents: input.recovery.unitPriceCents,
+              freeLimitSnapshot: input.recovery.freeLimitSnapshot,
+            }
+          : {
+              kind: 'new',
+              source: 'wallet',
+              balanceCents: account.balanceCents,
+              freeLimitSnapshot: input.recovery.freeLimitSnapshot,
+            };
+      }
       if (input.ownerUserId === input.capabilityOwnerUserId) {
         return {
           kind: 'new',
@@ -135,6 +196,7 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
           kind: 'insufficient',
           balanceCents: account.balanceCents,
           requiredCents,
+          freeLimitSnapshot: allowance.freeLimitSnapshot,
         };
       }
       return {
@@ -146,7 +208,8 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
     },
 
     async reservePreparedUsage(db, input) {
-      const reservedCents = input.preparation.source === 'wallet' ? requiredCents : 0n;
+      const unitPriceCents = input.recovery?.unitPriceCents ?? requiredCents;
+      const reservedCents = input.preparation.source === 'wallet' ? unitPriceCents : 0n;
       await insertReservedUsageCharge(db, {
         ownerUserId: input.ownerUserId,
         usageId: input.usageId,
@@ -155,22 +218,32 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
         turnId: input.turnId,
         requestFingerprint: usageRequestFingerprint(input),
         chargeSource: input.preparation.source,
-        unitPriceCents: requiredCents,
+        unitPriceCents,
         freeLimitSnapshot: input.preparation.freeLimitSnapshot,
         reservedCents,
+        ...(input.knowledge
+          ? {
+              knowledge: {
+                binding: input.knowledge.binding,
+                billingPolicyVersion: input.recovery?.billingPolicyVersion ?? policy.version,
+                validatorPolicyVersion:
+                  input.recovery?.validatorPolicyVersion ?? input.knowledge.validatorPolicyVersion,
+              },
+            }
+          : {}),
       });
     },
 
-    async settleUsage(db, turnId) {
+    async settleUsage(db, turnId, outcome) {
       const charge = await findUsageChargeByTurn(db, turnId);
       if (!charge || charge.status !== 'reserved') return;
-      await completeUsageCharge(db, charge);
+      await completeUsageCharge(db, charge, outcome);
     },
 
-    async releaseUsage(db, turnId) {
+    async releaseUsage(db, turnId, outcome) {
       const charge = await findUsageChargeByTurn(db, turnId);
       if (!charge || charge.status !== 'reserved') return;
-      await releaseUsageCharge(db, charge);
+      await releaseUsageCharge(db, charge, outcome);
     },
 
     async reconcileTerminalReservations(db) {
@@ -178,8 +251,9 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
         turn_id: string;
         session_id: string;
         turn_status: 'completed' | 'failed' | 'interrupted';
+        product_kind: 'legacy_capability' | 'knowledge_agent_test';
       }>(
-        `SELECT uc.turn_id, t.session_id, t.status AS turn_status
+        `SELECT uc.turn_id, t.session_id, t.status AS turn_status, uc.product_kind
            FROM usage_charges uc
            JOIN turns t ON t.id = uc.turn_id
           WHERE uc.status = 'reserved'
@@ -204,6 +278,9 @@ export function createUsageBillingService(policyInput: UsageBillingPolicy): Usag
             [candidate.turn_id, candidate.session_id],
           );
           const status = turn.rows[0]?.status;
+          // Knowledge terminalization is one atomic Session/Turn/charge/Message/receipt
+          // transaction. A generic reconciler must never infer billability from Turn status.
+          if (candidate.product_kind === 'knowledge_agent_test') return false;
           if (status === 'completed') {
             await this.settleUsage(transaction, candidate.turn_id);
             return true;

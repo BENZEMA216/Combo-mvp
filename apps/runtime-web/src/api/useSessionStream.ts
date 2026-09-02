@@ -5,7 +5,14 @@
 //   - 页面关闭只断订阅，不打断后端生成；打断必须显式点按钮。
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ArtifactView, MessageView, SessionDetail } from '@cb/shared';
+import {
+  KNOWLEDGE_AGENT_PRODUCT_KIND,
+  type ArtifactView,
+  type KnowledgeAgentBinding,
+  type MessageView,
+  type PendingUsageRecoveryView,
+  type SessionDetail,
+} from '@cb/shared';
 import { ApiError, isUnauthenticated } from './client.js';
 import { goToLogin } from '../navigation/login.js';
 import {
@@ -15,8 +22,17 @@ import {
   type RechargeRequired,
 } from './runtime.js';
 import { reportClientEvent } from './telemetry.js';
+import { getRechargeOrderByRecovery } from './billing.js';
+import {
+  abandonPendingUsageRecovery,
+  coordinateRecoveryResume,
+  getPendingUsageRecovery,
+  pendingRecoveryMatchesBinding,
+  resolvePendingRecoveryForSession,
+} from './recovery.js';
 import {
   initialStreamUiState,
+  isCandidateTextEvent,
   isTerminalEvent,
   parseStreamEvent,
   streamUiReducer,
@@ -31,12 +47,27 @@ export interface SessionStream extends StreamUiState {
   send: (text: string) => Promise<MessageView>;
   interrupt: () => void;
   rechargeRequired: RechargeRequired | null;
+  /** 当前充值订单 intent；与不可变的原任务 usageId 分离，并随 PendingUsageV2 恢复。 */
+  activeRechargeIntentId: string | null;
+  /** Knowledge Beta 的唯一支付真源；浏览器存储只保留 legacy/网络不确定重试。 */
+  pendingRecovery: PendingUsageRecoveryView | null;
+  recoveryDialogOpen: boolean;
   clearRechargeRequired: () => void;
   /** 页面重载后原调用源已丢失时，显示统一的安全重试入口。 */
   pendingRetryAvailable: boolean;
-  retryPending: () => Promise<MessageView>;
+  retryPending: () => Promise<MessageView | void>;
+  /** 在 credited intent 精确匹配后，以原 text/usageId 原子恢复原任务。 */
+  resumeAfterRecharge: (creditedIntentId: string) => Promise<void>;
+  /** 仅供 legacy 普通充值：新建替代订单前写 Session storage；server recovery 不调用它。 */
+  setActiveRechargeIntent: (rechargeIntentId: string) => void;
   /** 只清理由 402 确认“未创建 Turn”的原任务；网络未知请求不能放弃。 */
-  abandonRechargeUsage: () => void;
+  abandonRechargeUsage: () => Promise<void>;
+  /** Replacement 下单成功后重新读取服务器 CAS 结果，再切换 UI intent。 */
+  refreshPendingRecovery: () => Promise<PendingUsageRecoveryView>;
+  /** EventSource 明确永久关闭；UI 只消费这个布尔值，不展示流内错误文本。 */
+  streamConnectionFailed: boolean;
+  /** 重新建立固定 Session 的 EventSource，并回拉权威详情。 */
+  retryStreamConnection: () => void;
 }
 
 interface SessionEventSubscription {
@@ -44,70 +75,214 @@ interface SessionEventSubscription {
   onFatal: () => void;
 }
 
-interface PendingUsage {
+interface PendingUsageV2 {
+  version: 2;
   sessionId: string;
   text: string;
   usageId: string;
   reason: 'uncertain' | 'recharge_required';
+  activeRechargeIntentId?: string;
 }
 
-const PENDING_USAGE_STORAGE_PREFIX = 'combo:pending-usage:v1:';
+interface LegacyPendingUsageV1 {
+  sessionId: string;
+  text: string;
+  usageId: string;
+  reason?: 'uncertain' | 'recharge_required';
+}
+
+const PENDING_USAGE_STORAGE_PREFIX = 'combo:pending-usage:v2:';
+const LEGACY_PENDING_USAGE_STORAGE_PREFIX = 'combo:pending-usage:v1:';
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function pendingUsageStorageKey(sessionId: string): string {
   return `${PENDING_USAGE_STORAGE_PREFIX}${sessionId}`;
 }
 
-function readStoredPendingUsage(sessionId: string): PendingUsage | null {
+function legacyPendingUsageStorageKey(sessionId: string): string {
+  return `${LEGACY_PENDING_USAGE_STORAGE_PREFIX}${sessionId}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function isCanonicalPendingText(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length >= 1 &&
+    value.length <= 20_000 &&
+    value.trim() === value
+  );
+}
+
+function parsePendingUsageV2(raw: string, sessionId: string): PendingUsageV2 | null {
   try {
-    const raw = window.sessionStorage.getItem(pendingUsageStorageKey(sessionId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PendingUsage>;
+    const parsed: unknown = JSON.parse(raw);
     if (
+      !isRecord(parsed) ||
+      !hasOnlyKeys(parsed, [
+        'version',
+        'sessionId',
+        'text',
+        'usageId',
+        'reason',
+        'activeRechargeIntentId',
+      ]) ||
+      parsed.version !== 2 ||
       parsed.sessionId !== sessionId ||
-      typeof parsed.text !== 'string' ||
-      parsed.text.length < 1 ||
-      parsed.text.length > 20_000 ||
+      !isCanonicalPendingText(parsed.text) ||
       typeof parsed.usageId !== 'string' ||
-      (parsed.reason !== undefined &&
-        parsed.reason !== 'uncertain' &&
-        parsed.reason !== 'recharge_required') ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
-        parsed.usageId,
-      )
+      !UUID_V4_PATTERN.test(parsed.usageId) ||
+      (parsed.reason !== 'uncertain' && parsed.reason !== 'recharge_required')
     ) {
-      window.sessionStorage.removeItem(pendingUsageStorageKey(sessionId));
       return null;
     }
+    if (parsed.reason === 'recharge_required') {
+      const activeRechargeIntentId = parsed.activeRechargeIntentId;
+      if (
+        typeof activeRechargeIntentId !== 'string' ||
+        !UUID_V4_PATTERN.test(activeRechargeIntentId)
+      ) {
+        return null;
+      }
+      return {
+        version: 2,
+        sessionId,
+        text: parsed.text,
+        usageId: parsed.usageId,
+        reason: 'recharge_required',
+        activeRechargeIntentId,
+      };
+    }
+    if (parsed.activeRechargeIntentId !== undefined) return null;
     return {
+      version: 2,
       sessionId,
       text: parsed.text,
       usageId: parsed.usageId,
-      reason: parsed.reason === 'recharge_required' ? 'recharge_required' : 'uncertain',
+      reason: 'uncertain',
     };
   } catch {
     return null;
   }
 }
 
-function storePendingUsage(pending: PendingUsage): void {
+function parseLegacyPendingUsage(raw: string, sessionId: string): LegacyPendingUsageV1 | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !isRecord(parsed) ||
+      !hasOnlyKeys(parsed, ['sessionId', 'text', 'usageId', 'reason']) ||
+      parsed.sessionId !== sessionId ||
+      !isCanonicalPendingText(parsed.text) ||
+      typeof parsed.usageId !== 'string' ||
+      !UUID_V4_PATTERN.test(parsed.usageId) ||
+      (parsed.reason !== undefined &&
+        parsed.reason !== 'uncertain' &&
+        parsed.reason !== 'recharge_required')
+    ) {
+      return null;
+    }
+    return {
+      sessionId,
+      text: parsed.text,
+      usageId: parsed.usageId,
+      reason: parsed.reason,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storePendingUsage(pending: PendingUsageV2): boolean {
   try {
     window.sessionStorage.setItem(
       pendingUsageStorageKey(pending.sessionId),
       JSON.stringify(pending),
     );
+    return true;
   } catch {
     // 浏览器禁用或耗尽 sessionStorage 时仍保留当前组件内的幂等保护。
+    return false;
+  }
+}
+
+function readStoredPendingUsage(sessionId: string): PendingUsageV2 | null {
+  try {
+    const key = pendingUsageStorageKey(sessionId);
+    const raw = window.sessionStorage.getItem(key);
+    if (raw !== null) {
+      const parsed = parsePendingUsageV2(raw, sessionId);
+      if (!parsed) {
+        window.sessionStorage.removeItem(key);
+        // 损坏的当前版本必须同时淘汰旧版本。否则下一次挂载会在 V2 已删除后
+        // 重新迁移并复活更旧的任务，破坏 fail-closed 边界。
+        window.sessionStorage.removeItem(legacyPendingUsageStorageKey(sessionId));
+      }
+      // 存在损坏的 V2 时 fail closed，不向旧 key 降级，避免复活更旧的任务。
+      return parsed;
+    }
+
+    const legacyKey = legacyPendingUsageStorageKey(sessionId);
+    const legacyRaw = window.sessionStorage.getItem(legacyKey);
+    if (legacyRaw === null) return null;
+    const legacy = parseLegacyPendingUsage(legacyRaw, sessionId);
+    if (!legacy) {
+      window.sessionStorage.removeItem(legacyKey);
+      return null;
+    }
+    // V1 没有保存替代订单指针。只迁移可证明的原任务，并强制再次请求权威 402；
+    // 不能把 usageId 猜成用户刷新前最后操作的 payment intent。
+    const migrated: PendingUsageV2 = {
+      version: 2,
+      sessionId,
+      text: legacy.text,
+      usageId: legacy.usageId,
+      reason: 'uncertain',
+    };
+    if (storePendingUsage(migrated)) window.sessionStorage.removeItem(legacyKey);
+    return migrated;
+  } catch {
+    return null;
   }
 }
 
 function clearStoredPendingUsage(sessionId: string, usageId: string): void {
   try {
-    const pending = readStoredPendingUsage(sessionId);
-    if (pending?.usageId === usageId) {
-      window.sessionStorage.removeItem(pendingUsageStorageKey(sessionId));
+    const v2Key = pendingUsageStorageKey(sessionId);
+    const v2Raw = window.sessionStorage.getItem(v2Key);
+    if (v2Raw) {
+      const v2 = parsePendingUsageV2(v2Raw, sessionId);
+      if (!v2) window.sessionStorage.removeItem(v2Key);
+      if (v2?.usageId === usageId) {
+        window.sessionStorage.removeItem(v2Key);
+        // V2 是当前任务真源；一旦它结算完成，任何并存的 V1 都只能是陈旧降级数据。
+        window.sessionStorage.removeItem(legacyPendingUsageStorageKey(sessionId));
+        return;
+      }
+    }
+    const legacyKey = legacyPendingUsageStorageKey(sessionId);
+    const legacyRaw = window.sessionStorage.getItem(legacyKey);
+    if (legacyRaw && parseLegacyPendingUsage(legacyRaw, sessionId)?.usageId === usageId) {
+      window.sessionStorage.removeItem(legacyKey);
     }
   } catch {
     // 当前组件内的 ref 仍会被清理。
+  }
+}
+
+function clearAllStoredPendingUsage(sessionId: string): void {
+  try {
+    window.sessionStorage.removeItem(pendingUsageStorageKey(sessionId));
+    window.sessionStorage.removeItem(legacyPendingUsageStorageKey(sessionId));
+  } catch {
+    // Server recovery remains authoritative even when browser storage is unavailable.
   }
 }
 
@@ -142,28 +317,156 @@ export function useSessionStream(
   const qc = useQueryClient();
   const [state, dispatch] = useReducer(streamUiReducer, initialStreamUiState);
   const [rechargeRequired, setRechargeRequired] = useState<RechargeRequired | null>(null);
+  const [activeRechargeIntentId, setActiveRechargeIntentId] = useState<string | null>(null);
+  const [pendingRecovery, setPendingRecovery] = useState<PendingUsageRecoveryView | null>(null);
+  const [recoveryDialogOpen, setRecoveryDialogOpen] = useState(false);
   const [pendingRetryAvailable, setPendingRetryAvailable] = useState(false);
+  const [streamConnectionFailed, setStreamConnectionFailed] = useState(false);
+  const [streamSubscriptionVersion, setStreamSubscriptionVersion] = useState(0);
   const activeSessionIdRef = useRef(sessionId);
   const sendInFlightRef = useRef<{ sessionId: string; token: symbol } | null>(null);
-  const pendingUsageRef = useRef<PendingUsage | null>(null);
+  const pendingUsageRef = useRef<PendingUsageV2 | null>(null);
+  const pendingRecoveryRef = useRef<PendingUsageRecoveryView | null>(null);
+  const rechargeRequiredRef = useRef<RechargeRequired | null>(rechargeRequired);
+  const knowledgeSessionRef = useRef(false);
+  const knowledgeBindingRef = useRef<KnowledgeAgentBinding | null>(null);
+  const resumeInFlightRef = useRef<{
+    sessionId: string;
+    creditedIntentId: string;
+    promise: Promise<void>;
+  } | null>(null);
+  const resumeAbortControllerRef = useRef<AbortController | null>(null);
 
   // Route parameters can change before effects clean up the previous subscription. Keep the
   // generation pointer current during render so an old POST/SSE callback cannot mutate the new
   // session's reducer. A new session also gets its own submission lock immediately.
   activeSessionIdRef.current = sessionId;
+  rechargeRequiredRef.current = rechargeRequired;
+  const detailSession = detail?.session;
+  const detailBinding = detail?.agentBinding;
+  const knowledgeSession = Boolean(
+    detailSession !== undefined &&
+    detailSession.id === sessionId &&
+    detailSession.mode === 'consume' &&
+    detailBinding?.productKind === KNOWLEDGE_AGENT_PRODUCT_KIND,
+  );
+  knowledgeSessionRef.current = knowledgeSession;
+  knowledgeBindingRef.current =
+    detailBinding?.productKind === KNOWLEDGE_AGENT_PRODUCT_KIND ? detailBinding : null;
   if (sendInFlightRef.current && sendInFlightRef.current.sessionId !== sessionId) {
     sendInFlightRef.current = null;
   }
   if (pendingUsageRef.current && pendingUsageRef.current.sessionId !== sessionId) {
     pendingUsageRef.current = null;
   }
+  if (pendingRecoveryRef.current && pendingRecoveryRef.current.sessionId !== sessionId) {
+    pendingRecoveryRef.current = null;
+  }
+  if (resumeInFlightRef.current && resumeInFlightRef.current.sessionId !== sessionId) {
+    resumeInFlightRef.current = null;
+  }
 
   useEffect(() => {
+    resumeAbortControllerRef.current?.abort();
+    resumeAbortControllerRef.current = null;
     dispatch({ kind: 'reset' });
+    setStreamConnectionFailed(false);
     setRechargeRequired(null);
+    rechargeRequiredRef.current = null;
+    setPendingRecovery(null);
+    pendingRecoveryRef.current = null;
+    setRecoveryDialogOpen(false);
     const storedPending = sessionId ? readStoredPendingUsage(sessionId) : null;
     pendingUsageRef.current = storedPending;
+    setActiveRechargeIntentId(
+      storedPending?.reason === 'recharge_required'
+        ? (storedPending.activeRechargeIntentId ?? null)
+        : null,
+    );
     setPendingRetryAvailable(storedPending !== null);
+  }, [sessionId]);
+
+  useEffect(
+    () => () => {
+      resumeAbortControllerRef.current?.abort();
+      resumeAbortControllerRef.current = null;
+    },
+    [],
+  );
+
+  const applyServerRecovery = (recovery: PendingUsageRecoveryView | null): void => {
+    pendingRecoveryRef.current = recovery;
+    setPendingRecovery(recovery);
+    if (recovery) {
+      // Any browser row for this Session is stale once exact server recovery exists, including a
+      // different legacy usageId left by an older tab. It must not revive after server completion.
+      clearAllStoredPendingUsage(recovery.sessionId);
+      pendingUsageRef.current = null;
+      setRechargeGate(null);
+      setActiveRechargeIntentId(null);
+      setPendingRetryAvailable(true);
+      setRecoveryDialogOpen(true);
+    }
+  };
+
+  const refreshPendingRecovery = async (): Promise<PendingUsageRecoveryView> => {
+    if (!sessionId) throw new Error('会话还没有准备好，请稍后重试。');
+    const binding = knowledgeBindingRef.current;
+    if (!binding) throw new Error('当前会话没有可恢复的固定知识绑定。');
+    const existing = pendingRecoveryRef.current;
+    const recovery = existing
+      ? await getPendingUsageRecovery(existing.usageId)
+      : await resolvePendingRecoveryForSession(sessionId);
+    if (!recovery || !pendingRecoveryMatchesBinding(recovery, sessionId, binding)) {
+      throw new Error('待恢复任务与当前会话不匹配，已停止付款。');
+    }
+    if (activeSessionIdRef.current !== sessionId) {
+      throw new Error('会话已切换，请在当前会话重新确认。');
+    }
+    applyServerRecovery(recovery);
+    return recovery;
+  };
+
+  useEffect(() => {
+    if (!knowledgeSession || !sessionId) return;
+    const binding = knowledgeBindingRef.current;
+    if (!binding) return;
+    const requestedSessionId = sessionId;
+    let current = true;
+    void resolvePendingRecoveryForSession(requestedSessionId)
+      .then((recovery) => {
+        if (!current || activeSessionIdRef.current !== requestedSessionId) return;
+        if (recovery && !pendingRecoveryMatchesBinding(recovery, requestedSessionId, binding)) {
+          throw new Error('binding mismatch');
+        }
+        applyServerRecovery(recovery);
+        if (!recovery) {
+          setRecoveryDialogOpen(false);
+          const uncertain = readStoredPendingUsage(requestedSessionId);
+          setPendingRetryAvailable(uncertain !== null);
+        }
+      })
+      .catch(() => {
+        if (!current || activeSessionIdRef.current !== requestedSessionId) return;
+        pendingRecoveryRef.current = null;
+        setPendingRecovery(null);
+        setRecoveryDialogOpen(false);
+        setPendingRetryAvailable(false);
+        dispatch({ kind: 'error', message: '无法确认服务端待恢复任务，已停止付款。' });
+      });
+    return () => {
+      current = false;
+    };
+  }, [
+    detailBinding?.productKind,
+    detailBinding?.productKind === KNOWLEDGE_AGENT_PRODUCT_KIND
+      ? detailBinding.release.packageDigest
+      : null,
+    knowledgeSession,
+    sessionId,
+  ]);
+
+  useEffect(() => {
     if (!sessionId) return;
     const subscribedSessionId = sessionId;
     const sessionIsCurrent = (): boolean => activeSessionIdRef.current === subscribedSessionId;
@@ -173,7 +476,9 @@ export function useSessionStream(
         if (!sessionIsCurrent()) return;
         const event = parseStreamEvent(data);
         if (!event) return;
-        dispatch({ kind: 'stream-event', event });
+        if (!knowledgeSessionRef.current || !isCandidateTextEvent(event)) {
+          dispatch({ kind: 'stream-event', event });
+        }
         if (isTerminalEvent(event)) {
           void qc.invalidateQueries({ queryKey: ['session', sessionId] });
           void qc.invalidateQueries({ queryKey: ['sessions'] });
@@ -182,10 +487,15 @@ export function useSessionStream(
       onFatal: () => {
         if (!sessionIsCurrent()) return;
         reportClientEvent('sse_error', { message: 'session stream closed', url });
+        setStreamConnectionFailed(true);
         dispatch({ kind: 'error', message: '事件流连接不上，请刷新页面重试。' });
       },
     });
-  }, [sessionId, qc]);
+  }, [sessionId, qc, streamSubscriptionVersion]);
+
+  useEffect(() => {
+    if (knowledgeSession) dispatch({ kind: 'discard-candidate-text' });
+  }, [knowledgeSession, sessionId]);
 
   // 声明在 reset/subscription effect 之后，保证首屏详情不会先协调后又被 reset 清空。
   // reducer 用 message turn ids 判定世代：同 active turn 只合并，确认终态才整表收敛。
@@ -220,11 +530,26 @@ export function useSessionStream(
     }
   }, [sessionId, state.awaitingRunId, state.running]);
 
-  const send = async (text: string): Promise<MessageView> => {
+  const setRechargeGate = (requirement: RechargeRequired | null): void => {
+    rechargeRequiredRef.current = requirement;
+    setRechargeRequired(requirement);
+  };
+
+  const submitMessage = async (
+    text: string,
+    resume?: {
+      creditedIntentId: string;
+      usageId: string;
+      serverRecovery?: true;
+      signal?: AbortSignal;
+    },
+  ): Promise<MessageView> => {
     const trimmed = text.trim();
     if (!sessionId) throw new Error('会话还没有准备好，请稍后重试。');
     if (!trimmed) throw new Error('请输入任务内容。');
-    if (rechargeRequired) {
+    const serverRecovery =
+      pendingRecoveryRef.current?.sessionId === sessionId ? pendingRecoveryRef.current : null;
+    if ((rechargeRequiredRef.current || serverRecovery) && !resume) {
       throw new Error('请先完成或关闭当前充值流程。');
     }
     if (state.running || sendInFlightRef.current) {
@@ -236,27 +561,55 @@ export function useSessionStream(
       pendingUsageRef.current?.sessionId === requestSessionId
         ? pendingUsageRef.current
         : readStoredPendingUsage(requestSessionId);
-    if (previousUsage && previousUsage.text !== trimmed) {
+    if (
+      resume?.serverRecovery &&
+      (!serverRecovery ||
+        serverRecovery.usageId !== resume.usageId ||
+        serverRecovery.requestText !== trimmed)
+    ) {
+      throw new Error('服务端待恢复任务已变化，请刷新页面后重试。');
+    }
+    if (
+      resume &&
+      !resume.serverRecovery &&
+      (!previousUsage ||
+        previousUsage.usageId !== resume.usageId ||
+        previousUsage.text !== trimmed ||
+        previousUsage.reason !== 'recharge_required' ||
+        previousUsage.activeRechargeIntentId !== resume.creditedIntentId)
+    ) {
+      throw new Error('充值订单与待恢复任务不匹配，请刷新页面后重试。');
+    }
+    if (!serverRecovery && previousUsage && previousUsage.text !== trimmed) {
       throw new Error('上一次发送结果仍待确认，请先重试原任务。');
     }
-    const usageId =
-      previousUsage?.sessionId === requestSessionId && previousUsage.text === trimmed
+    const usageId = serverRecovery
+      ? serverRecovery.usageId
+      : previousUsage?.sessionId === requestSessionId && previousUsage.text === trimmed
         ? previousUsage.usageId
         : crypto.randomUUID();
-    pendingUsageRef.current = {
-      sessionId: requestSessionId,
-      text: trimmed,
-      usageId,
-      reason: previousUsage?.reason ?? 'uncertain',
-    };
-    storePendingUsage(pendingUsageRef.current);
+    if (!serverRecovery) {
+      pendingUsageRef.current = {
+        version: 2,
+        sessionId: requestSessionId,
+        text: trimmed,
+        usageId,
+        reason: previousUsage?.reason ?? 'uncertain',
+        ...(previousUsage?.reason === 'recharge_required'
+          ? { activeRechargeIntentId: previousUsage.activeRechargeIntentId }
+          : {}),
+      };
+      storePendingUsage(pendingUsageRef.current);
+    }
     // 当前调用源（聊天、首屏表单或 Miniapp）仍持有自己的草稿和生命周期；
     // 只有页面重载、调用源丢失后才显示统一恢复入口。
     setPendingRetryAvailable(false);
     sendInFlightRef.current = { sessionId: requestSessionId, token: requestToken };
     dispatch({ kind: 'turn-submitting' });
     try {
-      const accepted = await sendSessionMessage(requestSessionId, trimmed, usageId);
+      const accepted = resume?.signal
+        ? await sendSessionMessage(requestSessionId, trimmed, usageId, resume.signal)
+        : await sendSessionMessage(requestSessionId, trimmed, usageId);
       const { message } = accepted;
       const turnId = message.turnId;
       if (!turnId) {
@@ -295,7 +648,12 @@ export function useSessionStream(
       clearStoredPendingUsage(requestSessionId, usageId);
       if (pendingUsageRef.current?.usageId === usageId) pendingUsageRef.current = null;
       if (activeSessionIdRef.current === requestSessionId) setPendingRetryAvailable(false);
-      if (activeSessionIdRef.current === requestSessionId) setRechargeRequired(null);
+      if (activeSessionIdRef.current === requestSessionId) {
+        // A server recovery remains visible while the cross-tab coordinator waits for the
+        // receipt-backed terminal. The caller clears it only after exact GET becomes 404.
+        setRechargeGate(null);
+        setActiveRechargeIntentId(null);
+      }
       return message;
     } catch (err: unknown) {
       if (sendInFlightRef.current?.token === requestToken) {
@@ -306,36 +664,231 @@ export function useSessionStream(
       if (requestIsCurrent && isUnauthenticated(err)) {
         goToLogin();
       }
-      const recharge = readRechargeRequired(err, usageId);
-      if (recharge) {
+      const parsedRecharge = readRechargeRequired(err, usageId);
+      let recharge = parsedRecharge;
+      let confirmedServerRecovery: PendingUsageRecoveryView | null = null;
+      let recoveryConfirmationFailed = false;
+      if (parsedRecharge && knowledgeSessionRef.current) {
+        const binding = knowledgeBindingRef.current;
+        try {
+          const exact = await getPendingUsageRecovery(usageId);
+          if (
+            !binding ||
+            !pendingRecoveryMatchesBinding(exact, requestSessionId, binding) ||
+            exact.requestText !== trimmed ||
+            exact.activeRechargeIntentId !== parsedRecharge.rechargeIntentId ||
+            exact.billing.unitPriceCents !== parsedRecharge.requiredCents
+          ) {
+            throw new Error('recovery mismatch');
+          }
+          confirmedServerRecovery = exact;
+          if (requestIsCurrent) applyServerRecovery(exact);
+        } catch {
+          recharge = null;
+          recoveryConfirmationFailed = true;
+          if (requestIsCurrent) {
+            pendingRecoveryRef.current = null;
+            setPendingRecovery(null);
+            setRecoveryDialogOpen(false);
+            setRechargeGate(null);
+          }
+        }
+      }
+      if (recharge && !confirmedServerRecovery) {
         const pending = pendingUsageRef.current;
         if (pending?.usageId === usageId) {
-          pending.reason = 'recharge_required';
-          storePendingUsage(pending);
+          // 同一任务再次得到 402 时必须保留已经持久化的订单指针。即使 credited
+          // 后恢复仍余额不足，也只能由用户在对话框明确“新建一笔充值”来切换 intent。
+          const nextActiveIntentId =
+            pending.reason === 'recharge_required'
+              ? (pending.activeRechargeIntentId ?? recharge.rechargeIntentId)
+              : recharge.rechargeIntentId;
+          const updatedPending: PendingUsageV2 = {
+            version: 2,
+            sessionId: pending.sessionId,
+            text: pending.text,
+            usageId: pending.usageId,
+            reason: 'recharge_required',
+            activeRechargeIntentId: nextActiveIntentId,
+          };
+          pendingUsageRef.current = updatedPending;
+          storePendingUsage(updatedPending);
+          if (requestIsCurrent) setActiveRechargeIntentId(nextActiveIntentId);
         }
-        if (requestIsCurrent) setRechargeRequired(recharge);
+        if (requestIsCurrent) setRechargeGate(recharge);
       }
-      const outcomeMayHaveCommitted =
-        recharge !== null || !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
-      if (outcomeMayHaveCommitted) {
+      // A credited resume owns the original persisted usage until authoritative acceptance.
+      // Its later reload/close retry keeps that provenance too, so even a deterministic 4xx
+      // must not make the still-mounted draft mint a new usageId.
+      const mustPreservePendingUsage =
+        confirmedServerRecovery !== null ||
+        resume !== undefined ||
+        previousUsage?.reason === 'recharge_required' ||
+        recharge !== null ||
+        (err instanceof ApiError && err.status === 402) ||
+        !(err instanceof ApiError) ||
+        err.status === 0 ||
+        err.status === 409 ||
+        err.status >= 500;
+      if (mustPreservePendingUsage) {
         if (requestIsCurrent) setPendingRetryAvailable(true);
       } else {
         clearStoredPendingUsage(requestSessionId, usageId);
         if (pendingUsageRef.current?.usageId === usageId) pendingUsageRef.current = null;
-        if (requestIsCurrent) setPendingRetryAvailable(false);
+        if (requestIsCurrent) {
+          setPendingRetryAvailable(false);
+          setRechargeGate(null);
+          setActiveRechargeIntentId(null);
+        }
       }
       // 服务端错误信封中的 userMessage 已是人话；同时 reject 给 Miniapp bridge，
       // 让它不依赖一次可能来不及渲染的 optimistic running 状态。
       const message = isUnauthenticated(err)
         ? '登录态失效了，请重新登录。'
-        : recharge
-          ? '免费次数已用完，充值后可继续使用。'
-          : err instanceof ApiError
-            ? err.userMessage
-            : '发送失败，请重试。';
+        : recoveryConfirmationFailed
+          ? '无法确认服务端待恢复任务，已停止付款。'
+          : recharge
+            ? '免费次数已用完，充值后可继续使用。'
+            : err instanceof ApiError
+              ? err.userMessage
+              : '发送失败，请重试。';
       if (requestIsCurrent) dispatch({ kind: 'error', message });
       throw new Error(message, { cause: err });
     }
+  };
+
+  const send = (text: string): Promise<MessageView> => submitMessage(text);
+
+  const setActiveRechargeIntent = (rechargeIntentId: string): void => {
+    if (!UUID_V4_PATTERN.test(rechargeIntentId)) {
+      throw new Error('新的充值订单标识无效，请刷新页面后重试。');
+    }
+    if (!sessionId) throw new Error('会话还没有准备好，请稍后重试。');
+    const pending =
+      pendingUsageRef.current?.sessionId === sessionId
+        ? pendingUsageRef.current
+        : readStoredPendingUsage(sessionId);
+    if (!pending || pending.reason !== 'recharge_required') {
+      throw new Error('没有可绑定这笔充值的待恢复任务。');
+    }
+    if (rechargeRequiredRef.current?.rechargeIntentId !== pending.usageId) {
+      throw new Error('充值流程与待恢复任务不匹配，请刷新页面后重试。');
+    }
+    if (pending.activeRechargeIntentId === rechargeIntentId) return;
+    const updatedPending: PendingUsageV2 = {
+      ...pending,
+      activeRechargeIntentId: rechargeIntentId,
+    };
+    // 新订单必须先把指针写稳。否则刷新后无法知道该查哪笔权威订单，禁止切换。
+    if (!storePendingUsage(updatedPending)) {
+      throw new Error('无法保存充值恢复状态，请检查浏览器存储设置后重试。');
+    }
+    pendingUsageRef.current = updatedPending;
+    setActiveRechargeIntentId(rechargeIntentId);
+  };
+
+  const resumeAfterRecharge = (creditedIntentId: string): Promise<void> => {
+    if (!sessionId) return Promise.reject(new Error('会话还没有准备好，请稍后重试。'));
+    if (!UUID_V4_PATTERN.test(creditedIntentId)) {
+      return Promise.reject(new Error('充值订单标识无效，请刷新页面后重试。'));
+    }
+    const existingResume = resumeInFlightRef.current;
+    if (existingResume?.sessionId === sessionId) {
+      return existingResume.creditedIntentId === creditedIntentId
+        ? existingResume.promise
+        : Promise.reject(new Error('另一笔充值正在恢复原任务，请稍候。'));
+    }
+    const serverRecovery = pendingRecoveryRef.current;
+    if (serverRecovery?.sessionId === sessionId) {
+      const requestSessionId = sessionId;
+      const resumeAbortController = new AbortController();
+      resumeAbortControllerRef.current = resumeAbortController;
+      const operation = (async (): Promise<void> => {
+        const binding = knowledgeBindingRef.current;
+        await coordinateRecoveryResume(
+          serverRecovery.usageId,
+          async (lockedRecovery, { signal }) => {
+            if (
+              !binding ||
+              !pendingRecoveryMatchesBinding(lockedRecovery, requestSessionId, binding) ||
+              lockedRecovery.usageId !== serverRecovery.usageId ||
+              lockedRecovery.requestText !== serverRecovery.requestText ||
+              lockedRecovery.billing.unitPriceCents !== serverRecovery.billing.unitPriceCents
+            ) {
+              throw new Error('锁内待恢复任务与当前会话不匹配，已停止恢复。');
+            }
+            if (activeSessionIdRef.current !== requestSessionId) {
+              throw new Error('会话已切换，请在当前会话重新确认。');
+            }
+            applyServerRecovery(lockedRecovery);
+            const credited = await getRechargeOrderByRecovery(lockedRecovery.usageId, signal);
+            if (
+              !credited ||
+              credited.status !== 'credited' ||
+              credited.recoveryUsageId !== lockedRecovery.usageId ||
+              credited.rechargeIntentId !== creditedIntentId ||
+              credited.amountCents !== lockedRecovery.billing.unitPriceCents
+            ) {
+              throw new Error('充值还未确认到账，请稍后重试。');
+            }
+            await submitMessage(lockedRecovery.requestText, {
+              creditedIntentId,
+              usageId: lockedRecovery.usageId,
+              serverRecovery: true,
+              signal,
+            });
+          },
+          { signal: resumeAbortController.signal },
+        );
+        if (activeSessionIdRef.current === requestSessionId) {
+          applyServerRecovery(null);
+          setRecoveryDialogOpen(false);
+          setPendingRetryAvailable(false);
+          await Promise.all([
+            qc.invalidateQueries({ queryKey: ['session', requestSessionId] }),
+            qc.invalidateQueries({ queryKey: ['sessions'] }),
+          ]);
+        }
+      })();
+      const tracked = operation.finally(() => {
+        if (resumeAbortControllerRef.current === resumeAbortController) {
+          resumeAbortControllerRef.current = null;
+        }
+        if (resumeInFlightRef.current?.promise === tracked) resumeInFlightRef.current = null;
+      });
+      resumeInFlightRef.current = {
+        sessionId: requestSessionId,
+        creditedIntentId,
+        promise: tracked,
+      };
+      return tracked;
+    }
+    const pending =
+      pendingUsageRef.current?.sessionId === sessionId
+        ? pendingUsageRef.current
+        : readStoredPendingUsage(sessionId);
+    if (
+      !pending ||
+      pending.reason !== 'recharge_required' ||
+      pending.activeRechargeIntentId !== creditedIntentId ||
+      rechargeRequiredRef.current?.rechargeIntentId !== pending.usageId
+    ) {
+      return Promise.reject(new Error('充值订单与待恢复任务不匹配，请刷新页面后重试。'));
+    }
+    const requestSessionId = sessionId;
+    const operation = submitMessage(pending.text, {
+      creditedIntentId,
+      usageId: pending.usageId,
+    }).then(() => undefined);
+    const tracked = operation.finally(() => {
+      if (resumeInFlightRef.current?.promise === tracked) resumeInFlightRef.current = null;
+    });
+    resumeInFlightRef.current = {
+      sessionId: requestSessionId,
+      creditedIntentId,
+      promise: tracked,
+    };
+    return tracked;
   };
 
   const interrupt = (): void => {
@@ -350,10 +903,20 @@ export function useSessionStream(
     send,
     interrupt,
     rechargeRequired,
-    clearRechargeRequired: () => setRechargeRequired(null),
+    activeRechargeIntentId,
+    pendingRecovery,
+    recoveryDialogOpen,
+    clearRechargeRequired: () => {
+      setRechargeGate(null);
+      setRecoveryDialogOpen(false);
+    },
     pendingRetryAvailable,
     retryPending: () => {
       if (!sessionId) return Promise.reject(new Error('会话还没有准备好，请稍后重试。'));
+      if (pendingRecoveryRef.current?.sessionId === sessionId) {
+        setRecoveryDialogOpen(true);
+        return Promise.resolve();
+      }
       const pending =
         pendingUsageRef.current?.sessionId === sessionId
           ? pendingUsageRef.current
@@ -361,8 +924,23 @@ export function useSessionStream(
       if (!pending) return Promise.reject(new Error('没有需要重试的任务。'));
       return send(pending.text);
     },
-    abandonRechargeUsage: () => {
+    resumeAfterRecharge,
+    setActiveRechargeIntent,
+    abandonRechargeUsage: async () => {
       if (!sessionId) return;
+      const serverRecovery = pendingRecoveryRef.current;
+      if (serverRecovery?.sessionId === sessionId) {
+        await abandonPendingUsageRecovery(serverRecovery.usageId);
+        if (activeSessionIdRef.current !== sessionId) return;
+        applyServerRecovery(null);
+        setRecoveryDialogOpen(false);
+        setPendingRetryAvailable(false);
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['session', sessionId] }),
+          qc.invalidateQueries({ queryKey: ['sessions'] }),
+        ]);
+        return;
+      }
       const pending =
         pendingUsageRef.current?.sessionId === sessionId
           ? pendingUsageRef.current
@@ -371,7 +949,18 @@ export function useSessionStream(
       clearStoredPendingUsage(sessionId, pending.usageId);
       if (pendingUsageRef.current?.usageId === pending.usageId) pendingUsageRef.current = null;
       setPendingRetryAvailable(false);
-      setRechargeRequired(null);
+      setRechargeGate(null);
+      setActiveRechargeIntentId(null);
+    },
+    refreshPendingRecovery,
+    streamConnectionFailed,
+    retryStreamConnection: () => {
+      if (!sessionId || !streamConnectionFailed) return;
+      setStreamConnectionFailed(false);
+      dispatch({ kind: 'clear-error' });
+      setStreamSubscriptionVersion((version) => version + 1);
+      void qc.invalidateQueries({ queryKey: ['session', sessionId] });
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
     },
   };
 }

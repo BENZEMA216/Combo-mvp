@@ -9,7 +9,7 @@
 - `src/crypto.ts` 是认证原语：邮箱规范化（trim、小写、单 @ 与 IDNA ASCII 域名校验）、目标与验证码的域分离 HMAC 摘要、随机六位码生成、不透明会话 Cookie 的生成与摘要。数据库和 Redis 只接触摘要。
 - `src/service.ts` 是登录与 session 的业务逻辑：请求 OTP（配发信通道时供应商受理才落库挑战，永久拒绝返回统一受理结果，暂时/配置故障 503；未配时挑战写万能码摘要）、校验 OTP（首次登录自动建用户与邮箱身份；配发信通道时万能码直接放行、不消耗挑战）、解析会话（Redis 缓存优先，未命中回源 PostgreSQL 并回填）、登出撤销。依赖以端口注入，测试用内存假实现。
 - `src/resend.ts` 是 Resend HTTP 适配器（全局 fetch，无新增依赖）：只对白名单内的收件人错误读取有界错误摘要，投递结果分为受理/永久拒绝/暂时故障/配置故障四类，不把收件人、验证码、密钥或供应商正文交给日志。
-- `src/repo.ts` 是持久层端口在 pg.Pool 上的实现，SQL 与 `db/migrations/0012_v2_end_user_identity.sql` 及 `0014_v2_email_login.sql` 一一对应。
+- `src/repo.ts` 是持久层端口在 pg.Pool 上的实现，SQL 与 `db/v2-migrations/0012_v2_end_user_identity.sql` 及 `0014_v2_email_login.sql` 一一对应。
 - `src/cache.ts` 是会话读路径的 Redis 缓存实现，所有方法吞错降级，缓存永远不当事实源。
 - `src/assertion.ts` 签发 JWT(EdDSA) 断言并导出 JWKS 公钥。断言只带身份（sub 是用户主键、aud 是 agent_id、iss、exp），不带权益。
 - `src/login-page.ts` 是最简登录页：自包含 HTML（内联 CSS/JS，无框架无构建），以及 `next` 参数的站内路径收敛（防开放跳转）。

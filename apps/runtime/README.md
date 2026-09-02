@@ -4,7 +4,7 @@ Runtime 是 Capability 试用与 Studio 编辑的独立后端。它管理普通�
 
 ## 服务边界
 
-Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring 源码。它只读 `users`、`auth_sessions` 和 Capability 定义，读写 `sessions`、`turns`、`messages`、`artifacts`、用量计费表与钱包扣费流水，并且只能更新 `capabilities.ui_artifact_id`。浏览器认证只接受 authoring 签发的不透明会话 Cookie：`SESSION_COOKIE_SECURE=true` 时读取 `__Host-cb_session`，为 false 时读取 `cb_session`。Runtime 只计算 Cookie 摘要并查询 PostgreSQL，不签发会话、不创建用户，也不接受 Bearer 或查询参数令牌。
+Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring 源码。它通过 Shared 与 Creator Agent Protocol 使用跨服务运行合同，只读 `users`、`auth_sessions`、Capability、Agent Package Registry 和 Package 对象，读写 `sessions`、`turns`、`messages`、`artifacts`、用量计费表、知识用量 receipt 与钱包扣费流水，并且只能更新 `capabilities.ui_artifact_id`。浏览器认证只接受 authoring 签发的不透明会话 Cookie：`SESSION_COOKIE_SECURE=true` 时读取 `__Host-cb_session`，为 false 时读取 `cb_session`。Runtime 只计算 Cookie 摘要并查询 PostgreSQL，不签发会话、不创建用户，也不接受 Bearer 或查询参数令牌。
 
 所有浏览器写请求必须来自 `PUBLIC_APP_ORIGINS` 的严格白名单。凭据型 CORS 也只反射其中的精确 origin。Test、Preview 与 Production 的 production 构建都必须使用 Secure Cookie 和 HTTPS origin；只有非 production 的本地开发可以显式使用非 Secure Cookie。模型、模型凭据、Pi 会话和流式事件都留在 Runtime 内。
 
@@ -16,6 +16,7 @@ Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring
 - `src/modules/agent/` 负责 Turn 生命周期、Pi Agent、Redis 事件流、Studio 模式和模型工具。
 - `src/modules/billing/` 负责免费额度、全局钱包预留、按次扣费和 `usageId` 幂等。
 - `src/modules/artifact/` 负责 Artifact 索引、对象正文、Studio HTML 契约、UI revision 和 `upsert_artifact`。
+- `src/modules/knowledge-agent/` 负责受控 Test 的 exact Package 解析、中文确定性知识检索、v1 精确 oracle、v2 保守整句抽取验证、原子终态和 receipt 投影。
 - `src/bootstrap/` 组装 Fastify、基础设施、TurnRunner 和路由。
 - `src/processes/api.ts` 是唯一 HTTP 进程入口，默认监听 3100。
 
@@ -27,7 +28,7 @@ Turn 创建受数据库部分唯一索引保护。消费请求先按用户与 Ca
 
 `upsert_artifact` 先写不可变对象，再只在绑定 Turn 仍运行时提交带来源 Turn 的索引。Studio Turn 只有完整成功后，最后一个合格 HTML revision 才能在同一终态事务中晋升为 Capability 当前 UI。详情只展示种子副本、每个成功 Turn 的最终 revision 和 active Turn 的最新候选；失败或中断 Turn 的 Artifact 不进入历史。普通 Session 会复制创建时的 UI 隔离副本，不随之后的 Studio 修改漂移。
 
-详情的 owner 复验、Message、Artifact、当前 UI、active Turn 和最近终态 Turn 来自同一条 `REPEATABLE READ READ ONLY` PostgreSQL 快照。最近终态只投影固定白名单错误码；`last_error.message`、未知历史码和模型/provider 原始错误不会进入 HTTP 响应。Capability 定义在快照结束后再从对象存储读取。
+详情的 owner 复验、Message、Artifact、当前 UI、active Turn、最近终态 Turn 和知识 receipt 来自同一条 `REPEATABLE READ READ ONLY` PostgreSQL 快照。最近终态只投影固定白名单错误码；`last_error.message`、未知历史码和模型/provider 原始错误不会进入 HTTP 响应。Capability 定义在快照结束后再从对象存储读取。知识会话还会重新核对冻结 Package 的资源摘要、回答摘要和引用来源，模型候选文本不会进入用户响应。
 
 ## 可选沙箱工具
 
@@ -38,6 +39,7 @@ Turn 创建受数据库部分唯一索引保护。消费请求先按用户与 Ca
 ## 验证
 
 ```sh
+pnpm -F @cb/creator-agent-protocol build
 pnpm -F @cb/shared build
 pnpm -F @cb/runtime typecheck
 pnpm -F @cb/runtime typecheck:test

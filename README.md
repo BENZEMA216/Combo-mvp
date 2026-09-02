@@ -2,7 +2,7 @@
 
 Combo 让用户把已经完成的对话、Project 或工作旅程制作成可分享的 Agent。仓库以不可变、可验证和可加载的 Agent Package 作为唯一交付物，同时承载创作、分享、运行、网页、数据库和部署基础设施。
 
-当前代码已经具备本地 Agent Package 创作、正式重载和原生 Codex 多轮运行机制；跨用户发布、接收和 Studio 产品闭环仍在开发中。已确认的产品基线见 [`PROJECT.md`](PROJECT.md)，可调整的工程拆解与进度见 [`ENGINEERING.md`](ENGINEERING.md)。
+当前代码已经具备 Project-first 的本地 Agent Package 创作、正式重载和原生 Codex 多轮运行机制，但它仍是工程机制，不是普通用户入口。产品 Golden Path 是在 Codex Desktop 当前任务中用一句自然语言把当前对话变成 Draft，且默认零 Project 读取、零 Hook、零 Terminal；这条路径尚未实现，跨用户发布、接收和 Studio 产品闭环也仍在开发中。已确认的产品基线见 [`PROJECT.md`](PROJECT.md)，可调整的工程拆解与进度见 [`ENGINEERING.md`](ENGINEERING.md)。
 
 三条硬规则贯穿全栈：**永不裸转圈**、**绝不裸露错误码**（统一 `ErrorEnvelope`，只给 `userMessage` + `action`）、**已生成内容不丢**。
 

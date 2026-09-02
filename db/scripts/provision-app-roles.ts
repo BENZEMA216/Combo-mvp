@@ -4,13 +4,11 @@ const APPLICATION_ROLES = [
   { role: 'combo_api', envKey: 'POSTGRES_API_PASSWORD' },
   { role: 'combo_worker', envKey: 'POSTGRES_WORKER_PASSWORD' },
   { role: 'combo_runtime', envKey: 'POSTGRES_RUNTIME_PASSWORD' },
-  { role: 'combo_authz', envKey: 'POSTGRES_AUTHZ_PASSWORD' },
-  { role: 'combo_billing', envKey: 'POSTGRES_BILLING_PASSWORD' },
 ] as const;
 
 /**
- * 0008 先创建无登录应用角色并收口权限（0012 追加 authz、0013 追加 billing 角色）。迁移全部成功后，
- * 本函数才通过绑定参数设置各角色独立密码并启用登录；密码不进入迁移 SQL、输出或异常消息。
+ * 0008 先创建无登录应用角色并收口权限。迁移全部成功后，本函数才通过绑定参数设置
+ * 三份独立密码并启用登录；密码不进入迁移 SQL、输出或异常消息。
  */
 export async function provisionApplicationRoleLogins(client: Client): Promise<boolean> {
   const configured = APPLICATION_ROLES.filter(({ envKey }) => Boolean(process.env[envKey]));

@@ -17,14 +17,13 @@ fail() {
 : "${POSTGRES_API_PASSWORD:?需设置 POSTGRES_API_PASSWORD}"
 : "${POSTGRES_WORKER_PASSWORD:?需设置 POSTGRES_WORKER_PASSWORD}"
 : "${POSTGRES_RUNTIME_PASSWORD:?需设置 POSTGRES_RUNTIME_PASSWORD}"
-: "${POSTGRES_AUTHZ_PASSWORD:?需设置 POSTGRES_AUTHZ_PASSWORD}"
-: "${POSTGRES_BILLING_PASSWORD:?需设置 POSTGRES_BILLING_PASSWORD}"
 command -v pnpm >/dev/null 2>&1 || fail "需要 pnpm"
 command -v psql >/dev/null 2>&1 || fail "需要 psql（断言 schema 用）"
 
 # 1) 跑迁移
 log "执行迁移 ..."
-pnpm -C "$ROOT_DIR" -F @cb/db migrate
+EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql \
+  pnpm -C "$ROOT_DIR" -F @cb/db migrate
 
 # 2) 断言迁移文件全部记账
 log "断言 schema_migrations 记账数 = 迁移文件数 ..."
@@ -33,17 +32,22 @@ applied="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 [ "$applied" = "$expected" ] || fail "记账数 ${applied} != 迁移文件数 ${expected}"
 log "记账 ${applied}/${expected} ✓"
 
-# 3) 断言迁移终态表精确；除 runner 账本外不允许旧模型或额外业务表。
+# 3) 断言迁移终态表精确；除 runner 账本外只允许当前模型与 Test 已发布兼容前缀。
 for tbl in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls \
   auth_identities auth_otp_challenges auth_sessions auth_audit_events \
   billing_accounts billing_free_allowances usage_charges recharge_orders \
   payment_attempts payment_callback_events wallet_ledger \
-  v2_users v2_identities v2_auth_challenges v2_sessions \
-  v2_wallets v2_ledger v2_orders v2_packages v2_holds v2_metering_events; do
+  agent_packages agent_package_releases agent_usage_receipts pending_usage_recoveries \
+  agent_projects agent_revisions agent_tests agent_test_reviews agent_releases \
+  project_agent_shares \
+  project_history_agent_drafts project_history_agent_confirmations \
+  project_history_agent_shares \
+  oauth_clients oauth_authorization_requests oauth_authorization_codes \
+  oauth_access_tokens oauth_refresh_tokens; do
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,payment_attempts,payment_callback_events,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,v2_auth_challenges,v2_holds,v2_identities,v2_ledger,v2_metering_events,v2_orders,v2_packages,v2_sessions,v2_users,v2_wallets,wallet_ledger'
+expected_tables='agent_package_releases,agent_packages,agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,agent_usage_receipts,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,pending_usage_recoveries,project_agent_shares,project_history_agent_confirmations,project_history_agent_drafts,project_history_agent_shares,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables
@@ -145,8 +149,34 @@ log "0006 历史重复检查与事务回滚齐全 ✓"
 
 # 5) 幂等：再跑一次不应报错、不应重复记账
 log "二次迁移（幂等）..."
-pnpm -C "$ROOT_DIR" -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql \
+  pnpm -C "$ROOT_DIR" -F @cb/db migrate
 applied2="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 [ "$applied2" = "$expected" ] || fail "二次迁移后记账数变化 ${applied2} != ${expected}"
+
+log "真实 PostgreSQL 16 Agent Package Registry 约束与权限 ..."
+AGENT_PACKAGE_REGISTRY_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run __tests__/agent-package-registry.pg.test.ts
+
+log "真实 PostgreSQL 16 Agent Session freeze、terminal receipts、并发与角色权限 ..."
+AGENT_SESSION_RECEIPTS_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run \
+    __tests__/agent-session-receipts.pg.test.ts \
+    __tests__/agent-session-response-message.pg.test.ts \
+    __tests__/agent-session-receipts-roles.pg.test.ts
+
+log "真实 PostgreSQL 16 从 Registry 0017 升级到 receipts 0018 ..."
+AGENT_SESSION_RECEIPTS_UPGRADE_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run __tests__/agent-session-receipts-upgrade.pg.test.ts
+
+log "真实 PostgreSQL 16 pending usage recovery、并发 CAS 与角色权限 ..."
+PENDING_USAGE_RECOVERY_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run \
+    __tests__/pending-usage-recovery.pg.test.ts \
+    __tests__/pending-usage-recovery-roles.pg.test.ts
+
+log "真实 PostgreSQL 16 从 receipts 0018 升级到 pending recovery 0019 ..."
+PENDING_USAGE_RECOVERY_UPGRADE_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run __tests__/pending-usage-recovery-upgrade.pg.test.ts
 
 log "迁移集成全部通过 ✓"

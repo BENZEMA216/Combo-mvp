@@ -8,7 +8,7 @@
 - `db.ts` 封装 PostgreSQL 连接池、可取消事务、事务级锁等待和语句超时、就绪探针与关闭逻辑。
 - `auth-session.ts` 校验不透明 Cookie 格式，计算 SHA-256 摘要并只读联查 `auth_sessions` 与 `users`。未知、过期和撤销会话收口为无效状态，停用账号单独返回。
 - `redis.ts`、`redis-interrupt-bus.ts`、`redis-event-log.ts` 和 `event-bus.ts` 负责 Redis 连接、跨实例打断、事件日志、终态栅栏和实时直播。
-- `object-store.ts` 封装 MinIO 或 S3 对象读写，并把中止信号传给 S3 客户端。
+- `object-store.ts` 封装 MinIO 或 S3 对象读写。Agent Package 读取使用显式 byte 上限和中止信号；声明长度或流式累计超限时会先销毁或取消未读 Body，不暴露对象 key 或 provider 详情。
 - `llm.ts` 负责模型来源、模型编号和 Runtime 内凭据选择。
 
 ## 沙箱文件

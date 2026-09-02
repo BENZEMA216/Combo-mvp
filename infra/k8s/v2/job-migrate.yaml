@@ -1,4 +1,4 @@
-# combo_v2 库迁移 Job：0000→0013 + 五角色密码 provision。迁移必须由单个 Job 执行。
+# combo_v2 库迁移 Job：canonical 0000→0011 + V2 0012→0014，并配置五角色密码。
 # 五份角色密码中 combo_api / combo_worker / combo_runtime 与现有环境一致（0008 会把
 # 这三个实例级角色短暂收紧为 NOLOGIN 再由 provision 以相同密码恢复 LOGIN）。
 apiVersion: batch/v1
@@ -18,7 +18,7 @@ spec:
       containers:
         - name: migrate
           image: combo-v2/platform@COMBO_V2_PLATFORM_DIGEST
-          command: ['node', '--experimental-strip-types', 'db/scripts/migrate.ts']
+          command: ['node', '--experimental-strip-types', 'db/scripts/migrate-v2.ts']
           env:
             - name: PGHOST
               value: postgres.combo-foundation

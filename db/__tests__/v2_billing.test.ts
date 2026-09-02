@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const sql = readFileSync(resolve(directory, '..', 'migrations', '0013_v2_billing.sql'), 'utf8');
+const sql = readFileSync(
+  resolve(directory, '..', 'v2-migrations', '0013_v2_billing.sql'),
+  'utf8',
+);
 
 describe('0013 V2 计费体系', () => {
   it('creates the wallet four tables plus hold and metering tables', () => {

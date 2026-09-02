@@ -88,6 +88,12 @@ spec:
             - name: OTP_HMAC_SECRET
               valueFrom:
                 secretKeyRef: { name: combo-env, key: OTP_HMAC_SECRET }
+            # 受控 Test Publisher gate 是单个严格 JSON 绑定；缺失时路由保持 404。
+            # Preview/Production 若误配此键，Authoring API 会拒绝启动。
+            - name: COMBO_AGENT_PACKAGE_PUBLISHER_TEST_GATE
+              valueFrom:
+                secretKeyRef:
+                  { name: combo-env, key: COMBO_AGENT_PACKAGE_PUBLISHER_TEST_GATE, optional: true }
             # 钱包充值只在 Authoring API 中启用。支付配置逐键读取，绝不通过 envFrom
             # 扩散到 worker；缺省时网关保持关闭，启用后任一缺项都会由应用拒绝启动。
             - name: LESHOUYING_ENABLED

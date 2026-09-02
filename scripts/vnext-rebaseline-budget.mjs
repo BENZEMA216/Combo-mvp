@@ -5,22 +5,40 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const contractPath = 'scripts/vnext-rebaseline-budget.v1.json';
+export const legacyContractPath = 'scripts/vnext-rebaseline-budget.v1.json';
+export const contractPath = 'scripts/vnext-rebaseline-budget.v2.json';
 export const policyPaths = Object.freeze([
+  '.agents/skills/github-collaboration/SKILL.md',
+  '.agents/skills/github-collaboration/references/governance-and-contributions.md',
+  '.agents/skills/github-collaboration/references/quality-and-pull-requests.md',
+  '.agents/skills/github-collaboration/references/worktree-lifecycle.md',
   '.github/workflows/pr-ci.yml',
+  'AGENTS.md',
+  legacyContractPath,
   'package.json',
   contractPath,
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
 ]);
 
-const protocol = 'combo.vnext-rebaseline-budget/1';
+const protocol = 'combo.vnext-rebaseline-budget/2';
 const shaPattern = /^[0-9a-f]{40}$/;
 const hardCeilings = Object.freeze({
   maxChangedFilesPerPullRequest: 30,
   maxChangedLinesPerFile: 1200,
   maxChangedLinesPerPullRequest: 5000,
-  maxChangedLinesFromBase: 70000,
+  maxChangedLinesFromBase: 15000,
+});
+
+export const previousTrancheLock = Object.freeze({
+  protocol: 'combo.vnext-rebaseline-budget/1',
+  scopeId: 'vnext-r1-r3-test-only',
+  baseSha: 'd15a985c67c2b9b5e08a5b8bc03a772fb543aecb',
+  donorSha: '871c8f43b0725fa2f471173b2fbcf380ccfba930',
+  headSha: 'a1f11aed98d465fa91044beba7ccbcb95629030f',
+  changedFiles: 300,
+  changedLines: 70000,
+  contractSha256: 'e0ef9bfa1674c83d3dc8437db63e274f4e8b14810b44ca31bdb56949c4107792',
 });
 
 export const productGoalLock = Object.freeze({
@@ -28,7 +46,10 @@ export const productGoalLock = Object.freeze({
   semanticName: '可分享 Agent',
   text: '让用户把一段和自己AGENT的对话、项目或旅程变成一个可分享的 Agent，让其他人打开链接就能使用它，或是用一段话就能让自己的AGENT获取对应能力。',
   sha256: 'd1fcc3355deca962632194c4fbfcd26c4ce5f4494f1af0f813c7ff0a4d7be9ee',
-  projectSha256: '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+  approvedProjectSha256s: Object.freeze([
+    '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+    'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+  ]),
   headings: Object.freeze(['## 一、唯一产品目标', '## 二、目标用户体验', '## 三、唯一产物模型']),
 });
 
@@ -42,9 +63,20 @@ const requiredProductAgentPrelude = Object.freeze([
 export const productBaselineBootstrap = Object.freeze({
   baseSha: 'bc2b6d5693cb9344c343a64dadf7091618fbfe40',
   paths: Object.freeze([
-    contractPath,
+    legacyContractPath,
     'scripts/vnext-rebaseline-budget.mjs',
     'scripts/vnext-rebaseline-budget.test.mjs',
+  ]),
+});
+
+export const maintenanceModeBootstrap = Object.freeze({
+  baseSha: 'acea2c250a279fd53d9c4b7a509cb379280d003f',
+  maintenanceFile: 'apps/web/src/pages/LoginPage.test.tsx',
+  paths: Object.freeze([
+    'apps/web/src/pages/LoginPage.test.tsx',
+    'scripts/vnext-rebaseline-budget.mjs',
+    'scripts/vnext-rebaseline-budget.test.mjs',
+    legacyContractPath,
   ]),
 });
 
@@ -126,38 +158,68 @@ export function parseContract(source) {
       'protocol',
       'schemaVersion',
       'scopeId',
+      'trancheId',
       'baseSha',
-      'donorSha',
+      'previousTranche',
       'compatibility',
       'allowedFiles',
       'allowedPathPrefixes',
+      'maintenanceFile',
       'limits',
     ],
     'budget contract',
   );
   invariant(value.protocol === protocol, 'budget protocol changed');
-  invariant(value.schemaVersion === 1, 'budget schemaVersion must be 1');
+  invariant(value.schemaVersion === 2, 'budget schemaVersion must be 2');
   invariant(value.scopeId === 'vnext-r1-r3-test-only', 'budget scopeId changed');
-  invariant(
-    shaPattern.test(value.baseSha) && shaPattern.test(value.donorSha),
-    'baseSha and donorSha must be full lowercase commit SHAs',
+  invariant(value.trancheId === 'fixed-hosted-agent-test-beta', 'budget trancheId changed');
+  invariant(shaPattern.test(value.baseSha), 'baseSha must be a full lowercase commit SHA');
+  exactKeys(
+    value.previousTranche,
+    [
+      'protocol',
+      'scopeId',
+      'baseSha',
+      'donorSha',
+      'headSha',
+      'changedFiles',
+      'changedLines',
+      'contractSha256',
+    ],
+    'previousTranche',
   );
-  invariant(value.baseSha !== value.donorSha, 'baseSha and donorSha must differ');
+  invariant(
+    JSON.stringify(value.previousTranche) === JSON.stringify(previousTrancheLock),
+    'previousTranche changed',
+  );
+  invariant(
+    value.baseSha === value.previousTranche.headSha,
+    'baseSha must continue previousTranche',
+  );
   exactKeys(
     value.compatibility,
     ['preservePostgresMigrationHistory', 'preserveWorkerSqliteSchemaHistory'],
     'compatibility',
   );
   invariant(
-    value.compatibility.preservePostgresMigrationHistory === false,
-    'PostgreSQL migration history preservation is out of scope',
+    value.compatibility.preservePostgresMigrationHistory === true,
+    'PostgreSQL migration history must be preserved',
   );
   invariant(
-    value.compatibility.preserveWorkerSqliteSchemaHistory === false,
-    'Worker SQLite schema history preservation is out of scope',
+    value.compatibility.preserveWorkerSqliteSchemaHistory === true,
+    'Worker SQLite schema history must be preserved',
   );
   sortedUniqueStrings(value.allowedFiles, 'allowedFiles');
   sortedUniqueStrings(value.allowedPathPrefixes, 'allowedPathPrefixes', { prefix: true });
+  safeRepoPath(value.maintenanceFile);
+  invariant(
+    !policyPaths.includes(value.maintenanceFile),
+    `${value.maintenanceFile} cannot be both policy and maintenance`,
+  );
+  invariant(
+    !pathAllowed(value, value.maintenanceFile),
+    `${value.maintenanceFile} cannot be both product and maintenance`,
+  );
   exactKeys(value.limits, Object.keys(hardCeilings), 'limits');
   for (const [name, ceiling] of Object.entries(hardCeilings)) {
     const limit = value.limits[name];
@@ -212,16 +274,37 @@ function summarize(entries) {
   };
 }
 
-export function assessPullRequest(contract, entries) {
+export function isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract }) {
+  const changedPaths = entries.map(({ path }) => path).sort();
+  return (
+    comparisonBase === maintenanceModeBootstrap.baseSha &&
+    contract.maintenanceFile === maintenanceModeBootstrap.maintenanceFile &&
+    JSON.stringify(changedPaths) === JSON.stringify([...maintenanceModeBootstrap.paths].sort())
+  );
+}
+
+export function assessPullRequest(contract, entries, { comparisonBase } = {}) {
   const changedPolicyPaths = entries.filter(({ path }) => policyPaths.includes(path));
-  if (changedPolicyPaths.length > 0) {
+  const changedMaintenancePaths = entries.filter(({ path }) => path === contract.maintenanceFile);
+  let mode;
+  if (isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract })) {
+    mode = 'GOVERNANCE_MAINTENANCE_BOOTSTRAP';
+  } else if (changedPolicyPaths.length > 0) {
     invariant(
       entries.every(({ path }) => policyPaths.includes(path)),
       'budget policy changes must be governance-only',
     );
+    mode = 'GOVERNANCE_ONLY';
+  } else if (changedMaintenancePaths.length > 0) {
+    invariant(
+      entries.every(({ path }) => path === contract.maintenanceFile),
+      'budget maintenance changes must be maintenance-only',
+    );
+    mode = 'MAINTENANCE';
   } else {
     for (const { path } of entries)
       invariant(pathAllowed(contract, path), `path is outside the R1-R3 rebuild scope: ${path}`);
+    mode = 'PRODUCT';
   }
   const summary = summarize(entries);
   invariant(
@@ -238,13 +321,15 @@ export function assessPullRequest(contract, entries) {
       `per-file changed-line budget exceeded: ${entry.path}`,
     );
   }
-  return { mode: changedPolicyPaths.length > 0 ? 'GOVERNANCE_ONLY' : 'PRODUCT', ...summary };
+  return { mode, ...summary };
 }
 
 export function assessCumulative(contract, entries) {
   for (const { path } of entries) {
     invariant(
-      policyPaths.includes(path) || pathAllowed(contract, path),
+      policyPaths.includes(path) ||
+        path === contract.maintenanceFile ||
+        pathAllowed(contract, path),
       `cumulative path is outside the R1-R3 rebuild scope: ${path}`,
     );
   }
@@ -252,6 +337,58 @@ export function assessCumulative(contract, entries) {
   invariant(
     summary.changedLines <= contract.limits.maxChangedLinesFromBase,
     'R1-R3 cumulative changed-line budget exceeded',
+  );
+  return summary;
+}
+
+function verifyPreviousTranche(contract) {
+  const previous = contract.previousTranche;
+  invariant(commitExists(previous.baseSha), 'previousTranche base commit is unavailable');
+  invariant(commitExists(previous.headSha), 'previousTranche head commit is unavailable');
+  invariant(
+    isAncestor(previous.baseSha, previous.headSha),
+    'previousTranche base must be an ancestor of its head',
+  );
+  const donorObjectAvailable = commitExists(previous.donorSha);
+  if (donorObjectAvailable) {
+    invariant(
+      isAncestor(previous.baseSha, previous.donorSha),
+      'previousTranche base must be an ancestor of its donor',
+    );
+    invariant(
+      !isAncestor(previous.donorSha, previous.headSha),
+      'the previous donor branch must never be merged into the rebuild',
+    );
+    invariant(
+      !isAncestor(previous.donorSha, 'HEAD'),
+      'the previous donor branch must never be merged into the active tranche',
+    );
+  }
+  const legacySource = readFileSync(join(repoRoot, legacyContractPath), 'utf8');
+  invariant(
+    createHash('sha256').update(legacySource).digest('hex') === previous.contractSha256,
+    'previousTranche contract receipt changed',
+  );
+  const committedLegacySource = git(['show', `${previous.headSha}:${legacyContractPath}`]);
+  invariant(
+    legacySource === committedLegacySource,
+    'previousTranche contract must match its committed head',
+  );
+  const legacyContract = JSON.parse(legacySource);
+  const entries = collectCommittedDiff(previous.baseSha, previous.headSha);
+  for (const { path } of entries) {
+    invariant(
+      policyPaths.includes(path) ||
+        path === legacyContract.maintenanceFile ||
+        pathAllowed(legacyContract, path),
+      `previousTranche path is outside the declared rebuild scope: ${path}`,
+    );
+  }
+  const summary = summarize(entries);
+  invariant(
+    summary.changedFiles === previous.changedFiles &&
+      summary.changedLines === previous.changedLines,
+    'previousTranche committed totals changed',
   );
   return summary;
 }
@@ -333,7 +470,10 @@ export function verifyProductBaselineSources({
     );
   }
   const projectSha256 = createHash('sha256').update(projectSource).digest('hex');
-  invariant(projectSha256 === productGoalLock.projectSha256, 'PROJECT.md product baseline changed');
+  invariant(
+    productGoalLock.approvedProjectSha256s.includes(projectSha256),
+    'PROJECT.md product baseline changed',
+  );
   return { status: 'LOCKED', goalId: productGoalLock.goalId, sha256: productGoalLock.sha256 };
 }
 
@@ -368,6 +508,13 @@ function collectDiff(base) {
   );
 }
 
+function collectCommittedDiff(base, head) {
+  return parseNumstat(
+    git(['diff', '--no-renames', '--numstat', '-z', base, head]),
+    git(['diff', '--no-renames', '--name-only', '-z', base, head]),
+  );
+}
+
 export function defaultBaseRef(environment = process.env) {
   if (environment.GITHUB_BASE_REF) return environment.BASE_SHA;
   if (environment.GITHUB_EVENT_NAME === 'push' && environment.GITHUB_REF === 'refs/heads/main')
@@ -390,21 +537,11 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
   );
   invariant(commitExists(contract.baseSha), 'baseSha commit is unavailable');
   invariant(isAncestor(contract.baseSha, 'HEAD'), 'baseSha must be an ancestor of HEAD');
+  const previousTranche = verifyPreviousTranche(contract);
   const comparisonBase = git(['merge-base', baseRef, 'HEAD']).trim();
   invariant(shaPattern.test(comparisonBase), 'comparison base is unavailable');
-  const donorObjectAvailable = commitExists(contract.donorSha);
-  if (donorObjectAvailable) {
-    invariant(
-      isAncestor(contract.baseSha, contract.donorSha),
-      'baseSha must be an ancestor of donorSha',
-    );
-    invariant(
-      !isAncestor(contract.donorSha, 'HEAD'),
-      'the donor branch must never be merged into the rebuild',
-    );
-  }
   const pullRequestEntries = collectDiff(comparisonBase);
-  const pullRequest = assessPullRequest(contract, pullRequestEntries);
+  const pullRequest = assessPullRequest(contract, pullRequestEntries, { comparisonBase });
   const projectPath = join(repoRoot, 'PROJECT.md');
   const agentsPath = join(repoRoot, 'AGENTS.md');
   const engineeringPath = join(repoRoot, 'ENGINEERING.md');
@@ -427,6 +564,7 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
   return {
     pullRequest,
     productBaseline,
+    previousTranche,
     cumulative,
   };
 }

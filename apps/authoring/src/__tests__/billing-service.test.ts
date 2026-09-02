@@ -12,6 +12,7 @@ import {
 import {
   createRechargeOrder,
   getRechargeOrderByIntentWithReconciliation,
+  getRechargeOrderByRecoveryWithReconciliation,
   getRechargeOrderWithReconciliation,
   handlePaymentNotification,
   type BillingServiceClock,
@@ -29,6 +30,7 @@ import {
 
 const OWNER_ID = '00000000-0000-4000-8000-000000000001';
 const INTENT_ID = '00000000-0000-4000-8000-000000000002';
+const RECOVERY_USAGE_ID = INTENT_ID;
 const ORDER_ID = '00000000-0000-4000-8000-000000000003';
 const CLOCK: BillingServiceClock = {
   now: () => new Date('2026-07-28T04:00:00.000Z'),
@@ -63,6 +65,15 @@ class MemoryBillingRepository implements BillingRepository {
       : null;
   }
 
+  async findRechargeOrderByRecovery(
+    ownerUserId: string,
+    recoveryUsageId: string,
+  ): Promise<RechargeOrder | null> {
+    return this.order?.ownerUserId === ownerUserId && this.order.recoveryUsageId === recoveryUsageId
+      ? this.order
+      : null;
+  }
+
   async prepareRecharge(input: PrepareRechargeInput): Promise<PrepareRechargeResult> {
     if (this.order) {
       if (
@@ -79,6 +90,7 @@ class MemoryBillingRepository implements BillingRepository {
       orderNo: input.orderNo,
       ownerUserId: input.ownerUserId,
       clientIdempotencyKey: input.clientIdempotencyKey,
+      ...(input.recoveryUsageId ? { recoveryUsageId: input.recoveryUsageId } : {}),
       packageId: input.packageId,
       amountCents: input.amountCents,
       paymentMethod: input.paymentMethod,
@@ -274,6 +286,29 @@ function fakeGateway(input?: {
 }
 
 describe('billing recharge service', () => {
+  it.each([100n, 500n, 1_000n])(
+    'preserves legacy UI amount %s and idempotent replay without recovery binding',
+    async (amountCents) => {
+      const repository = new MemoryBillingRepository();
+      const gateway = fakeGateway();
+      const input = {
+        ownerUserId: OWNER_ID,
+        rechargeIntentId: INTENT_ID,
+        amountCents,
+        channel: 'qr' as const,
+        payType: 'alipay' as const,
+      };
+
+      const created = await createRechargeOrder(repository, gateway, CONFIGURATION, input, CLOCK);
+      const replayed = await createRechargeOrder(repository, gateway, CONFIGURATION, input, CLOCK);
+
+      expect(created).toMatchObject({ created: true, submitted: true });
+      expect(created.order.recoveryUsageId).toBeUndefined();
+      expect(replayed).toMatchObject({ created: false, submitted: false });
+      expect(gateway.createPayment).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('creates QR actions from the submitted amount only', async () => {
     const repository = new MemoryBillingRepository();
     const gateway = fakeGateway();
@@ -283,6 +318,7 @@ describe('billing recharge service', () => {
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
         rechargeIntentId: INTENT_ID,
         amountCents: 300n,
         channel: 'qr',
@@ -306,6 +342,7 @@ describe('billing recharge service', () => {
     const gateway = fakeGateway();
     const missingPayType = {
       ownerUserId: OWNER_ID,
+      recoveryUsageId: RECOVERY_USAGE_ID,
       rechargeIntentId: INTENT_ID,
       amountCents: 100n,
       channel: 'qr' as const,
@@ -322,6 +359,7 @@ describe('billing recharge service', () => {
     const gateway = fakeGateway();
     const input = {
       ownerUserId: OWNER_ID,
+      recoveryUsageId: RECOVERY_USAGE_ID,
       rechargeIntentId: INTENT_ID,
       amountCents: 100n,
       channel: 'qr' as const,
@@ -352,6 +390,7 @@ describe('billing recharge service', () => {
     });
     const input = {
       ownerUserId: OWNER_ID,
+      recoveryUsageId: RECOVERY_USAGE_ID,
       rechargeIntentId: INTENT_ID,
       amountCents: 100n,
       channel: 'qr' as const,
@@ -380,6 +419,7 @@ describe('billing recharge service', () => {
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
         rechargeIntentId: INTENT_ID,
         amountCents: 100n,
         channel: 'qr',
@@ -401,6 +441,13 @@ describe('billing recharge service', () => {
         leaseOwner: 'wrong-owner',
       }),
     ).resolves.toBeNull();
+    await expect(
+      getRechargeOrderByRecoveryWithReconciliation(repository, gateway, {
+        ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
+        leaseOwner: 'recovery-readback',
+      }),
+    ).resolves.toMatchObject({ id: created.order.id, recoveryUsageId: RECOVERY_USAGE_ID });
   });
 
   it('turns a gateway timeout into unknown and queries the original trace during polling', async () => {
@@ -419,6 +466,7 @@ describe('billing recharge service', () => {
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
         rechargeIntentId: INTENT_ID,
         amountCents: 300n,
         channel: 'qr',
@@ -452,6 +500,7 @@ describe('billing recharge service', () => {
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
         rechargeIntentId: INTENT_ID,
         amountCents: 100n,
         channel: 'qr',
@@ -482,6 +531,7 @@ describe('billing recharge service', () => {
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
         rechargeIntentId: INTENT_ID,
         amountCents: 300n,
         channel: 'qr',
@@ -581,6 +631,7 @@ describe('billing recharge service', () => {
     const prepared = await repository.prepareRecharge({
       orderNo: 'CBR-RACE',
       ownerUserId: OWNER_ID,
+      recoveryUsageId: RECOVERY_USAGE_ID,
       clientIdempotencyKey: INTENT_ID,
       packageId: 'manual',
       amountCents: 300n,
@@ -629,6 +680,7 @@ describe('billing recharge service', () => {
     const prepared = await repository.prepareRecharge({
       orderNo: 'CBR-PENDING-PRECEDENCE',
       ownerUserId: OWNER_ID,
+      recoveryUsageId: RECOVERY_USAGE_ID,
       clientIdempotencyKey: INTENT_ID,
       packageId: 'manual',
       amountCents: 300n,
@@ -677,6 +729,7 @@ describe('billing recharge service', () => {
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
+        recoveryUsageId: RECOVERY_USAGE_ID,
         rechargeIntentId: INTENT_ID,
         amountCents: 300n,
         channel: 'qr',

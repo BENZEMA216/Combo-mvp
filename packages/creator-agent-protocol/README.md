@@ -21,11 +21,32 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 注入它，并用 Codex 技能注册表激活包内技能。智能体包摘要是内容完整性标识，不是发布者签名或运行成功
 证明。
 
+显式 `knowledge-bundle` 子路径定义 `combo.knowledge-bundle/1`。知识内容只能作为 exact Package 清单内固定的
+`skills/knowledge/references/knowledge-bundle.json` 文件存在；运行时不得从 Capability、Release 或请求中
+接受另一条知识对象地址或独立摘要。受控 Test profile 只允许 `AGENT.md`、knowledge `SKILL.md` 和这一份
+Bundle 三个文件，避免额外 references 成为第二知识通道。Bundle 保存排序且有界的证据分片、opaque source
+ID、不可解引用的公开显示标签和每段 UTF-8 内容摘要，整个文件仍受 Package 的 2 MiB 单文件上限及清单
+摘要约束。该合同只绑定内容寻址字节与发布者提供的引用显示声明，不验证来源真实性，也不证明模型回答在
+语义上完整受证据支持；它不提供动态、私有或可变知识库。
+
 创作端可以生成一份含 Project 根摘要、覆盖统计与相对引用的私有来源回执。可分享 Package 不携带这份
 回执、来源文件名或覆盖摘要，只在清单绑定的 `provenance.json` 中保存回执摘要和可选制作要求摘要；
 因此 exact Package 仍绑定确定性的创作来源与意图，而消费者不能从 Package 直接读取创作者的来源清单。
 制作要求摘要只是不可逆的一致性绑定，不是保密或身份认证证明；随机 Draft ID、revision 和 fingerprint
 保留在私有创作状态中，不进入 Package 摘要。
+
+显式 `agent-package-release` 子路径定义 `combo.agent-package-release/1`。一条 Release 只保存不可变
+Release ID 和 exact Package digest，作为 Registry、分享入口与 Receiver 共同使用的最小公开引用。它不
+复制 Package 清单、行为文本或来源信息，也不保存发布者资料、URL、Project、Prompt、权限、会话或运行
+结果。Release ID 由 Registry 使用密码学安全随机数生成，是公开标识而不是授权凭据。Release 合同只绑定
+身份与内容；无状态校验无法阻止同一个 Release ID 被重新配到另一摘要，Registry 必须用一次写入和冲突
+比对实现不可变性。持久化、公开解析、下载授权和发布者认证属于后续 Registry 服务。
+
+显式 `agent-package-capability` 子路径定义 `combo.agent-package-capability/2`，作为旧 Capability 索引到
+Agent Package 产品线的单向迁移投影。它只嵌入一个 exact Release，不复制 Package 清单、指令、知识、
+工具、价格或运行状态。数字版本固定为 `2`，确保只认识 `CapabilityDefinition.version=1` 的旧 Runtime
+明确报格式过新，而不是在滚动发布期间静默丢弃新字段并按旧提示词执行。Registry 和 Session 仍必须分别
+保证 Release 不可重绑与首次运行前冻结；本合同不提供这两种持久化保证。
 
 显式 `agent-package-draft` 子路径定义 `combo.agent-package-creator-request/1` 与
 `combo.agent-package-draft/1`。前者只携带创作者的一句制作要求，不保存本机路径、任务标识或来源正文；
@@ -34,6 +55,32 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 制作要求、Project 根摘要、来源引用、可编辑行为字段、revision 链和 draft fingerprint。修订请求必须带
 exact base revision 与 fingerprint，过期编辑会被拒绝。Draft 不能直接运行或分享；只有从 exact Draft
 确定性编译出的 `combo.agent-package/1` 才是可加载产物。
+
+同一子路径并列定义 `combo.agent-package-creator-request/2` 与 `combo.agent-package-draft/2`，专门表达
+`current_conversation` 来源。V2 request 仍只有固定 intent 与一句制作要求；V2 Draft 的来源投影只保存
+`desktop_attested_active_current_task`、`before_direct_creator_item`、`user_visible_items_only`、完整性字面值、
+per-run Host HMAC snapshot commitment、选中可见 item 数量和脱敏 coverage summary。它不接受 task、thread、session、item 标识、Project 路径、citation、
+消息数组或 raw transcript。V1 与 V2 parser 互相拒绝，fingerprint domain 也彼此独立；现有 Project
+Creator、Bridge、Package builder 与来源回执继续只认 V1，不会因为 V2 合同出现而获得对话读取或编译能力。
+V2 provenance 只证明 Draft 内部字段一致，不证明 Desktop 已提供真实当前任务、快照完整或用户可见边界。
+
+同一子路径还定义 `combo.agent-package-creator-bootstrap-handoff/1`。Combo Plugin 先对白名单中的官方
+创建指南地址完成路由，再把地址归一化成固定指南版本；handoff 只携带该版本、已有的制作要求和
+`codex_host_current_saved_project` 绑定声明。它不允许 Project 路径、Project ID、任务 ID、线程 ID 或
+网页地址进入跨进程数据。Creator Bridge 的成功输出直接是规范 `combo.agent-package-draft/1`，不会再包一层
+临时结果合同。
+
+显式 `creator-authorization` 子路径只定义 `combo.creator-authorization/1` 的 path-free 授权卡语义：
+thread、turn、item、Host opaque Project binding、制作要求摘要、exact executor 摘要、最长五分钟以及固定
+一次的 Draft-only scope。它不是 bearer token、签名、IPC wire、redemption receipt，也不证明用户已经看到
+或批准授权卡；字面值 `issuer=codex_host` 本身也不是 Host 身份证明。
+
+授权 scope 明确披露选定 Creator Project 上下文会进入 Codex 模型服务，当前读取隔离为
+`same_uid_unisolated_not_os_enforced`，Combo 只接收 Draft 和相对引用，Project mutation 固定为 `none`，
+终态产物固定为 `draft_only`。Project 路径、device、inode 和 workspace generation 不进入 public claims。
+真实一次性签发、拒绝、过期、撤销、重放、原子 redemption，以及 redemption 到来源首读之间的当前
+workspace generation 核对，必须由未来的受认证 Host ledger/lease 完成；本包不提供 mint、handle、consume
+或私有 Project authority API。
 
 旧版 `agent` 子路径中的 Agent Draft 通过新 revision 修订但不能执行；每个 DraftSnapshot 本身都是不可变
 值。旧版 AgentVersion 从一个精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter
@@ -100,8 +147,24 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   覆盖、实际脱敏、用户确认、Git remote 可达或 OS 级 Project 隔离。
 - `@cb/creator-agent-protocol/agent-package`：暴露独立的智能体包清单、原始文件摘要、智能体包摘要与规范化
   解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
+- `@cb/creator-agent-protocol/knowledge-bundle`：暴露 exact Package 内固定知识资源路径、有界证据分片、
+  opaque source ID、不可解引用显示标签、内容摘要与规范化解析；它不接受独立 storage key，也不执行检索、
+  回答或语义支持性判断。
 - `@cb/creator-agent-protocol/agent-package-draft`：暴露一句制作要求、可修订 Package Draft、乐观 revision
-  请求、draft fingerprint 与规范化解析；它不保存绝对 Project 路径，也不执行提取、编译、发布或推理。
+  请求、Creator bootstrap handoff、Project V1 与 current-conversation V2 的 domain-separated draft
+  fingerprint 和规范化解析；它不暴露 Host snapshot 或任务选择 API，不保存绝对 Project 路径或 raw
+  transcript，也不执行提取、编译、发布或推理。
+- `@cb/creator-agent-protocol/agent-package-release`：暴露不可变 Release ID 到 exact Package digest 的最小
+  规范引用；它不保存或解析链接，不访问 Registry，也不复制 Agent 定义。
+- `@cb/creator-agent-protocol/agent-package-capability`：暴露旧 Capability 到 exact Release 的严格 V2
+  迁移投影；它不承载 Package 内容、知识绑定、价格、权益、Session 或执行结果。
+- `@cb/creator-agent-protocol/creator-authorization`：只暴露 path-free 授权卡 claims schema、固定 scope
+  与脱敏错误分类；不暴露 mint、handle、consume、redemption transport 或 Project identity。
+- `@cb/creator-agent-protocol/desktop-current-conversation-receipt`：只暴露真实 Desktop current-task Draft
+  receipt 的 strict schema、domain-separated canonical message、parse/verify/digest API；验签必须由调用方
+  提供仓库外受信 Host public key。它不暴露 signer、private key、Host snapshot transport，也不使一份 receipt
+  自动成为 Host/UAT PASS 证据。receipt 要求 snapshot 与 task binding 使用 per-run Host HMAC commitment，禁止
+  可跨运行关联或字典攻击的 raw transcript SHA；public key 必须来自 receipt 外的 pinned/revocable registry。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
 本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

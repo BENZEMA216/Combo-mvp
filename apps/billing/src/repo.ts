@@ -1,4 +1,4 @@
-// PostgreSQL 事实源实现：SQL 与 db/migrations/0013_v2_billing.sql 一一对应。
+// PostgreSQL 事实源实现：SQL 与 db/v2-migrations/0013_v2_billing.sql 一一对应。
 // 每个写方法内部一个事务；钱包行锁（FOR UPDATE）把同一用户的并发计费串行化。
 // bigint 列经 Number() 收窄为安全整数，入参在应用层已校验范围。
 import { type Pool, type PoolClient } from 'pg';

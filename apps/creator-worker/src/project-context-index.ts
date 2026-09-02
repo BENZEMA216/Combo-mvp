@@ -16,6 +16,8 @@ import {
 } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
+import { isFileDescriptorBoundToCanonicalProjectPath } from './authoring/file-descriptor-path-binding.js';
+
 const MAX_INDEX_ENTRIES = 500_000;
 const MAX_UNIQUE_INDEX_BYTES = 32 * 1024 * 1024 * 1024;
 const MAX_SENSITIVE_FILE_BYTES = 1024 * 1024;
@@ -103,7 +105,10 @@ export type ProjectContextIndexErrorCode =
 
 type ProjectContextIndexHooks = Readonly<{
   beforeDirectoryRead?: (relativePath: string) => void;
+  beforeGitClassification?: () => void;
+  beforeFileOpen?: (relativePath: string) => void;
   afterFileOpened?: (relativePath: string) => void;
+  beforeFileRead?: (relativePath: string) => void;
   maximumEntries?: number;
   maximumUniqueBytes?: number;
   onProgress?: (progress: ProjectContextIndexProgress) => void;
@@ -130,11 +135,22 @@ type VerificationRecord = Readonly<{
 
 type VerificationManifest = Readonly<{
   root: VerificationSignature;
-  gitFingerprint: `sha256:${string}`;
+  sourceProfile: ProjectContextSourceProfile;
+  gitFingerprint?: `sha256:${string}`;
   entries: readonly VerificationRecord[];
+  entriesByPath: ReadonlyMap<string, VerificationRecord>;
 }>;
 
+type ProjectContextSourceProfile = 'LEGACY_FULL_PHYSICAL' | 'AGENT_PACKAGE_CREATOR';
+
+const CREATOR_HOST_METADATA_FILENAMES = new Set([
+  'codex-session.json',
+  'codex-task.json',
+  'codex-thread.json',
+]);
+
 const verificationManifests = new WeakMap<ProjectContextIndex, VerificationManifest>();
+const creatorProjectSourceScans = new WeakSet<ProjectContextScan>();
 
 export class ProjectContextIndexError extends Error {
   public constructor(
@@ -162,7 +178,65 @@ export function scanProjectContextWithHooks(
   rawProjectPath: string,
   hooks: ProjectContextIndexHooks,
 ): ProjectContextScan {
+  return scanProjectContextForProfile(rawProjectPath, hooks, 'LEGACY_FULL_PHYSICAL');
+}
+
+/** Agent Package Creator source projection; legacy callers keep the full physical profile. */
+export function scanCreatorProjectSourceContext(
+  rawProjectPath: string,
+  onProgress?: (progress: ProjectContextIndexProgress) => void,
+): ProjectContextScan {
+  return scanCreatorProjectSourceContextWithHooks(
+    rawProjectPath,
+    onProgress === undefined ? {} : { onProgress },
+  );
+}
+
+/** Internal race/binding seam; intentionally absent from the package root export. */
+export function scanCreatorProjectSourceContextWithHooks(
+  rawProjectPath: string,
+  hooks: ProjectContextIndexHooks,
+): ProjectContextScan {
+  return scanProjectContextForProfile(rawProjectPath, hooks, 'AGENT_PACKAGE_CREATOR');
+}
+
+export function isAllowedCreatorProjectSourcePath(path: string): boolean {
+  return isSafeCreatorBusinessPath(path) && !isPrivateCreatorSourcePath(path);
+}
+
+export function assertCreatorProjectSourceScan(scan: ProjectContextScan): void {
+  if (!creatorProjectSourceScans.has(scan)) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_SCAN_FAILED',
+      'Agent Package Creator source projection requires its exact filtered scan.',
+    );
+  }
+}
+
+/** Internal projection seam; proves an opened file is the exact Creator-scan inode. */
+export function assertCreatorProjectSourceFileIdentity(
+  scan: ProjectContextScan,
+  path: string,
+  observed: BigIntStats,
+): void {
+  assertCreatorProjectSourceScan(scan);
+  const manifest = verificationManifests.get(scan.index);
+  const record = manifest?.entriesByPath.get(path);
+  if (manifest?.sourceProfile !== 'AGENT_PACKAGE_CREATOR' || record?.signature.kind !== 'file') {
+    throw projectContextChanged();
+  }
+  assertVerificationSignature(record.signature, observed);
+}
+
+function scanProjectContextForProfile(
+  rawProjectPath: string,
+  hooks: ProjectContextIndexHooks,
+  sourceProfile: ProjectContextSourceProfile,
+): ProjectContextScan {
   const projectPath = canonicalProjectPath(rawProjectPath);
+  if (sourceProfile === 'AGENT_PACKAGE_CREATOR') {
+    assertAllowedCreatorProjectRoot(projectPath);
+  }
   const maximumEntries = hooks.maximumEntries ?? MAX_INDEX_ENTRIES;
   const maximumUniqueBytes = hooks.maximumUniqueBytes ?? MAX_UNIQUE_INDEX_BYTES;
   if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
@@ -188,7 +262,10 @@ export function scanProjectContextWithHooks(
       verification: VerificationSignature;
     }>
   >();
-  const gitClassification = readGitClassification(projectPath);
+  const gitClassification =
+    sourceProfile === 'LEGACY_FULL_PHYSICAL'
+      ? (hooks.beforeGitClassification?.(), readGitClassification(projectPath))
+      : emptyGitClassification();
   const rootStat = lstatSync(projectPath);
   const pending: Array<
     Readonly<{ logicalParent: string; absoluteParent: string; expected: Stats }>
@@ -234,6 +311,10 @@ export function scanProjectContextWithHooks(
       }
       assertDirectoryPathStable(absoluteParent, expected);
       const path = logicalParent.length === 0 ? name : `${logicalParent}/${name}`;
+      if (sourceProfile === 'AGENT_PACKAGE_CREATOR') {
+        if (isPrivateCreatorSourcePath(path)) continue;
+        assertSafeCreatorBusinessPath(path);
+      }
       const absolute = join(absoluteParent, name);
       let stat: Stats;
       try {
@@ -241,12 +322,21 @@ export function scanProjectContextWithHooks(
       } catch (error) {
         throw indexError('PROJECT_CONTEXT_SCAN_FAILED', error);
       }
+      if (sourceProfile === 'AGENT_PACKAGE_CREATOR' && stat.isSymbolicLink()) continue;
       const category = classify(path);
       let entry: ProjectContextEntry;
       let verification: VerificationRecord;
       if (stat.isDirectory()) {
         const gitClass = classifyGitPath(path, gitClassification);
-        entry = projectEntry(path, 'directory', category, gitClass, stat, digestText('directory'));
+        entry = projectEntry(
+          path,
+          'directory',
+          category,
+          gitClass,
+          stat,
+          digestText('directory'),
+          sourceProfile === 'AGENT_PACKAGE_CREATOR',
+        );
         verification = verificationRecord(path, 'directory', lstatBigInt(absolute));
         pending.push({ logicalParent: path, absoluteParent: absolute, expected: stat });
       } else if (stat.isFile()) {
@@ -260,11 +350,14 @@ export function scanProjectContextWithHooks(
               'Project context exceeds the bounded unique-content limit.',
             );
           }
+          hooks.beforeFileOpen?.(path);
           content = hashFile(
+            sourceProfile === 'AGENT_PACKAGE_CREATOR' ? projectPath : undefined,
             absolute,
             stat,
             isSensitiveCandidate(path),
             () => hooks.afterFileOpened?.(path),
+            () => hooks.beforeFileRead?.(path),
             (bytes) => {
               bytesReadForProgress += bytes;
               emitProgress();
@@ -285,11 +378,14 @@ export function scanProjectContextWithHooks(
           hardlinkAliasCount += 1;
           content = cached.content;
           if (isSensitiveCandidate(path) && content.sensitiveText === undefined) {
+            hooks.beforeFileOpen?.(path);
             content = hashFile(
+              sourceProfile === 'AGENT_PACKAGE_CREATOR' ? projectPath : undefined,
               absolute,
               stat,
               true,
               () => hooks.afterFileOpened?.(path),
+              () => hooks.beforeFileRead?.(path),
               (bytes) => {
                 bytesReadForProgress += bytes;
                 emitProgress();
@@ -368,7 +464,14 @@ export function scanProjectContextWithHooks(
   const coverage = coverageCounts(entries, fileCount, byteCount);
   const rootHash = createHash('sha256');
   rootHash.update('combo.creator-agent-project-context-index/1\0');
-  rootHash.update(`root\0${rootStat.mode & 0o7777}\0${rootStat.mtimeMs}\0${rootStat.ctimeMs}\n`);
+  if (sourceProfile === 'AGENT_PACKAGE_CREATOR') {
+    rootHash.update('source-profile\0AGENT_PACKAGE_CREATOR\n');
+  }
+  rootHash.update(
+    sourceProfile === 'AGENT_PACKAGE_CREATOR'
+      ? `root\0${rootStat.mode & 0o7777}\n`
+      : `root\0${rootStat.mode & 0o7777}\0${rootStat.mtimeMs}\0${rootStat.ctimeMs}\n`,
+  );
   for (const entry of entries) {
     rootHash.update(
       `${entry.path}\0${entry.kind}\0${entry.category}\0${entry.gitClass}\0${entry.hidden}\0${entry.executionAvailability}\0${entry.mode}\0${entry.modifiedAtMs}\0${entry.changedAtMs}\0${entry.sizeBytes}\0${entry.digest}\n`,
@@ -387,20 +490,70 @@ export function scanProjectContextWithHooks(
     entries,
   });
   verificationRecords.sort((left, right) => compareStrings(left.path, right.path));
+  const frozenVerificationRecords = Object.freeze(verificationRecords);
   verificationManifests.set(
     index,
     Object.freeze({
       root: verificationSignature('root', lstatBigInt(projectPath)),
-      gitFingerprint: fingerprintGitClassification(gitClassification),
-      entries: Object.freeze(verificationRecords),
+      sourceProfile,
+      ...(sourceProfile === 'LEGACY_FULL_PHYSICAL'
+        ? { gitFingerprint: fingerprintGitClassification(gitClassification) }
+        : {}),
+      entries: frozenVerificationRecords,
+      entriesByPath: new Map(frozenVerificationRecords.map((record) => [record.path, record])),
     }),
   );
   emitProgress(true);
-  return Object.freeze({
+  const scan = Object.freeze({
     projectPath,
     index,
     sensitiveLiterals: Object.freeze(sensitiveLiterals),
   });
+  if (sourceProfile === 'AGENT_PACKAGE_CREATOR') creatorProjectSourceScans.add(scan);
+  return scan;
+}
+
+function assertAllowedCreatorProjectRoot(projectPath: string): void {
+  if (projectPath.split('/').some(isCreatorPrivatePathSegment)) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_PATH_INVALID',
+      'Agent Package Creator cannot use a Project rooted inside private Git or Codex Host state. Open the repository or working directory as the Codex Project instead.',
+    );
+  }
+}
+
+function isCreatorPrivatePathSegment(segment: string): boolean {
+  const lower = segment.toLowerCase();
+  return lower === '.git' || lower === '.codex' || CREATOR_HOST_METADATA_FILENAMES.has(lower);
+}
+
+function isPrivateCreatorSourcePath(path: string): boolean {
+  return path.split('/').some(isCreatorPrivatePathSegment);
+}
+
+function assertSafeCreatorBusinessPath(path: string): void {
+  if (!isSafeCreatorBusinessPath(path)) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_SCAN_FAILED',
+      'Agent Package Creator found a Project path that cannot be represented safely. Rename that file or directory before creating the Agent Package.',
+    );
+  }
+}
+
+function isSafeCreatorBusinessPath(path: string): boolean {
+  if (
+    path.length === 0 ||
+    path.length > 512 ||
+    path.startsWith('/') ||
+    path.includes('\\') ||
+    path.includes('\0') ||
+    /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(path)
+  ) {
+    return false;
+  }
+  return path
+    .split('/')
+    .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
 }
 
 function readStableDirectoryNames(
@@ -497,7 +650,7 @@ export function revalidateProjectContext(
     assertSameProjectContext(scan.index, after.index);
     return;
   }
-  const expectedByPath = new Map(manifest.entries.map((entry) => [entry.path, entry]));
+  const expectedByPath = manifest.entriesByPath;
   const seen = new Set<string>();
   let fileCount = 0;
   let nextProgressEntry = PROGRESS_ENTRY_INTERVAL;
@@ -512,8 +665,14 @@ export function revalidateProjectContext(
     });
   };
   try {
-    assertVerificationSignature(manifest.root, lstatBigInt(projectPath));
-    assertGitClassificationFingerprint(projectPath, manifest.gitFingerprint);
+    assertVerificationSignature(
+      manifest.root,
+      lstatBigInt(projectPath),
+      manifest.sourceProfile === 'AGENT_PACKAGE_CREATOR',
+    );
+    if (manifest.gitFingerprint !== undefined) {
+      assertGitClassificationFingerprint(projectPath, manifest.gitFingerprint);
+    }
     const rootStat = lstatSync(projectPath);
     const pending: Array<
       Readonly<{ logicalParent: string; absoluteParent: string; expected: Stats }>
@@ -525,16 +684,30 @@ export function revalidateProjectContext(
       const names = readStableDirectoryNames(
         absoluteParent,
         expected,
-        manifest.entries.length - seen.size + 1,
+        manifest.sourceProfile === 'AGENT_PACKAGE_CREATOR'
+          ? MAX_INDEX_ENTRIES
+          : manifest.entries.length - seen.size + 1,
       );
       for (const name of names) {
         assertDirectoryPathStable(absoluteParent, expected);
         const path = logicalParent.length === 0 ? name : `${logicalParent}/${name}`;
-        const record = expectedByPath.get(path);
-        if (record === undefined || seen.has(path)) throw projectContextChanged();
+        if (manifest.sourceProfile === 'AGENT_PACKAGE_CREATOR') {
+          if (isPrivateCreatorSourcePath(path)) continue;
+          assertSafeCreatorBusinessPath(path);
+        }
         const absolute = join(absoluteParent, name);
         const observed = lstatBigInt(absolute);
-        assertVerificationSignature(record.signature, observed);
+        if (manifest.sourceProfile === 'AGENT_PACKAGE_CREATOR' && observed.isSymbolicLink()) {
+          continue;
+        }
+        const record = expectedByPath.get(path);
+        if (record === undefined || seen.has(path)) throw projectContextChanged();
+        assertVerificationSignature(
+          record.signature,
+          observed,
+          manifest.sourceProfile === 'AGENT_PACKAGE_CREATOR' &&
+            record.signature.kind === 'directory',
+        );
         if (record.signature.kind === 'directory') {
           pending.push({
             logicalParent: path,
@@ -555,8 +728,14 @@ export function revalidateProjectContext(
       }
     }
     if (seen.size !== manifest.entries.length) throw projectContextChanged();
-    assertVerificationSignature(manifest.root, lstatBigInt(projectPath));
-    assertGitClassificationFingerprint(projectPath, manifest.gitFingerprint);
+    assertVerificationSignature(
+      manifest.root,
+      lstatBigInt(projectPath),
+      manifest.sourceProfile === 'AGENT_PACKAGE_CREATOR',
+    );
+    if (manifest.gitFingerprint !== undefined) {
+      assertGitClassificationFingerprint(projectPath, manifest.gitFingerprint);
+    }
     emitProgress(true);
   } catch (error) {
     if (error instanceof ProjectContextIndexError && error.code === 'PROJECT_CONTEXT_CHANGED') {
@@ -616,10 +795,12 @@ function canonicalProjectPath(rawProjectPath: string): string {
 }
 
 function hashFile(
+  creatorProjectRoot: string | undefined,
   filename: string,
   expected: Stats,
   retainSensitiveText: boolean,
   afterOpen: () => void,
+  beforeRead: () => void,
   onRead: (bytes: number) => void,
 ): Readonly<{
   digest: `sha256:${string}`;
@@ -639,7 +820,10 @@ function hashFile(
     descriptor = openSync(filename, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const opened = fstatSync(descriptor);
     assertSameFile(expected, opened);
+    assertCreatorFilePathBinding(creatorProjectRoot, filename, descriptor);
     afterOpen();
+    assertCreatorFilePathBinding(creatorProjectRoot, filename, descriptor);
+    beforeRead();
     const probe = Buffer.allocUnsafe(1);
     if (opened.size > 0 && readSync(descriptor, probe, 0, 1, 0) !== 1) {
       throw new ProjectContextIndexError(
@@ -680,6 +864,7 @@ function hashFile(
     }
     assertSameFile(stableStat, fstatSync(descriptor));
     assertVerificationSignature(verification, fstatSync(descriptor, { bigint: true }));
+    assertCreatorFilePathBinding(creatorProjectRoot, filename, descriptor);
     const digest = `sha256:${hash.digest('hex')}` as const;
     const gitBlobSha = gitHash.digest('hex');
     const frozenStat = Object.freeze(stableStat);
@@ -708,6 +893,22 @@ function hashFile(
     throw indexError('PROJECT_CONTEXT_SCAN_FAILED', error);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function assertCreatorFilePathBinding(
+  creatorProjectRoot: string | undefined,
+  filename: string,
+  descriptor: number,
+): void {
+  if (
+    creatorProjectRoot !== undefined &&
+    !isFileDescriptorBoundToCanonicalProjectPath(creatorProjectRoot, filename, descriptor)
+  ) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_CHANGED',
+      'A Creator source path changed before its file content could be consumed.',
+    );
   }
 }
 
@@ -757,6 +958,7 @@ function projectEntry(
   gitClass: ProjectContextGitClass,
   stat: Stats,
   digest: `sha256:${string}`,
+  omitDirectoryNamespaceMetadata = false,
 ): ProjectContextEntry {
   if (path.length === 0 || path.startsWith('/') || relative('/', `/${path}`) !== path) {
     throw new ProjectContextIndexError(
@@ -772,9 +974,9 @@ function projectEntry(
     hidden: path.split('/').some((segment) => segment.startsWith('.')),
     executionAvailability: gitClass === 'TRACKED_CLEAN' ? 'FIXED_GIT_TREE' : 'AUTHORING_ONLY',
     mode: stat.mode & 0o7777,
-    modifiedAtMs: normalizedTimestamp(stat.mtimeMs),
-    changedAtMs: normalizedTimestamp(stat.ctimeMs),
-    sizeBytes: stat.size,
+    modifiedAtMs: omitDirectoryNamespaceMetadata ? 0 : normalizedTimestamp(stat.mtimeMs),
+    changedAtMs: omitDirectoryNamespaceMetadata ? 0 : normalizedTimestamp(stat.ctimeMs),
+    sizeBytes: omitDirectoryNamespaceMetadata ? 0 : stat.size,
     digest,
   });
 }
@@ -831,18 +1033,25 @@ function verificationSignature(
   });
 }
 
-function assertVerificationSignature(expected: VerificationSignature, actual: BigIntStats): void {
+function assertVerificationSignature(
+  expected: VerificationSignature,
+  actual: BigIntStats,
+  ignoreDirectoryNamespaceMetadata = false,
+): void {
   const observed = verificationSignature(expected.kind, actual);
+  const compareDirectoryMetadata =
+    !ignoreDirectoryNamespaceMetadata ||
+    (expected.kind !== 'root' && expected.kind !== 'directory');
   if (
     expected.dev !== observed.dev ||
     expected.ino !== observed.ino ||
     expected.mode !== observed.mode ||
     expected.uid !== observed.uid ||
     expected.gid !== observed.gid ||
-    expected.nlink !== observed.nlink ||
-    expected.size !== observed.size ||
-    expected.mtimeNs !== observed.mtimeNs ||
-    expected.ctimeNs !== observed.ctimeNs
+    (compareDirectoryMetadata && expected.nlink !== observed.nlink) ||
+    (compareDirectoryMetadata && expected.size !== observed.size) ||
+    (compareDirectoryMetadata && expected.mtimeNs !== observed.mtimeNs) ||
+    (compareDirectoryMetadata && expected.ctimeNs !== observed.ctimeNs)
   ) {
     throw projectContextChanged();
   }

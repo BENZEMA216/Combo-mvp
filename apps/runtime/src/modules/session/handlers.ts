@@ -2,6 +2,7 @@
 // 非本人与不存在同样 404（不暴露存在性）。
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
 import { z } from 'zod';
+import { verifyCreatorAgentPackageRelease } from '@cb/creator-agent-protocol/agent-package-release';
 import {
   CreateSessionBodySchema,
   CreateStudioSessionBodySchema,
@@ -9,8 +10,10 @@ import {
   SessionModeSchema,
   SendMessageBodySchema,
   UpdateSessionBodySchema,
+  knowledgeBindingsEqual,
   type CapabilityInputField,
   type Envelope,
+  type KnowledgeAgentBinding,
   type MessageView,
   type RechargeRequiredBody,
   type SessionDetail,
@@ -20,10 +23,20 @@ import {
   type StudioSessionView,
 } from '@cb/shared';
 import { sendError } from '../../platform/http/_helpers.js';
-import { loadCapability } from '../capability/loader.js';
+import { knowledgeAgentTestGateFromEnv } from '../../platform/config/env.js';
+import { loadCapability, readAccessibleCapabilitySummary } from '../capability/loader.js';
 import { sendLoadFailure } from '../capability/handlers.js';
-import { SessionInactiveError, TurnAdmissionUnavailableError } from '../agent/run-turn.js';
+import {
+  KnowledgeRecoveryPolicyUnavailableError,
+  SessionInactiveError,
+  TurnAdmissionUnavailableError,
+} from '../agent/run-turn.js';
 import { UsageRequestConflictError } from '../billing/service.js';
+import {
+  PendingUsageRecoveryConflictError,
+  PendingUsageRecoveryExpiredError,
+  findPendingUsageRecovery,
+} from '../billing/pending-recovery.js';
 import { adoptExistingConsumeUiArtifact, seedCapabilityUiArtifact } from '../artifact/repo.js';
 import {
   archiveSession,
@@ -37,6 +50,12 @@ import {
   updateSessionTitle,
 } from './repo.js';
 import { readSessionDetailDbSnapshot } from './detail.js';
+import {
+  KnowledgeAgentResolutionError,
+  resolveFrozenKnowledgeAgentPackage,
+  resolveKnowledgeAgentPackage,
+} from '../knowledge-agent/resolver.js';
+import { projectKnowledgeResults } from '../knowledge-agent/resolver.js';
 
 /** owner-scoped 取会话，失败即回信封；成功返回行。 */
 async function requireOwnedSession(
@@ -85,6 +104,11 @@ export function createStudioSessionHandler(): RouteHandlerMethod {
       return sendError(req, reply, ErrorCode.INTERNAL);
     }
     if (loaded.kind !== 'ok') return sendLoadFailure(req, reply, loaded);
+    if (loaded.definition.version !== 1) {
+      return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
+        userMessage: 'Agent Package 只能创建消费会话。',
+      });
+    }
 
     let session: SessionRow | undefined;
     try {
@@ -143,19 +167,53 @@ export function createSessionHandler(): RouteHandlerMethod {
     }
     if (loaded.kind !== 'ok') return sendLoadFailure(req, reply, loaded);
 
+    let knowledgeBinding: KnowledgeAgentBinding | undefined;
+    if (loaded.definition.version === 2) {
+      try {
+        knowledgeBinding = (
+          await resolveKnowledgeAgentPackage({
+            db,
+            objectStore,
+            capability: loaded.capability,
+            projection: loaded.definition,
+            gate: knowledgeAgentTestGateFromEnv(req.server.infra.env),
+          })
+        ).binding;
+      } catch (error) {
+        if (
+          error instanceof KnowledgeAgentResolutionError &&
+          (error.failure === 'closed' || error.failure === 'not_found')
+        ) {
+          return sendError(req, reply, ErrorCode.NOT_FOUND);
+        }
+        req.log.warn(
+          {
+            traceId: req.id,
+            resolutionFailure:
+              error instanceof KnowledgeAgentResolutionError ? error.failure : 'unexpected',
+          },
+          'knowledge Agent resolution failed',
+        );
+        return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+      }
+    }
+
     let session: SessionRow | undefined;
     try {
       session = await createSession(db, {
         capabilityId: loaded.capability.id,
         ownerUserId: userId,
+        ...(knowledgeBinding ? { agentBinding: knowledgeBinding } : {}),
       });
-      // 每个真实运行会话拿一份创建时的 UI 快照；之后 Studio 再修改不会让旧任务中途漂移。
-      await seedCapabilityUiArtifact(db, objectStore, {
-        capabilityId: loaded.capability.id,
-        targetSessionId: session.id,
-        targetOwnerUserId: userId,
-        targetMode: 'consume',
-      });
+      if (!knowledgeBinding) {
+        // Legacy 运行会话拿一份创建时的 UI 快照；Package 会话不执行 mutable artifact UI。
+        await seedCapabilityUiArtifact(db, objectStore, {
+          capabilityId: loaded.capability.id,
+          targetSessionId: session.id,
+          targetOwnerUserId: userId,
+          targetMode: 'consume',
+        });
+      }
     } catch (err) {
       if (session) {
         // 对象存储/复制失败时不把半成品会话留在用户列表里。
@@ -272,6 +330,7 @@ export function archiveSessionHandler(): RouteHandlerMethod {
 
 export function getSessionDetailHandler(): RouteHandlerMethod {
   return async function (req: FastifyRequest, reply: FastifyReply) {
+    reply.header('Cache-Control', 'private, no-store');
     const userId = req.auth?.userId;
     if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
     const { id } = req.params as { id: string };
@@ -291,6 +350,7 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
         currentUiArtifact,
         activeTurn,
         latestTerminalTurn,
+        knowledgeReceipts,
       } = snapshot;
       // 能力行被删属于数据异常（会话仍指着它），按 500 收口而不是装作没会话。
       if (!capability) {
@@ -328,42 +388,94 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       // 开场表单字段与提示语在 MinIO 定义里；定义读不出不阻塞详情（退化为空数组，自由输入仍可用）。
       let inputs: CapabilityInputField[] = [];
       let starterPrompts: string[] = [];
+      let knowledgeResults: SessionDetail['knowledgeResults'];
       try {
-        const loaded = await loadCapability(
-          db,
-          objectStore,
-          session.capabilityId,
-          session.ownerUserId,
-        );
-        if (loaded.kind === 'ok') {
-          inputs = loaded.definition.inputs;
-          starterPrompts = loaded.definition.starterPrompts;
+        if (session.agentBinding.productKind === 'knowledge_agent_test') {
+          const resolved = await resolveFrozenKnowledgeAgentPackage({
+            db,
+            objectStore,
+            capability,
+            binding: session.agentBinding,
+          });
+          knowledgeResults = projectKnowledgeResults({
+            binding: session.agentBinding,
+            receipts: knowledgeReceipts,
+            messages,
+            knowledge: resolved.knowledge,
+          });
+        } else {
+          const loaded = await loadCapability(
+            db,
+            objectStore,
+            session.capabilityId,
+            session.ownerUserId,
+          );
+          if (loaded.kind === 'ok' && loaded.definition.version === 1) {
+            inputs = loaded.definition.inputs;
+            starterPrompts = loaded.definition.starterPrompts;
+          }
         }
       } catch (err) {
-        req.log.warn({ err, traceId: req.id }, 'load definition for detail failed, degrading');
+        if (session.agentBinding.productKind === 'knowledge_agent_test') {
+          req.log.warn(
+            {
+              traceId: req.id,
+              resolutionFailure:
+                err instanceof KnowledgeAgentResolutionError ? err.failure : 'invalid_receipt',
+            },
+            'knowledge Session detail verification failed',
+          );
+          return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+        }
+        req.log.warn(
+          { traceId: req.id, detailFailure: 'legacy_definition_unavailable' },
+          'load definition for detail failed, degrading',
+        );
       }
       const detail: SessionDetail = {
         session: toSessionView(session),
-        capability: { ...capability, inputs, starterPrompts },
-        messages: messages.map((m) => ({
-          id: m.id,
-          seq: m.seq,
-          ...(m.turnId ? { turnId: m.turnId } : {}),
-          role: m.role,
-          content: m.content,
-          status: m.status,
-          createdAt: m.createdAt,
-        })),
-        artifacts,
+        capability: {
+          id: capability.id,
+          name: capability.name,
+          summary: capability.summary,
+          kind: capability.kind,
+          inputs,
+          starterPrompts,
+        },
+        messages: messages
+          .filter(
+            (message) =>
+              session.agentBinding.productKind === 'legacy_capability' || message.role === 'user',
+          )
+          .map((m) => ({
+            id: m.id,
+            seq: m.seq,
+            ...(m.turnId ? { turnId: m.turnId } : {}),
+            role: m.role,
+            content: m.content,
+            status: m.status,
+            createdAt: m.createdAt,
+          })),
+        artifacts: session.agentBinding.productKind === 'knowledge_agent_test' ? [] : artifacts,
         activeTurn,
         latestTerminalTurn,
-        currentUiArtifactId: sessionCurrentUiArtifactId,
+        currentUiArtifactId:
+          session.agentBinding.productKind === 'knowledge_agent_test'
+            ? null
+            : sessionCurrentUiArtifactId,
+        agentBinding: session.agentBinding,
+        ...(session.agentBinding.productKind === 'knowledge_agent_test'
+          ? { knowledgeResults: knowledgeResults ?? [] }
+          : {}),
       };
       const body: Envelope<SessionDetail> = { data: detail, meta: { traceId: req.id } };
       reply.code(200).send(body);
       return reply;
-    } catch (err) {
-      req.log.error({ err, traceId: req.id }, 'read session detail failed');
+    } catch {
+      req.log.error(
+        { traceId: req.id, detailFailure: 'unexpected_read_failure' },
+        'read session detail failed',
+      );
       return sendError(req, reply, ErrorCode.INTERNAL);
     }
   };
@@ -378,25 +490,120 @@ export function sendMessageHandler(): RouteHandlerMethod {
     const parsed = SendMessageBodySchema.safeParse(req.body);
     if (!parsed.success) return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
 
-    const { db, objectStore } = req.server.infra;
-    // 每轮重新加载定义（发布态/定义可能已变；owner 校验对会话主人重新走一遍权限闸）。
-    let loaded;
-    try {
-      loaded = await loadCapability(db, objectStore, session.capabilityId, session.ownerUserId);
-    } catch (err) {
-      req.log.error({ err, traceId: req.id }, 'load capability failed');
-      return sendError(req, reply, ErrorCode.INTERNAL);
+    const { db, objectStore, env } = req.server.infra;
+    let definition;
+    let capabilityOwnerUserId: string;
+    let knowledge:
+      | {
+          resolved: Awaited<ReturnType<typeof resolveKnowledgeAgentPackage>>;
+          gate?: NonNullable<ReturnType<typeof knowledgeAgentTestGateFromEnv>>;
+          validatorPolicyVersion?: string;
+          runtimeSourceSha: string;
+        }
+      | undefined;
+    if (session.agentBinding.productKind === 'knowledge_agent_test') {
+      try {
+        const pendingRecovery = await findPendingUsageRecovery(
+          db,
+          session.ownerUserId,
+          parsed.data.usageId,
+        );
+        const frozenRecovery = pendingRecovery;
+        if (
+          frozenRecovery &&
+          (frozenRecovery.sessionId !== session.id ||
+            frozenRecovery.capabilityId !== session.capabilityId ||
+            (frozenRecovery.requestText !== null &&
+              frozenRecovery.requestText !== parsed.data.text) ||
+            !knowledgeBindingsEqual(frozenRecovery.binding, session.agentBinding))
+        ) {
+          return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
+        }
+        const capability = await readAccessibleCapabilitySummary(
+          db,
+          session.capabilityId,
+          session.ownerUserId,
+        );
+        if (!capability) return sendError(req, reply, ErrorCode.NOT_FOUND);
+        const resolved = frozenRecovery
+          ? await resolveFrozenKnowledgeAgentPackage({
+              db,
+              objectStore,
+              capability,
+              binding: frozenRecovery.binding,
+            })
+          : await resolveKnowledgeAgentPackage({
+              db,
+              objectStore,
+              capability,
+              projection: {
+                version: 2,
+                protocol: session.agentBinding.capability.protocol,
+                release: verifyCreatorAgentPackageRelease(session.agentBinding.release),
+              },
+              gate: knowledgeAgentTestGateFromEnv(env),
+            });
+        definition = {
+          version: 1 as const,
+          name: resolved.name,
+          summary: resolved.description,
+          kind: 'knowledge',
+          instructions: resolved.instructions,
+          inputs: [],
+          starterPrompts: [],
+          meta: {},
+        };
+        capabilityOwnerUserId = capability.ownerUserId;
+        knowledge = {
+          resolved,
+          ...(frozenRecovery
+            ? { validatorPolicyVersion: frozenRecovery.validatorPolicyVersion }
+            : { gate: knowledgeAgentTestGateFromEnv(env)! }),
+          runtimeSourceSha: env.COMBO_SOURCE_SHA,
+        };
+      } catch (error) {
+        if (
+          error instanceof KnowledgeAgentResolutionError &&
+          (error.failure === 'closed' || error.failure === 'not_found')
+        ) {
+          return sendError(req, reply, ErrorCode.NOT_FOUND);
+        }
+        req.log.warn(
+          {
+            traceId: req.id,
+            resolutionFailure:
+              error instanceof KnowledgeAgentResolutionError ? error.failure : 'unexpected',
+          },
+          'resolve frozen knowledge Agent failed',
+        );
+        return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+      }
+    } else {
+      // Legacy Capability sessions retain the existing per-turn definition reload behavior.
+      let loaded;
+      try {
+        loaded = await loadCapability(db, objectStore, session.capabilityId, session.ownerUserId);
+      } catch (err) {
+        req.log.error({ err, traceId: req.id }, 'load capability failed');
+        return sendError(req, reply, ErrorCode.INTERNAL);
+      }
+      if (loaded.kind !== 'ok') return sendLoadFailure(req, reply, loaded);
+      if (loaded.definition.version !== 1) {
+        return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+      }
+      definition = loaded.definition;
+      capabilityOwnerUserId = loaded.capability.ownerUserId;
     }
-    if (loaded.kind !== 'ok') return sendLoadFailure(req, reply, loaded);
 
     let result;
     try {
       result = await req.server.turns.startTurn({
         session,
-        definition: loaded.definition,
+        definition,
         text: parsed.data.text,
         usageId: parsed.data.usageId,
-        capabilityOwnerUserId: loaded.capability.ownerUserId,
+        capabilityOwnerUserId,
+        ...(knowledge ? { knowledge } : {}),
         log: req.log,
       });
     } catch (err) {
@@ -410,7 +617,11 @@ export function sendMessageHandler(): RouteHandlerMethod {
           userMessage: '这条会话仍在生成，请停止或等待完成后再发送。',
         });
       }
-      if (err instanceof UsageRequestConflictError) {
+      if (
+        err instanceof UsageRequestConflictError ||
+        err instanceof PendingUsageRecoveryConflictError ||
+        err instanceof PendingUsageRecoveryExpiredError
+      ) {
         return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
       }
       if (err instanceof TurnAdmissionUnavailableError) {
@@ -425,13 +636,18 @@ export function sendMessageHandler(): RouteHandlerMethod {
         );
         return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
       }
+      if (err instanceof KnowledgeRecoveryPolicyUnavailableError) {
+        req.log.warn({ traceId: req.id }, 'knowledge recovery validator policy unavailable');
+        return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+      }
       req.log.error({ err, traceId: req.id }, 'start turn failed');
       return sendError(req, reply, ErrorCode.INTERNAL);
     }
     if (result.status === 'recharge_required') {
       const body: RechargeRequiredBody = {
         rechargeRequired: true,
-        rechargeIntentId: parsed.data.usageId,
+        ...(knowledge && result.recoveryUsageId ? { recoveryUsageId: result.recoveryUsageId } : {}),
+        rechargeIntentId: result.rechargeIntentId ?? parsed.data.usageId,
         balanceCents: result.balanceCents.toString(),
         requiredCents: result.requiredCents.toString(),
       };

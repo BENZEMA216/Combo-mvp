@@ -14,10 +14,18 @@ import {
   parseCreatorAgentPackageProvenance,
   serializeCreatorAgentPackageManifest,
 } from '@cb/creator-agent-protocol/agent-package';
+import {
+  CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
+  createCreatorAgentPackageDraftSnapshotV2,
+} from '@cb/creator-agent-protocol/agent-package-draft';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { buildCreatorAgentPackage } from '../authoring/agent-package-builder.js';
+import {
+  buildCreatorAgentPackage,
+  buildCreatorAgentPackageFromDraft,
+} from '../authoring/agent-package-builder.js';
 import type { CreatorAgentProjectBehaviorExtraction } from '../authoring/project-behavior-extractor.js';
 import {
   createCreatorAgentPackageFromProjectWithDependencies,
@@ -122,6 +130,41 @@ describe('Agent Package authoring', () => {
         behavior: { ...invalid.behavior, starterPrompts: ['Review  this.', 'Review this.'] },
       }),
     ).toThrow(/unique/u);
+  });
+
+  it('keeps current-conversation Draft V2 outside the Project Package compiler', () => {
+    const conversationDraft = createCreatorAgentPackageDraftSnapshotV2({
+      protocol: CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
+      draftId: `draft.agent-package.${'9'.repeat(32)}`,
+      revision: 1,
+      parentDraftFingerprint: null,
+      creatorRequest: {
+        protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL,
+        intent: 'create_agent_package_from_current_conversation',
+        request: '把我们刚才完成的工作做成一个 Agent。',
+      },
+      source: {
+        kind: 'current_conversation',
+        sourceBoundary: 'desktop_attested_active_current_task',
+        snapshotBoundary: 'before_direct_creator_item',
+        visibility: 'user_visible_items_only',
+        snapshotCompleteness: 'complete',
+        rawStored: false,
+        snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1',
+        snapshotCommitment: `sha256:${'d'.repeat(64)}`,
+        selectedVisibleItemCount: 4,
+        coverageSummary: '当前任务中形成的发布证据方法定义了这个 Agent。',
+      },
+      content: {
+        name: '发布证据核验员',
+        description: '按当前对话形成的方法核对发布证据。',
+        instructions: '先核对候选身份，再验证运行证据，最后给出结论。',
+        starterPrompts: ['检查这次发布。'],
+        outputDescription: '返回结论与证据。',
+      },
+    });
+
+    expect(() => buildCreatorAgentPackageFromDraft(conversationDraft as never)).toThrow();
   });
 
   it('publishes a private digest-named Package, formally reloads it, and replays exactly', async () => {

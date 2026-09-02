@@ -47,6 +47,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.726.1
         version: 3.1068.0
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-protocol
       '@cb/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -210,6 +213,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      esbuild:
+        specifier: 0.25.12
+        version: 0.25.12
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -247,6 +253,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.726.1
         version: 3.1068.0
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-protocol
       '@cb/shared':
         specifier: workspace:*
         version: link:../../packages/shared

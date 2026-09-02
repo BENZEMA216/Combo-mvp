@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const sql = readFileSync(
-  resolve(directory, '..', 'migrations', '0012_v2_end_user_identity.sql'),
+  resolve(directory, '..', 'v2-migrations', '0012_v2_end_user_identity.sql'),
   'utf8',
 );
 

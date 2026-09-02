@@ -32,16 +32,36 @@
       "types": "./dist/agent-package.d.ts",
       "default": "./dist/agent-package.js"
     },
+    "./knowledge-bundle": {
+      "types": "./dist/knowledge-bundle.d.ts",
+      "default": "./dist/knowledge-bundle.js"
+    },
     "./agent-package-draft": {
       "types": "./dist/agent-package-draft.d.ts",
       "default": "./dist/agent-package-draft.js"
+    },
+    "./agent-package-release": {
+      "types": "./dist/agent-package-release.d.ts",
+      "default": "./dist/agent-package-release.js"
+    },
+    "./agent-package-capability": {
+      "types": "./dist/agent-package-capability.d.ts",
+      "default": "./dist/agent-package-capability.js"
+    },
+    "./creator-authorization": {
+      "types": "./dist/creator-authorization.d.ts",
+      "default": "./dist/creator-authorization.js"
+    },
+    "./desktop-current-conversation-receipt": {
+      "types": "./dist/desktop-current-conversation-receipt.d.ts",
+      "default": "./dist/desktop-current-conversation-receipt.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "pnpm run clean && tsc -b",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "test": "vitest run",

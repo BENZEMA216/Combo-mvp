@@ -122,7 +122,8 @@ function classify(root: string, path: string): Layer | undefined {
   if (
     name.startsWith('application/') ||
     name === 'agent-catalog-cli.ts' ||
-    name === 'agent-package-cli.ts'
+    name === 'agent-package-cli.ts' ||
+    name === 'agent-package-creator-bridge.ts'
   ) {
     return 'application';
   }
@@ -133,7 +134,8 @@ function classify(root: string, path: string): Layer | undefined {
     name === 'index.ts' ||
     name === 'agent-package-session.ts' ||
     name === 'agent-package-authoring.ts' ||
-    name === 'agent-package-creator.ts'
+    name === 'agent-package-creator.ts' ||
+    name === 'agent-package-current-conversation-draft.ts'
   ) {
     return 'public';
   }

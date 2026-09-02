@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const sql = readFileSync(resolve(directory, '..', 'migrations', '0014_v2_email_login.sql'), 'utf8');
+const sql = readFileSync(
+  resolve(directory, '..', 'v2-migrations', '0014_v2_email_login.sql'),
+  'utf8',
+);
 
 describe('0014 V2 登录标识切换为邮箱', () => {
   it('extends the identity type constraint to email while keeping existing types legal', () => {

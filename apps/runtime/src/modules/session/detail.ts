@@ -4,6 +4,10 @@ import { listArtifacts, readCapabilityUiArtifact, type StoredArtifact } from '..
 import { readCapabilitySummary, type CapabilitySummary } from '../capability/loader.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import { getMessages, getSession, type MessageRecord, type SessionRow } from './repo.js';
+import {
+  readKnowledgeUsageReceipts,
+  type KnowledgeReceiptDbRow,
+} from '../knowledge-agent/resolver.js';
 
 export interface SessionDetailDbSnapshot {
   session: SessionRow;
@@ -13,6 +17,7 @@ export interface SessionDetailDbSnapshot {
   currentUiArtifact: StoredArtifact | null;
   activeTurn: { id: string; createdAt: string } | null;
   latestTerminalTurn: TerminalTurnView | null;
+  knowledgeReceipts: KnowledgeReceiptDbRow[];
 }
 
 /**
@@ -38,6 +43,10 @@ export async function readSessionDetailDbSnapshot(
         session.mode === 'studio' ? await readCapabilityUiArtifact(tx, session.capabilityId) : null;
       const activeTurn = await getActiveTurn(tx, session.id);
       const latestTerminalTurn = await getLatestTerminalTurnView(tx, session.id);
+      const knowledgeReceipts =
+        session.agentBinding.productKind === 'knowledge_agent_test'
+          ? await readKnowledgeUsageReceipts(tx, session.id)
+          : [];
 
       return {
         session,
@@ -47,6 +56,7 @@ export async function readSessionDetailDbSnapshot(
         currentUiArtifact,
         activeTurn,
         latestTerminalTurn,
+        knowledgeReceipts,
       };
     },
     { readOnlySnapshot: true },
