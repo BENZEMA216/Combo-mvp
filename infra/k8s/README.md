@@ -16,7 +16,11 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 `api.yaml`、`worker.yaml`、`runtime.yaml`、`web.yaml` 是四业务面的基础清单，引用 `combo-env` Secret（凭证）与 `ghcr-pull`（镜像拉取）并带环境占位符。API 还可读取单个 `COMBO_AGENT_PACKAGE_PUBLISHER_TEST_GATE` JSON；键缺失时 Publisher 路由保持 404，键出现在 Preview 或 Production 时 API 拒绝启动。Runtime 只从 `combo-env` 可选读取单个 `COMBO_KNOWLEDGE_AGENT_TEST_GATE` JSON，Secret 键缺失时环境变量保持缺失，清单与渲染结果都不保存 gate 内容。`release/base/apps/` 与 `release/base/migrate/` 提供发布专用补丁（`envFrom: combo-release` ConfigMap、迁移 PGHOST），`release/overlays/{test,preview,production}/` 按环境设置 namespace。发布渲染由 `scripts/render-env.mjs` 完成，把占位符替换为每环境实际主机名、公开入口与 Secret 名。
 
-所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建。
+所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。三环境的 `combo-env` 必须包含 PostgreSQL 管理密码、API/worker/runtime 三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建；V2 的 authz/billing 密码只存在于 `combo-v2` 自己的 Secret。
+
+## combo-v2 验证命名空间
+
+`v2/` 子目录是 V2 架构验证（authz / billing / llm-gateway / restart-life 四进程 + 迁移 Job）的手工部署清单，独立于三环境晋级链，不进 `render-env.mjs` 与 `deploy-env.sh`。每个 namespaced 对象都显式声明 `combo-v2`，三个 PostgreSQL 客户端还把 `PGDATABASE` 固定为 `combo_v2`；渲染测试会拒绝遗漏。镜像为 `combo-v2/platform` 与 `combo-v2/restart-life`，在主机上构建后经 `k3s ctr images import` 进集群，清单用 `repository@sha256` 摘要引用，摘要由 `scripts/render-v2.mjs` 在服务器的新空目录中渲染。`combo-v2` 的 `combo-env` Secret 包含 PostgreSQL 管理密码、五份应用角色密码、断言私钥、内部 token 与 provider key，不负责选择数据库；公开 production-mode authz 不配置开发 OTP。V2 升级先将四个 V2 Deployment 缩到 0，只能由 `scripts/migrate-v2-host.sh` 在主机持 shared-foundation 正式锁迁移，成功后再应用同候选的新应用清单。验证期采用单内部 token 策略：`LLM_GATEWAY_INTERNAL_TOKEN` 与 `BILLING_INTERNAL_TOKEN` 在 Secret 里同值，Agent 注入的 `COMBO_PLATFORM_INTERNAL_TOKEN` 引用同一凭据。数据落在共享 PostgreSQL 实例的独立 `combo_v2` 库。验证结束后整个命名空间连同新建配置一起拆除。
 
 ## 可选 Sandbox Tools
 

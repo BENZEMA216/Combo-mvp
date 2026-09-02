@@ -127,6 +127,65 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)(jsdom@25.0.1)
 
+  apps/authz:
+    dependencies:
+      '@fastify/cookie':
+        specifier: ^11.0.2
+        version: 11.0.2
+      fastify:
+        specifier: ^5.2.1
+        version: 5.8.5
+      ioredis:
+        specifier: ^5.11.1
+        version: 5.11.1
+      jose:
+        specifier: ^5.10.0
+        version: 5.10.0
+      pg:
+        specifier: ^8.13.1
+        version: 8.21.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.19.21
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)(jsdom@25.0.1)
+
+  apps/billing:
+    dependencies:
+      fastify:
+        specifier: ^5.2.1
+        version: 5.8.5
+      pg:
+        specifier: ^8.13.1
+        version: 8.21.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.19.21
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)(jsdom@25.0.1)
+
   apps/creator-worker:
     dependencies:
       '@cb/creator-agent-broker-journal':
@@ -163,6 +222,25 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.13.3)(jsdom@25.0.1)
+
+  apps/llm-gateway:
+    dependencies:
+      fastify:
+        specifier: ^5.2.1
+        version: 5.8.5
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.19.21
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.21)(jsdom@25.0.1)
 
   apps/runtime:
     dependencies:

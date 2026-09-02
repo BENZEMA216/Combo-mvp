@@ -1,0 +1,59 @@
+# combo_v2 库迁移 Job：canonical 0000→0011 + V2 0012→0015，并配置五角色密码。
+# 五份角色密码中 combo_api / combo_worker / combo_runtime 与现有环境一致。0008 的
+# NOLOGIN 与同密码恢复在一个 migration transaction 内提交，其他连接看不到中间状态。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: combo-v2
+  labels:
+    app: migrate
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: combo-v2/platform@COMBO_V2_PLATFORM_DIGEST
+          command: ['node', '--experimental-strip-types', 'db/scripts/migrate-v2.ts']
+          env:
+            - name: PGHOST
+              value: postgres.combo-foundation
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_USER }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_PASSWORD }
+            - name: PGDATABASE
+              value: combo_v2
+            - name: POSTGRES_API_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_API_PASSWORD }
+            - name: POSTGRES_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_WORKER_PASSWORD }
+            - name: POSTGRES_RUNTIME_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_RUNTIME_PASSWORD }
+            - name: POSTGRES_AUTHZ_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_AUTHZ_PASSWORD }
+            - name: POSTGRES_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_BILLING_PASSWORD }
+            - name: EXPECTED_MIGRATION_HEAD
+              value: 0015_v2_billing_idempotency.sql
+            - name: MIGRATION_RUNS
+              value: '2'
+          resources:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 512Mi

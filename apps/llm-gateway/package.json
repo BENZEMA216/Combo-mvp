@@ -1,0 +1,26 @@
+{
+  "name": "@cb/llm-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "V2 模型网关：OpenAI 兼容子集的无状态薄 proxy。编排 check-and-hold、流式转发、产出 usage 计量事件；provider key 的唯一持有者。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "dev": "node --experimental-strip-types --watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

@@ -19,3 +19,5 @@
 知识 usage charge 重复相同冻结绑定，并保存规范化 billing/validator policy 与 terminal outcome。终态 charge 在提交时必须和对应 Turn、权威 response Message 及唯一 append-only `agent_usage_receipts` 同步：answered 才能 completed；insufficient evidence、failed 与 interrupted 都必须 released，failed/interrupted 结算为零；reserved 没有 completed assistant response、outcome 或 receipt。answered/insufficient 必须通过 exact scope FK 绑定同 Session/Turn 唯一的 completed assistant Message，failed/interrupted 不绑定 response；insufficient 不带 citations，interrupted validator 只能是 `not_run`。receipt 固定 Test execution environment、与非全零 source SHA 严格相等的 Runtime Release ID，以及最多 32 个唯一、canonical 排序的 Knowledge Bundle chunk IDs。chunk ID 依赖 frozen Package + fixed resource 才间接绑定内容，不能作为独立跨 Package selector。response digest 由 Runtime 对 exact answer UTF-8 文本计算并由读取方复验；数据库不擅自哈希现有 JSON blocks。本层不定义尚无共享 canonical serializer 的 receipt digest。
 
 Registry 当前仅支持单一可信、固定 controlled-Test publisher 的 first-writer 模型；digest 不是 publisher 身份或授权证明。Session/receipt 不接收独立 publisher 字段，Runtime/consumers 对 Registry 保持只读，未来多 publisher 必须先建立显式 owner claim/authorization 合同。
+
+`combo-v2` 的独立验证迁移不属于本目录，保存在 `db/v2-migrations`。正式 runner 不读取该目录；V2 runner 只复用本目录 `0000` 至 `0011` 的公共前缀。

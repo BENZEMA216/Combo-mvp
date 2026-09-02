@@ -111,6 +111,14 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      redis_hot:
+        image: redis:7
+        ports: ['6380:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -163,3 +171,23 @@ jobs:
           BILLING_TEST_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           BILLING_RUNTIME_TEST_DATABASE_URL: postgres://combo_runtime:ci-runtime-role-password@localhost:5432/agora
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts
+
+      - name: V2 database migration and billing invariants
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/combo_v2_ci
+          POSTGRES_API_PASSWORD: ci-api-role-password
+          POSTGRES_WORKER_PASSWORD: ci-worker-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          POSTGRES_AUTHZ_PASSWORD: ci-authz-role-password
+          POSTGRES_BILLING_PASSWORD: ci-billing-role-password
+        run: |
+          set -euo pipefail
+          psql postgres://agora:agora@localhost:5432/postgres \
+            -v ON_ERROR_STOP=1 -c 'CREATE DATABASE combo_v2_ci'
+          bash scripts/integration/db-migrate-v2.sh
+
+      - name: V2 authentication Redis rate-limit invariants
+        env:
+          AUTHZ_RATE_LIMIT_REDIS_TEST: '1'
+          AUTHZ_RATE_LIMIT_REDIS_URL: redis://localhost:6380/0
+        run: pnpm --dir apps/authz exec vitest run src/__tests__/rate-limit.redis.test.ts

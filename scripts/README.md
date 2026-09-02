@@ -46,3 +46,6 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
 - `scripts/integration/`：CI 集成测试脚本。
+- `scripts/integration/db-migrate-v2.sh`：在独立 PostgreSQL 数据库中验证 canonical `0000` 至 `0011` 加 V2 `0012` 至 `0015` 的组合链、升级兼容、safe-number 账本、计量 exact scope、正式迁移隔离和五角色权限；PR 与 main 集成门禁都会执行。
+- `render-v2.mjs`：combo-v2 验证命名空间专用，把 `infra/k8s/v2/` 清单里的镜像 digest 占位符渲染成服务器构建出的实际摘要。只在服务器手工链路使用，不进三环境部署。
+- `migrate-v2-host.sh`：tecent2 上唯一允许的停机 V2 迁移入口。运行前四个 V2 Deployment 必须已缩到 0 且没有 writer Pod；它与正式 Preview/Production 迁移持同一 shared-foundation flock，在锁内核对三份共享角色 Secret、等待/清理 Job、核对五角色 LOGIN、以 Preview/Production 凭据建立新连接并检查三环境 readiness。超时或中断也要先确认 Job/Pod 消失才释放锁。
