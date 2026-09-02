@@ -7,7 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const legacyContractPath = 'scripts/vnext-rebaseline-budget.v1.json';
 export const previousContractPath = 'scripts/vnext-rebaseline-budget.v2.json';
-export const contractPath = 'scripts/vnext-rebaseline-budget.v3.json';
+export const supersededContractPath = 'scripts/vnext-rebaseline-budget.v3.json';
+export const contractPath = 'scripts/vnext-rebaseline-budget.v4.json';
 export const policyPaths = Object.freeze([
   '.agents/skills/github-collaboration/SKILL.md',
   '.agents/skills/github-collaboration/references/governance-and-contributions.md',
@@ -18,12 +19,13 @@ export const policyPaths = Object.freeze([
   legacyContractPath,
   'package.json',
   previousContractPath,
+  supersededContractPath,
   contractPath,
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
 ]);
 
-const protocol = 'combo.vnext-rebaseline-budget/3';
+const protocol = 'combo.vnext-rebaseline-budget/4';
 const shaPattern = /^[0-9a-f]{40}$/;
 const hardCeilings = Object.freeze({
   maxChangedFilesPerPullRequest: 30,
@@ -54,7 +56,7 @@ export const previousTrancheLock = Object.freeze({
   contractSha256: '729464fa5d3d8538bdebef23c73b9ebe17076758bc74412177eecd545199e9df',
 });
 
-export const platformV2BootstrapLock = Object.freeze({
+export const supersededPlatformV2BootstrapLock = Object.freeze({
   protocol: 'combo.platform-v2-bootstrap/1',
   repository: 'dangdang-tech/Combo',
   pullRequestNumber: 223,
@@ -64,6 +66,37 @@ export const platformV2BootstrapLock = Object.freeze({
   changedFiles: 90,
   changedLines: 7929,
   maxChangedLinesPerFile: 364,
+});
+
+export const supersededAdmissionLock = Object.freeze({
+  protocol: 'combo.platform-v2-bootstrap-supersession/1',
+  contractPath: supersededContractPath,
+  contractSha256: '205eed9d7dbc16d060834d6f861d0f03b0f9ba279945e43c5a1fe0ac8471f97b',
+  governanceBaseSha: '353c25a4b318daa1893207e993dd0f1d2067c28e',
+  governanceHeadSha: '5ce34f27cfe49d7442a1f49b6a63b8bc1906660e',
+  rawDiffSha256: 'a9ad6aeb8a551e73034e7cb910f26ed274c465be049c7f92aaba8c4e3e4ae85e',
+  changedFiles: 4,
+  changedLines: 828,
+  maxChangedLinesPerFile: 395,
+  candidateSha: supersededPlatformV2BootstrapLock.candidateSha,
+  stateAtSupersession: 'PENDING',
+  disposition: 'SUPERSEDED',
+  supersededByProtocol: 'combo.platform-v2-bootstrap/2',
+  supersededByCandidateSha: '9997aedceeba5ff68cf50b6bc52a85e952121f15',
+});
+
+export const platformV2BootstrapLock = Object.freeze({
+  protocol: 'combo.platform-v2-bootstrap/2',
+  repository: 'dangdang-tech/Combo',
+  pullRequestNumber: 223,
+  targetBranch: 'main',
+  previousMainSha: '5ce34f27cfe49d7442a1f49b6a63b8bc1906660e',
+  candidateSha: '9997aedceeba5ff68cf50b6bc52a85e952121f15',
+  rawDiffSha256: '9b7f088a33ad7c6bb9e7ba2dc34ecba341d9cb1ccc46d9f38d37848c82db4f3f',
+  changedFiles: 107,
+  changedLines: 11810,
+  maxChangedLinesPerFile: 563,
+  mergeShape: 'TWO_LAYER_MERGE_COMMIT',
 });
 
 export const productGoalLock = Object.freeze({
@@ -186,6 +219,7 @@ export function parseContract(source) {
       'trancheId',
       'baseSha',
       'previousTranche',
+      'supersededAdmission',
       'platformV2Bootstrap',
       'compatibility',
       'allowedFiles',
@@ -196,9 +230,12 @@ export function parseContract(source) {
     'budget contract',
   );
   invariant(value.protocol === protocol, 'budget protocol changed');
-  invariant(value.schemaVersion === 3, 'budget schemaVersion must be 3');
-  invariant(value.scopeId === 'vnext-r1-r3-with-v2-bootstrap', 'budget scopeId changed');
-  invariant(value.trancheId === 'v2-platform-validation-bootstrap', 'budget trancheId changed');
+  invariant(value.schemaVersion === 4, 'budget schemaVersion must be 4');
+  invariant(value.scopeId === 'vnext-r1-r3-with-v2-bootstrap-v4', 'budget scopeId changed');
+  invariant(
+    value.trancheId === 'v2-platform-validation-bootstrap-repair',
+    'budget trancheId changed',
+  );
   invariant(shaPattern.test(value.baseSha), 'baseSha must be a full lowercase commit SHA');
   exactKeys(
     value.previousTranche,
@@ -219,17 +256,43 @@ export function parseContract(source) {
     'previousTranche changed',
   );
   exactKeys(
+    value.supersededAdmission,
+    [
+      'protocol',
+      'contractPath',
+      'contractSha256',
+      'governanceBaseSha',
+      'governanceHeadSha',
+      'rawDiffSha256',
+      'changedFiles',
+      'changedLines',
+      'maxChangedLinesPerFile',
+      'candidateSha',
+      'stateAtSupersession',
+      'disposition',
+      'supersededByProtocol',
+      'supersededByCandidateSha',
+    ],
+    'supersededAdmission',
+  );
+  invariant(
+    JSON.stringify(value.supersededAdmission) === JSON.stringify(supersededAdmissionLock),
+    'supersededAdmission changed',
+  );
+  exactKeys(
     value.platformV2Bootstrap,
     [
       'protocol',
       'repository',
       'pullRequestNumber',
+      'targetBranch',
       'previousMainSha',
       'candidateSha',
       'rawDiffSha256',
       'changedFiles',
       'changedLines',
       'maxChangedLinesPerFile',
+      'mergeShape',
     ],
     'platformV2Bootstrap',
   );
@@ -242,8 +305,17 @@ export function parseContract(source) {
     'platformV2Bootstrap changed',
   );
   invariant(
-    value.platformV2Bootstrap.previousMainSha === value.previousTranche.headSha,
-    'V2 bootstrap must continue previousTranche',
+    value.supersededAdmission.supersededByProtocol === value.platformV2Bootstrap.protocol &&
+      value.supersededAdmission.supersededByCandidateSha === value.platformV2Bootstrap.candidateSha,
+    'superseded admission replacement pointer changed',
+  );
+  invariant(
+    value.supersededAdmission.governanceBaseSha === value.previousTranche.headSha,
+    'superseded governance must continue previousTranche',
+  );
+  invariant(
+    value.platformV2Bootstrap.previousMainSha === value.supersededAdmission.governanceHeadSha,
+    'V2 bootstrap must continue the superseding governance head',
   );
   exactKeys(
     value.compatibility,
@@ -362,11 +434,15 @@ export function isAuthorizedPlatformV2AdmissionContext({
   ref,
   repository,
   pullRequestNumber,
+  baseRef,
 }) {
   if (githubActions !== 'true') return true;
   if (repository !== platformV2BootstrapLock.repository) return false;
   if (eventName === 'pull_request') {
-    return String(pullRequestNumber) === String(platformV2BootstrapLock.pullRequestNumber);
+    return (
+      String(pullRequestNumber) === String(platformV2BootstrapLock.pullRequestNumber) &&
+      baseRef === platformV2BootstrapLock.targetBranch
+    );
   }
   if (eventName === 'workflow_call' || eventName === 'workflow_dispatch') return true;
   return eventName === 'push' && ref === 'refs/heads/main';
@@ -550,10 +626,89 @@ function verifyPreviousTranche(contract) {
   return summary;
 }
 
+function verifySupersededAdmission(contract) {
+  const receipt = contract.supersededAdmission;
+  invariant(commitExists(receipt.governanceBaseSha), 'superseded governance base is unavailable');
+  invariant(commitExists(receipt.governanceHeadSha), 'superseded governance head is unavailable');
+  invariant(commitExists(receipt.candidateSha), 'superseded V2 candidate is unavailable');
+  invariant(
+    isAncestor(receipt.governanceBaseSha, receipt.governanceHeadSha),
+    'superseded governance base must be an ancestor of its head',
+  );
+  invariant(
+    !isAncestor(receipt.candidateSha, receipt.governanceHeadSha),
+    'superseded V2 candidate must have remained pending at the governance head',
+  );
+
+  const previousSource = readFileSync(join(repoRoot, supersededContractPath), 'utf8');
+  invariant(
+    previousSource === `${JSON.stringify(JSON.parse(previousSource), null, 2)}\n`,
+    'superseded contract must remain canonical JSON',
+  );
+  invariant(
+    createHash('sha256').update(previousSource).digest('hex') === receipt.contractSha256,
+    'superseded contract receipt changed',
+  );
+  invariant(
+    git(['show', `${receipt.governanceHeadSha}:${supersededContractPath}`]) === previousSource,
+    'superseded contract must match its committed governance head',
+  );
+  const previousContract = JSON.parse(previousSource);
+  invariant(
+    previousContract.protocol === 'combo.vnext-rebaseline-budget/3' &&
+      previousContract.schemaVersion === 3,
+    'superseded contract protocol changed',
+  );
+  invariant(
+    JSON.stringify(previousContract.previousTranche) === JSON.stringify(previousTrancheLock),
+    'superseded contract previousTranche changed',
+  );
+  invariant(
+    JSON.stringify(previousContract.platformV2Bootstrap) ===
+      JSON.stringify(supersededPlatformV2BootstrapLock),
+    'superseded V2 bootstrap receipt changed',
+  );
+  for (const field of [
+    'compatibility',
+    'allowedFiles',
+    'allowedPathPrefixes',
+    'maintenanceFile',
+    'limits',
+  ]) {
+    invariant(
+      JSON.stringify(contract[field]) === JSON.stringify(previousContract[field]),
+      `v4 must preserve the v3 ${field}`,
+    );
+  }
+
+  const entries = collectCommittedDiff(receipt.governanceBaseSha, receipt.governanceHeadSha);
+  invariant(
+    entries.every(({ path }) => policyPaths.includes(path)),
+    'superseding governance bridge must contain policy files only',
+  );
+  const summary = summarize(entries);
+  invariant(
+    summary.changedFiles === receipt.changedFiles &&
+      summary.changedLines === receipt.changedLines &&
+      maxChangedLines(entries) === receipt.maxChangedLinesPerFile,
+    'superseding governance bridge totals changed',
+  );
+  invariant(
+    collectCommittedRawDiffSha256(receipt.governanceBaseSha, receipt.governanceHeadSha) ===
+      receipt.rawDiffSha256,
+    'superseding governance raw diff receipt changed',
+  );
+  return {
+    verified: true,
+    stateAtSupersession: receipt.stateAtSupersession,
+    disposition: receipt.disposition,
+  };
+}
+
 function verifyPlatformV2Bootstrap(contract) {
   const bootstrap = contract.platformV2Bootstrap;
   invariant(
-    bootstrap.previousMainSha === contract.previousTranche.headSha,
+    bootstrap.previousMainSha === contract.supersededAdmission.governanceHeadSha,
     'V2 bootstrap previous Main changed',
   );
   invariant(bootstrap.candidateSha === contract.baseSha, 'V2 bootstrap candidate changed');
@@ -561,6 +716,11 @@ function verifyPlatformV2Bootstrap(contract) {
   invariant(
     isAncestor(bootstrap.previousMainSha, bootstrap.candidateSha),
     'V2 bootstrap candidate must descend from previous Main',
+  );
+  invariant(
+    bootstrap.candidateSha !== contract.supersededAdmission.candidateSha &&
+      isAncestor(contract.supersededAdmission.candidateSha, bootstrap.candidateSha),
+    'replacement V2 candidate must repair and descend from the superseded candidate',
   );
   const entries = collectCommittedDiff(bootstrap.previousMainSha, bootstrap.candidateSha);
   const summary = summarize(entries);
@@ -717,6 +877,15 @@ function verifyPlatformV2AdmissionShape({ comparisonBase, candidateSha, requireO
   };
 }
 
+function verifyPlatformV2GovernanceBase(comparisonBase) {
+  const currentSource = readFileSync(join(repoRoot, contractPath), 'utf8');
+  const baseSource = git(['show', `${comparisonBase}:${contractPath}`]);
+  invariant(
+    baseSource === currentSource,
+    'V2 admission base must contain the exact active budget contract',
+  );
+}
+
 function verifyGithubCheckoutIdentity(environment) {
   if (environment.GITHUB_ACTIONS !== 'true') return;
   const expectedHeadSha = environment.MERGE_SHA || environment.SOURCE_SHA;
@@ -792,6 +961,7 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     'budget check requires all tracked changes to be staged',
   );
   const previousTranche = verifyPreviousTranche(contract);
+  const supersededAdmission = verifySupersededAdmission(contract);
   const platformV2Receipt = verifyPlatformV2Bootstrap(contract);
   const comparisonBase = git(['merge-base', resolvedBaseRef, 'HEAD']).trim();
   invariant(shaPattern.test(comparisonBase), 'comparison base is unavailable');
@@ -803,17 +973,17 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
   const candidateInBase = isAncestor(contract.platformV2Bootstrap.candidateSha, comparisonBase);
   const candidateInHead = isAncestor(contract.platformV2Bootstrap.candidateSha, 'HEAD');
   const bootstrapState = classifyPlatformV2Bootstrap({ candidateInBase, candidateInHead });
-  const admission =
-    bootstrapState === 'ADMITTING'
-      ? verifyPlatformV2AdmissionShape({
-          comparisonBase,
-          candidateSha: contract.platformV2Bootstrap.candidateSha,
-          requireOuterMerge:
-            environment.GITHUB_EVENT_NAME === 'pull_request' ||
-            (environment.GITHUB_EVENT_NAME === 'push' &&
-              environment.GITHUB_REF === 'refs/heads/main'),
-        })
-      : { valid: false, shape: null };
+  let admission = { valid: false, shape: null };
+  if (bootstrapState === 'ADMITTING') {
+    verifyPlatformV2GovernanceBase(comparisonBase);
+    admission = verifyPlatformV2AdmissionShape({
+      comparisonBase,
+      candidateSha: contract.platformV2Bootstrap.candidateSha,
+      requireOuterMerge:
+        environment.GITHUB_EVENT_NAME === 'pull_request' ||
+        (environment.GITHUB_EVENT_NAME === 'push' && environment.GITHUB_REF === 'refs/heads/main'),
+    });
+  }
   const platformV2Bootstrap = {
     ...platformV2Receipt,
     state: bootstrapState,
@@ -843,6 +1013,7 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
         ref: environment.GITHUB_REF,
         repository: environment.GITHUB_REPOSITORY,
         pullRequestNumber: environment.PULL_REQUEST_NUMBER,
+        baseRef: environment.GITHUB_BASE_REF,
       }),
       'V2 bootstrap admission is not authorized in this GitHub context',
     );
@@ -877,6 +1048,7 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     pullRequest,
     productBaseline,
     previousTranche,
+    supersededAdmission,
     platformV2Bootstrap,
     cumulative,
   };
