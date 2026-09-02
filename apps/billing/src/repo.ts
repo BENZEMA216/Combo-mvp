@@ -1,0 +1,563 @@
+// PostgreSQL 事实源实现：SQL 与 db/v2-migrations/0013_v2_billing.sql 一一对应。
+// 每个写方法内部一个事务；钱包行锁（FOR UPDATE）把同一用户的并发计费串行化。
+// bigint 列只在显式 safe-range 校验后收窄为 number，入参也在应用层限制同一范围。
+import { type Pool, type PoolClient } from 'pg';
+import {
+  ledgerIdempotencyKeys,
+  persistedMeteringIdempotencyKey,
+  splitDeduction,
+  type BillingStore,
+  type HoldOutcome,
+  type HoldView,
+  type MeteringEventInput,
+  type MeteringOutcome,
+  type RechargeOutcome,
+  type SettleOutcome,
+  type WalletView,
+} from './service.js';
+
+export interface QueryResultLike<R = Record<string, unknown>> {
+  rows: R[];
+  rowCount: number | null;
+}
+
+/** 仅依赖 query 的最小 DB 句柄（pg 子集），事务内/池层通用。 */
+export interface Queryable {
+  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<QueryResultLike<R>>;
+}
+
+async function withTransaction<T>(pool: Pool, fn: (tx: Queryable) => Promise<T>): Promise<T> {
+  const client: PoolClient = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    client.release();
+  }
+}
+
+interface WalletRow {
+  user_id: string;
+  principal_balance: string;
+  bonus_balance: string;
+  held_amount: string;
+}
+
+interface HoldRow {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  turn_id: string;
+  estimated_amount: string;
+  actual_amount: string | null;
+  status: HoldView['status'];
+  expires_at: Date;
+}
+
+interface MeteringRow {
+  id: string;
+  agent_id: string;
+  user_id: string;
+  turn_id: string;
+  hold_id: string | null;
+  dimension: MeteringEventInput['dimension'];
+  quantity: string;
+  model: string | null;
+  unit_cost: string | null;
+  source: MeteringEventInput['source'];
+}
+
+interface LedgerReplayRow {
+  user_id: string;
+  kind: string;
+  bucket: string | null;
+  amount: string;
+  ref_id: string | null;
+}
+
+const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_INTEGER = -MAX_SAFE_INTEGER;
+
+function safeDatabaseInteger(value: string, field: string): number {
+  const parsed = BigInt(value);
+  if (parsed < MIN_SAFE_INTEGER || parsed > MAX_SAFE_INTEGER) {
+    throw new Error(`${field} is outside the safe accounting range`);
+  }
+  return Number(parsed);
+}
+
+function walletStateIsSafe(principal: bigint, bonus: bigint, held: bigint): boolean {
+  const net = principal + bonus;
+  const available = net - held;
+  return (
+    principal >= MIN_SAFE_INTEGER &&
+    principal <= MAX_SAFE_INTEGER &&
+    bonus >= MIN_SAFE_INTEGER &&
+    bonus <= MAX_SAFE_INTEGER &&
+    held >= 0n &&
+    held <= MAX_SAFE_INTEGER &&
+    net >= MIN_SAFE_INTEGER &&
+    net <= MAX_SAFE_INTEGER &&
+    available >= MIN_SAFE_INTEGER &&
+    available <= MAX_SAFE_INTEGER
+  );
+}
+
+function toWallet(row: WalletRow): WalletView {
+  const principalBalance = safeDatabaseInteger(row.principal_balance, 'principal_balance');
+  const bonusBalance = safeDatabaseInteger(row.bonus_balance, 'bonus_balance');
+  const heldAmount = safeDatabaseInteger(row.held_amount, 'held_amount');
+  if (!walletStateIsSafe(BigInt(principalBalance), BigInt(bonusBalance), BigInt(heldAmount))) {
+    throw new Error('wallet derivation is outside the safe accounting range');
+  }
+  return { userId: row.user_id, principalBalance, bonusBalance, heldAmount };
+}
+
+function toHold(row: HoldRow): HoldView {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    agentId: row.agent_id,
+    turnId: row.turn_id,
+    estimatedAmount: safeDatabaseInteger(row.estimated_amount, 'estimated_amount'),
+    actualAmount:
+      row.actual_amount === null ? null : safeDatabaseInteger(row.actual_amount, 'actual_amount'),
+    status: row.status,
+    expiresAt: row.expires_at,
+  };
+}
+
+async function lockWallet(tx: Queryable, userId: string): Promise<WalletView> {
+  // 首次计费动作时建行；ON CONFLICT 并发安全，随后行锁串行化本用户的钱包变更。
+  await tx.query(`INSERT INTO v2_wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [
+    userId,
+  ]);
+  const found = await tx.query<WalletRow>(
+    `SELECT user_id, principal_balance, bonus_balance, held_amount
+       FROM v2_wallets WHERE user_id = $1 FOR UPDATE`,
+    [userId],
+  );
+  const row = found.rows[0];
+  if (!row) throw new Error('wallet row missing after upsert');
+  return toWallet(row);
+}
+
+async function readWalletIn(tx: Queryable, userId: string): Promise<WalletView | null> {
+  const found = await tx.query<WalletRow>(
+    `SELECT user_id, principal_balance, bonus_balance, held_amount
+       FROM v2_wallets WHERE user_id = $1`,
+    [userId],
+  );
+  return found.rows[0] ? toWallet(found.rows[0]) : null;
+}
+
+async function userExists(tx: Queryable, userId: string): Promise<boolean> {
+  const found = await tx.query('SELECT 1 FROM v2_users WHERE id = $1', [userId]);
+  return found.rowCount === 1;
+}
+
+async function findHoldByTurn(tx: Queryable, agentId: string, turnId: string, lock = false) {
+  const found = await tx.query<HoldRow>(
+    `SELECT id, user_id, agent_id, turn_id, estimated_amount, actual_amount, status, expires_at
+       FROM v2_holds WHERE agent_id = $1 AND turn_id = $2 LIMIT 1${lock ? ' FOR UPDATE' : ''}`,
+    [agentId, turnId],
+  );
+  return found.rows[0] ? toHold(found.rows[0]) : null;
+}
+
+async function lockIdempotencyKey(tx: Queryable, namespace: string, key: string): Promise<void> {
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, [
+    `${namespace}:${key}`,
+  ]);
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string }).code === '23505';
+}
+
+async function replayHold(
+  tx: Queryable,
+  hold: HoldView,
+  input: { userId: string; estimatedAmount: number },
+): Promise<HoldOutcome> {
+  if (hold.userId !== input.userId || hold.estimatedAmount !== input.estimatedAmount) {
+    return { kind: 'conflict', reason: 'idempotency_mismatch' };
+  }
+  if (hold.status !== 'held') return { kind: 'conflict', reason: 'terminal_replay' };
+  const wallet = await readWalletIn(tx, hold.userId);
+  if (!wallet) throw new Error('hold references a missing wallet');
+  return { kind: 'held', hold, wallet, replayed: true };
+}
+
+async function findMeteringByIdempotencyKey(tx: Queryable, key: string) {
+  const found = await tx.query<MeteringRow>(
+    `SELECT id, agent_id, user_id, turn_id, hold_id, dimension, quantity, model, unit_cost, source
+       FROM v2_metering_events WHERE idempotency_key = $1 LIMIT 1`,
+    [key],
+  );
+  return found.rows[0] ?? null;
+}
+
+function meteringMatches(row: MeteringRow, input: MeteringEventInput): boolean {
+  return (
+    row.agent_id === input.agentId &&
+    row.user_id === input.userId &&
+    row.turn_id === input.turnId &&
+    row.hold_id === (input.holdId ?? null) &&
+    row.dimension === input.dimension &&
+    safeDatabaseInteger(row.quantity, 'metering quantity') === input.quantity &&
+    row.model === (input.model ?? null) &&
+    (row.unit_cost === null ? null : safeDatabaseInteger(row.unit_cost, 'metering unit_cost')) ===
+      (input.unitCost ?? null) &&
+    row.source === input.source
+  );
+}
+
+async function findLedgerByIdempotencyKey(tx: Queryable, key: string) {
+  const found = await tx.query<LedgerReplayRow>(
+    `SELECT user_id, kind, bucket, amount, ref_id
+       FROM v2_ledger WHERE idempotency_key = $1 LIMIT 1`,
+    [key],
+  );
+  return found.rows[0] ?? null;
+}
+
+export function createPgBillingStore(pool: Pool): BillingStore {
+  return {
+    async readWallet(userId) {
+      return readWalletIn(pool, userId);
+    },
+
+    async createHold({ userId, agentId, turnId, estimatedAmount, overdraftHardLimitCents }) {
+      try {
+        return await withTransaction(pool, async (tx): Promise<HoldOutcome> => {
+          await lockIdempotencyKey(tx, 'v2-hold', `${agentId}:${turnId}`);
+          const existing = await findHoldByTurn(tx, agentId, turnId, true);
+          if (existing) return replayHold(tx, existing, { userId, estimatedAmount });
+          if (!(await userExists(tx, userId))) return { kind: 'invalid_user' };
+
+          const wallet = await lockWallet(tx, userId);
+          const net = wallet.principalBalance + wallet.bonusBalance;
+          if (net < -overdraftHardLimitCents) {
+            return { kind: 'overdraft_blocked', wallet };
+          }
+          const available = net - wallet.heldAmount;
+          if (available < estimatedAmount) {
+            return { kind: 'insufficient', wallet };
+          }
+
+          const inserted = await tx.query<HoldRow>(
+            `INSERT INTO v2_holds
+               (user_id, agent_id, turn_id, estimated_amount, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, statement_timestamp(),
+                     statement_timestamp() + interval '5 minutes')
+             RETURNING id, user_id, agent_id, turn_id, estimated_amount, actual_amount, status, expires_at`,
+            [userId, agentId, turnId, estimatedAmount],
+          );
+          const hold = toHold(inserted.rows[0]!);
+
+          const updated = await tx.query<WalletRow>(
+            `UPDATE v2_wallets
+                SET held_amount = held_amount + $2, updated_at = now()
+              WHERE user_id = $1
+              RETURNING user_id, principal_balance, bonus_balance, held_amount`,
+            [userId, estimatedAmount],
+          );
+          await tx.query(
+            `INSERT INTO v2_ledger (user_id, kind, bucket, amount, ref_id, idempotency_key)
+             VALUES ($1, 'hold', NULL, $2, $3, $4)`,
+            [userId, estimatedAmount, hold.id, ledgerIdempotencyKeys.hold(agentId, turnId)],
+          );
+          return { kind: 'held', hold, wallet: toWallet(updated.rows[0]!), replayed: false };
+        });
+      } catch (error) {
+        // 0014 writer/direct SQL 不持有 advisory lock；唯一约束胜出后在新事务重读，
+        // 仍按完整 user/amount/status 语义返回 replay 或 conflict，绝不伪装 availability。
+        if (!isUniqueViolation(error)) throw error;
+        return withTransaction(pool, async (tx): Promise<HoldOutcome> => {
+          await lockIdempotencyKey(tx, 'v2-hold', `${agentId}:${turnId}`);
+          const existing = await findHoldByTurn(tx, agentId, turnId, true);
+          if (!existing) throw error;
+          return replayHold(tx, existing, { userId, estimatedAmount });
+        });
+      }
+    },
+
+    async settleHold({ holdId, actualAmount }) {
+      return withTransaction(pool, async (tx): Promise<SettleOutcome> => {
+        const found = await tx.query<HoldRow>(
+          `SELECT id, user_id, agent_id, turn_id, estimated_amount, actual_amount, status, expires_at
+             FROM v2_holds WHERE id = $1 FOR UPDATE`,
+          [holdId],
+        );
+        const row = found.rows[0];
+        if (!row) return { kind: 'not_found' };
+        const hold = toHold(row);
+
+        if (hold.status === 'settled') {
+          if (hold.actualAmount !== actualAmount) {
+            return { kind: 'conflict', reason: 'idempotency_mismatch' };
+          }
+          const wallet = await readWalletIn(tx, hold.userId);
+          if (!wallet) throw new Error('hold references a missing wallet');
+          // 重放返回原扣减明细，保证重复 settle 的响应与首次一致。
+          const ledger = await tx.query<{ bucket: string; total: string }>(
+            `SELECT bucket, sum(-amount) AS total FROM v2_ledger
+              WHERE ref_id = $1 AND kind = 'consume' GROUP BY bucket`,
+            [hold.id],
+          );
+          const deductions = { bonus: 0, principal: 0 };
+          for (const entry of ledger.rows) {
+            if (entry.bucket === 'bonus') {
+              deductions.bonus = safeDatabaseInteger(entry.total, 'bonus deduction');
+            }
+            if (entry.bucket === 'principal') {
+              deductions.principal = safeDatabaseInteger(entry.total, 'principal deduction');
+            }
+          }
+          const estimatedUsage = await tx.query<{ recorded: boolean }>(
+            `SELECT EXISTS (
+               SELECT 1 FROM v2_metering_events
+                WHERE hold_id = $1 AND source = 'estimated'
+             ) AS recorded`,
+            [hold.id],
+          );
+          return {
+            kind: 'settled',
+            hold,
+            wallet,
+            deductions,
+            estimatedUsageRecorded: estimatedUsage.rows[0]?.recorded === true,
+            replayed: true,
+          };
+        }
+        if (hold.status !== 'held') return { kind: 'invalid_state', hold };
+
+        const wallet = await lockWallet(tx, hold.userId);
+        const deductions = splitDeduction(wallet, actualAmount);
+        if (
+          !walletStateIsSafe(
+            BigInt(wallet.principalBalance) - BigInt(deductions.principal),
+            BigInt(wallet.bonusBalance) - BigInt(deductions.bonus),
+            BigInt(wallet.heldAmount) - BigInt(hold.estimatedAmount),
+          )
+        ) {
+          return { kind: 'conflict', reason: 'balance_range_exceeded' };
+        }
+        const updated = await tx.query<WalletRow>(
+          `UPDATE v2_wallets
+              SET principal_balance = principal_balance - $2,
+                  bonus_balance = bonus_balance - $3,
+                  held_amount = held_amount - $4,
+                  updated_at = now()
+            WHERE user_id = $1
+            RETURNING user_id, principal_balance, bonus_balance, held_amount`,
+          [hold.userId, deductions.principal, deductions.bonus, hold.estimatedAmount],
+        );
+
+        // 先赠后本各落一条扣减流水；解冻差额不另落账（hold 行终态即凭证）。
+        if (deductions.bonus > 0) {
+          await tx.query(
+            `INSERT INTO v2_ledger (user_id, kind, bucket, amount, ref_id, idempotency_key)
+             VALUES ($1, 'consume', 'bonus', $2, $3, $4)`,
+            [
+              hold.userId,
+              -deductions.bonus,
+              hold.id,
+              ledgerIdempotencyKeys.settle(hold.id, 'bonus'),
+            ],
+          );
+        }
+        if (deductions.principal > 0) {
+          await tx.query(
+            `INSERT INTO v2_ledger (user_id, kind, bucket, amount, ref_id, idempotency_key)
+             VALUES ($1, 'consume', 'principal', $2, $3, $4)`,
+            [
+              hold.userId,
+              -deductions.principal,
+              hold.id,
+              ledgerIdempotencyKeys.settle(hold.id, 'principal'),
+            ],
+          );
+        }
+
+        // usage 缺失时按估算扣并补一条 source=estimated 的计量兜底行。
+        const usage = await tx.query<{ count: string }>(
+          `SELECT count(*) AS count FROM v2_metering_events
+            WHERE hold_id = $1 AND source IN ('gateway', 'agent_report')`,
+          [hold.id],
+        );
+        const estimatedUsageRecorded = Number(usage.rows[0]!.count) === 0 && actualAmount > 0;
+        if (estimatedUsageRecorded) {
+          await tx.query(
+            `INSERT INTO v2_metering_events
+               (agent_id, user_id, turn_id, hold_id, quantity, source, idempotency_key)
+             VALUES ($1, $2, $3, $4, $5, 'estimated', $6)`,
+            [
+              hold.agentId,
+              hold.userId,
+              hold.turnId,
+              hold.id,
+              actualAmount,
+              `meter:estimated:v1:${hold.id}`,
+            ],
+          );
+        }
+
+        const settled = await tx.query<HoldRow>(
+          `UPDATE v2_holds
+              SET status = 'settled', actual_amount = $2, settled_at = now()
+            WHERE id = $1
+            RETURNING id, user_id, agent_id, turn_id, estimated_amount, actual_amount, status, expires_at`,
+          [holdId, actualAmount],
+        );
+        return {
+          kind: 'settled',
+          hold: toHold(settled.rows[0]!),
+          wallet: toWallet(updated.rows[0]!),
+          deductions,
+          estimatedUsageRecorded,
+          replayed: false,
+        };
+      });
+    },
+
+    async insertMeteringEvent(input: MeteringEventInput): Promise<MeteringOutcome> {
+      return withTransaction(pool, async (tx) => {
+        const persistentKey = persistedMeteringIdempotencyKey(input.idempotencyKey);
+        await lockIdempotencyKey(tx, 'v2-metering', persistentKey);
+        const existing = await findMeteringByIdempotencyKey(tx, persistentKey);
+        if (existing) {
+          return meteringMatches(existing, input)
+            ? { kind: 'recorded', id: existing.id, replayed: true }
+            : { kind: 'conflict', reason: 'idempotency_mismatch' };
+        }
+
+        if (input.holdId) {
+          const hold = await tx.query<HoldRow>(
+            `SELECT id, user_id, agent_id, turn_id, estimated_amount, actual_amount, status, expires_at
+               FROM v2_holds WHERE id = $1 FOR UPDATE`,
+            [input.holdId],
+          );
+          const bound = hold.rows[0] ? toHold(hold.rows[0]) : null;
+          if (
+            !bound ||
+            bound.userId !== input.userId ||
+            bound.agentId !== input.agentId ||
+            bound.turnId !== input.turnId
+          ) {
+            return { kind: 'conflict', reason: 'hold_scope_mismatch' };
+          }
+          if (bound.status !== 'held') {
+            return { kind: 'conflict', reason: 'hold_not_active' };
+          }
+        }
+
+        const inserted = await tx.query<{ id: string }>(
+          `INSERT INTO v2_metering_events
+             (agent_id, user_id, turn_id, hold_id, dimension, quantity, model, unit_cost, source,
+              idempotency_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING id`,
+          [
+            input.agentId,
+            input.userId,
+            input.turnId,
+            input.holdId ?? null,
+            input.dimension,
+            input.quantity,
+            input.model ?? null,
+            input.unitCost ?? null,
+            input.source,
+            input.idempotencyKey,
+          ],
+        );
+        return { kind: 'recorded', id: inserted.rows[0]!.id, replayed: false };
+      });
+    },
+
+    async adminRecharge({ userId, amount, idempotencyKey, refId }) {
+      return withTransaction(pool, async (tx): Promise<RechargeOutcome> => {
+        const persistentKey = ledgerIdempotencyKeys.recharge(idempotencyKey);
+        await lockIdempotencyKey(tx, 'v2-recharge', persistentKey);
+        const existing = await findLedgerByIdempotencyKey(tx, persistentKey);
+        if (existing) {
+          if (
+            existing.kind !== 'recharge' ||
+            existing.bucket !== 'principal' ||
+            existing.user_id !== userId ||
+            safeDatabaseInteger(existing.amount, 'ledger amount') !== amount ||
+            existing.ref_id !== (refId ?? null)
+          ) {
+            return { kind: 'conflict', reason: 'idempotency_mismatch' };
+          }
+          const wallet = await readWalletIn(tx, existing.user_id);
+          if (!wallet) throw new Error('recharge references a missing wallet');
+          return { kind: 'credited', wallet, replayed: true };
+        }
+        if (!(await userExists(tx, userId))) return { kind: 'invalid_user' };
+
+        const wallet = await lockWallet(tx, userId);
+        if (
+          !walletStateIsSafe(
+            BigInt(wallet.principalBalance) + BigInt(amount),
+            BigInt(wallet.bonusBalance),
+            BigInt(wallet.heldAmount),
+          )
+        ) {
+          return { kind: 'conflict', reason: 'balance_range_exceeded' };
+        }
+        const updated = await tx.query<WalletRow>(
+          `UPDATE v2_wallets
+                SET principal_balance = principal_balance + $2, updated_at = now()
+              WHERE user_id = $1
+              RETURNING user_id, principal_balance, bonus_balance, held_amount`,
+          [userId, amount],
+        );
+        await tx.query(
+          `INSERT INTO v2_ledger (user_id, kind, bucket, amount, ref_id, idempotency_key)
+             VALUES ($1, 'recharge', 'principal', $2, $3, $4)`,
+          [userId, amount, refId ?? null, idempotencyKey],
+        );
+        return { kind: 'credited', wallet: toWallet(updated.rows[0]!), replayed: false };
+      });
+    },
+
+    async sweepExpiredHolds({ limit }) {
+      return withTransaction(pool, async (tx) => {
+        const expired = await tx.query<HoldRow>(
+          `SELECT id, user_id, agent_id, turn_id, estimated_amount, actual_amount, status, expires_at
+             FROM v2_holds
+            WHERE status = 'held' AND expires_at <= now()
+            ORDER BY expires_at
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED`,
+          [limit],
+        );
+        for (const row of expired.rows) {
+          const hold = toHold(row);
+          await tx.query(`UPDATE v2_holds SET status = 'expired' WHERE id = $1`, [hold.id]);
+          await tx.query(
+            `UPDATE v2_wallets
+                SET held_amount = held_amount - $2, updated_at = now()
+              WHERE user_id = $1`,
+            [hold.userId, hold.estimatedAmount],
+          );
+          await tx.query(
+            `INSERT INTO v2_ledger (user_id, kind, bucket, amount, ref_id, idempotency_key)
+             VALUES ($1, 'release', NULL, $2, $3, $4)`,
+            [hold.userId, hold.estimatedAmount, hold.id, ledgerIdempotencyKeys.release(hold.id)],
+          );
+        }
+        return expired.rows.length;
+      });
+    },
+  };
+}

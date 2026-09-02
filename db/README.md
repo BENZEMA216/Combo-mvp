@@ -29,6 +29,14 @@
 
 `0012` 至 `0019` 是 live Test 已发布的 forward-only 兼容链。Test 若需回退应用，后续回退提交仍必须保留这些迁移源、账本前缀和 `0019_pending_usage_recovery.sql` expected head；不得部署不识别 live `0019` ledger 的旧镜像，也不得删除或改写已应用的表。本 79f 系页面候选携带 `0017`–`0019` 是 deployment compatibility 修复，不表示它激活了后续 Registry、receipt 或 recovery 业务 API。
 
+## V2 独立验证链
+
+`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0015_v2_billing_idempotency.sql`。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
+
+V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenges` 与 `v2_sessions`，和创作者域的 `auth_` 表互不引用。V2 计费域使用 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events`；流水和计量事件只允许追加。
+
+正式迁移完成后只配置 API、worker 与 runtime 三个角色。V2 独立链额外配置 `combo_authz` 与 `combo_billing`，并在连接数据库前强制五份密码同时提供；其中正式三角色密码必须与共享 PostgreSQL 实例中的现值一致。V2 重放含 NOLOGIN 的迁移时，会在同一 migration transaction 提交前恢复该文件涉及的角色，失败整体回滚，其他连接看不到禁用状态。
+
 `project_agent_shares` 独立冻结可公开读取的 Git Project manifest，不进入 Agent Runtime 模型。
 
 `users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`agent_projects` 只保存创作 Head 与当前 Release 两个可变指针，`agent_revisions`、`agent_tests`、`agent_test_reviews` 与 `agent_releases` 冻结 Runtime Bundle、UI 摘要、技术执行和人工质量结论；Test 还冻结输出契约与幂等请求摘要。`sessions` 用 Project/Revision/Release 三个不可变指针区分共享同一 entry Capability 的 Agent，`turns`、`messages` 与 `artifacts` 保存运行和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 entry Capability 的免费额度分开，使用记录绑定唯一 Turn；Project/Revision/Release 的归因由该 Turn 关联的不可变 Session 指针提供。V1 中复用同一 entry Capability 的多个 Project 共享免费额度；若要按 Project 独立计费，必须追加新迁移扩展账本主体。充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。
@@ -62,3 +70,5 @@ pnpm -F @cb/db test
 ```
 
 `MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明同一 production image 能从空库执行至 `0019`、对已到 `0019` 的账本再次幂等执行、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
+
+V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0015_v2_billing_idempotency.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。
