@@ -27,6 +27,9 @@ import {
   previousTrancheLock,
   productBaselineBootstrap,
   productGoalLock,
+  supersededAdmissionLock,
+  supersededContractPath,
+  supersededPlatformV2BootstrapLock,
   verifyProductBaselineSources,
 } from './vnext-rebaseline-budget.mjs';
 
@@ -61,6 +64,8 @@ const platformV2BootstrapPaths = Object.freeze([
   'apps/authz/src/__tests__/assertion.test.ts',
   'apps/authz/src/__tests__/crypto.test.ts',
   'apps/authz/src/__tests__/fakes.ts',
+  'apps/authz/src/__tests__/rate-limit.redis.test.ts',
+  'apps/authz/src/__tests__/rate-limit.test.ts',
   'apps/authz/src/__tests__/repo-sql.test.ts',
   'apps/authz/src/__tests__/resend.test.ts',
   'apps/authz/src/__tests__/service.test.ts',
@@ -71,6 +76,7 @@ const platformV2BootstrapPaths = Object.freeze([
   'apps/authz/src/env.ts',
   'apps/authz/src/index.ts',
   'apps/authz/src/login-page.ts',
+  'apps/authz/src/rate-limit.ts',
   'apps/authz/src/repo.ts',
   'apps/authz/src/resend.ts',
   'apps/authz/src/service.ts',
@@ -81,6 +87,7 @@ const platformV2BootstrapPaths = Object.freeze([
   'apps/billing/package.json',
   'apps/billing/src/__tests__/app.test.ts',
   'apps/billing/src/__tests__/fakes.ts',
+  'apps/billing/src/__tests__/repo.pg.test.ts',
   'apps/billing/src/__tests__/service.test.ts',
   'apps/billing/src/app.ts',
   'apps/billing/src/env.ts',
@@ -94,7 +101,9 @@ const platformV2BootstrapPaths = Object.freeze([
   'apps/llm-gateway/README.md',
   'apps/llm-gateway/package.json',
   'apps/llm-gateway/src/__tests__/app.test.ts',
+  'apps/llm-gateway/src/__tests__/billing.test.ts',
   'apps/llm-gateway/src/__tests__/fakes.ts',
+  'apps/llm-gateway/src/__tests__/provider.test.ts',
   'apps/llm-gateway/src/__tests__/service.test.ts',
   'apps/llm-gateway/src/app.ts',
   'apps/llm-gateway/src/billing.ts',
@@ -186,15 +195,20 @@ function approvedNextProjectSource(current = readFileSync(committedProjectPath, 
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
   assert.equal(contract.baseSha, platformV2BootstrapLock.candidateSha);
   assert.deepEqual(contract.previousTranche, previousTrancheLock);
+  assert.deepEqual(contract.supersededAdmission, supersededAdmissionLock);
   assert.deepEqual(contract.platformV2Bootstrap, platformV2BootstrapLock);
   assert.equal(platformV2BootstrapLock.repository, 'dangdang-tech/Combo');
   assert.equal(platformV2BootstrapLock.pullRequestNumber, 223);
+  assert.equal(platformV2BootstrapLock.targetBranch, 'main');
+  assert.equal(platformV2BootstrapLock.mergeShape, 'TWO_LAYER_MERGE_COMMIT');
+  assert.equal(supersededAdmissionLock.stateAtSupersession, 'PENDING');
+  assert.equal(supersededAdmissionLock.disposition, 'SUPERSEDED');
   assert.deepEqual(contract.compatibility, {
     preservePostgresMigrationHistory: true,
     preserveWorkerSqliteSchemaHistory: true,
   });
-  assert.equal(contract.scopeId, 'vnext-r1-r3-with-v2-bootstrap');
-  assert.equal(contract.trancheId, 'v2-platform-validation-bootstrap');
+  assert.equal(contract.scopeId, 'vnext-r1-r3-with-v2-bootstrap-v4');
+  assert.equal(contract.trancheId, 'v2-platform-validation-bootstrap-repair');
   assert.equal(
     createHash('sha256')
       .update(readFileSync(join(repo, previousContractPath)))
@@ -207,18 +221,37 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
       .digest('hex'),
     initialTrancheLock.contractSha256,
   );
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(join(repo, supersededContractPath)))
+      .digest('hex'),
+    supersededAdmissionLock.contractSha256,
+  );
   assert.equal(productBaselineBootstrap.paths.includes(legacyContractPath), true);
   assert.equal(maintenanceModeBootstrap.paths.includes(legacyContractPath), true);
   assert.equal(productBaselineBootstrap.paths.includes(previousContractPath), false);
   assert.equal(maintenanceModeBootstrap.paths.includes(previousContractPath), false);
+  assert.equal(productBaselineBootstrap.paths.includes(supersededContractPath), false);
+  assert.equal(maintenanceModeBootstrap.paths.includes(supersededContractPath), false);
   assert.equal(productBaselineBootstrap.paths.includes(contractPath), false);
   assert.equal(maintenanceModeBootstrap.paths.includes(contractPath), false);
   assert.equal(policyPaths.includes(legacyContractPath), true);
   assert.equal(policyPaths.includes(previousContractPath), true);
+  assert.equal(policyPaths.includes(supersededContractPath), true);
   assert.equal(policyPaths.includes(contractPath), true);
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
   assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
+  const supersededContract = JSON.parse(readFileSync(join(repo, supersededContractPath), 'utf8'));
+  for (const field of [
+    'compatibility',
+    'allowedFiles',
+    'allowedPathPrefixes',
+    'maintenanceFile',
+    'limits',
+  ]) {
+    assert.deepEqual(contract[field], supersededContract[field], field);
+  }
   assert.deepEqual(productGoalLock.approvedProjectSha256s, [
     '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
     'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
@@ -273,8 +306,8 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   );
 
   const duplicate = source.replace(
-    '"schemaVersion": 3,',
-    '"schemaVersion": 3,\n  "schemaVersion": 3,',
+    '"schemaVersion": 4,',
+    '"schemaVersion": 4,\n  "schemaVersion": 4,',
   );
   assert.throws(() => parseContract(duplicate), /canonical JSON/);
 
@@ -312,6 +345,28 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
     () => parseContract(`${JSON.stringify(rewrittenV2Bootstrap, null, 2)}\n`),
     /platformV2Bootstrap changed/,
   );
+
+  for (const rewrite of [
+    (value) => {
+      value.supersededAdmission.stateAtSupersession = 'ADMITTING';
+    },
+    (value) => {
+      value.supersededAdmission.disposition = 'ACTIVE';
+    },
+    (value) => {
+      value.supersededAdmission.supersededByCandidateSha = '0'.repeat(40);
+    },
+    (value) => {
+      value.supersededAdmission.changedLines -= 1;
+    },
+  ]) {
+    const rewrittenSupersession = structuredClone(contract);
+    rewrite(rewrittenSupersession);
+    assert.throws(
+      () => parseContract(`${JSON.stringify(rewrittenSupersession, null, 2)}\n`),
+      /supersededAdmission changed/,
+    );
+  }
 
   const forgottenMigrationHistory = structuredClone(contract);
   forgottenMigrationHistory.compatibility.preservePostgresMigrationHistory = false;
@@ -434,8 +489,8 @@ test('the one-time maintenance bootstrap is pinned to one base and four exact pa
 });
 
 test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => {
-  const entries = Array.from({ length: 90 }, (_, index) =>
-    entry(`apps/runtime/src/bootstrap-${index}.ts`, index === 0 ? 364 : 85),
+  const entries = Array.from({ length: 107 }, (_, index) =>
+    entry(`apps/runtime/src/bootstrap-${index}.ts`, index === 0 ? 563 : index === 1 ? 117 : 106),
   );
   const exactContext = {
     rawDiffSha256: platformV2BootstrapLock.rawDiffSha256,
@@ -447,8 +502,8 @@ test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => 
   assert.equal(isExactPlatformV2Bootstrap({ entries, ...exactContext }), true);
   assert.deepEqual(assessPullRequest(contract, entries, exactContext), {
     mode: 'PLATFORM_V2_BOOTSTRAP',
-    changedFiles: 90,
-    changedLines: 7929,
+    changedFiles: 107,
+    changedLines: 11810,
   });
   assert.equal(
     isExactPlatformV2Bootstrap({
@@ -457,6 +512,25 @@ test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => 
       rawDiffSha256: `0${platformV2BootstrapLock.rawDiffSha256.slice(1)}`,
     }),
     false,
+  );
+  const supersededEntries = Array.from({ length: 90 }, (_, index) =>
+    entry(`apps/runtime/src/superseded-${index}.ts`, index === 0 ? 364 : 85),
+  );
+  assert.equal(
+    isExactPlatformV2Bootstrap({
+      entries: supersededEntries,
+      ...exactContext,
+      rawDiffSha256: supersededPlatformV2BootstrapLock.rawDiffSha256,
+    }),
+    false,
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, supersededEntries, {
+        ...exactContext,
+        rawDiffSha256: supersededPlatformV2BootstrapLock.rawDiffSha256,
+      }),
+    /changed-file budget exceeded/,
   );
   assert.equal(
     isExactPlatformV2Bootstrap({
@@ -484,7 +558,7 @@ test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => 
   );
   assert.equal(
     isExactPlatformV2Bootstrap({
-      entries: [...entries.slice(0, -1), entry('apps/runtime/src/bootstrap-89.ts', 84)],
+      entries: [...entries.slice(0, -1), entry('apps/runtime/src/bootstrap-106.ts', 105)],
       ...exactContext,
     }),
     false,
@@ -553,6 +627,7 @@ test('the V2 bootstrap state and merge shape consume the bypass exactly once', (
     repository: 'dangdang-tech/Combo',
     eventName: 'pull_request',
     pullRequestNumber: '223',
+    baseRef: 'main',
   };
   assert.equal(isAuthorizedPlatformV2AdmissionContext(githubContext), true);
   assert.equal(
@@ -561,6 +636,10 @@ test('the V2 bootstrap state and merge shape consume the bypass exactly once', (
   );
   assert.equal(
     isAuthorizedPlatformV2AdmissionContext({ ...githubContext, repository: 'fork/Combo' }),
+    false,
+  );
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({ ...githubContext, baseRef: 'release' }),
     false,
   );
   assert.equal(
@@ -591,7 +670,7 @@ test('the V2 bootstrap state and merge shape consume the bypass exactly once', (
 });
 
 test('V2 paths remain closed after the exact bootstrap is consumed', () => {
-  assert.equal(platformV2BootstrapPaths.length, 66);
+  assert.equal(platformV2BootstrapPaths.length, 72);
   assert.deepEqual(platformV2BootstrapPaths, [...platformV2BootstrapPaths].sort());
   for (const path of platformV2BootstrapPaths) {
     assert.equal(contract.allowedFiles.includes(path), false, path);
@@ -615,6 +694,8 @@ test('V2 paths remain closed after the exact bootstrap is consumed', () => {
     'infra/host/combo-v2-preview.conf',
     'infra/host/release/combo-v2-billing-forward.service',
     'infra/k8s/v2/ingress.yaml',
+    'scripts/migrate-v2-host.sh',
+    'scripts/migrate-v2-host.test.mjs',
     'scripts/render-v2.test.mjs',
   ]) {
     assert.throws(
