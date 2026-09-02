@@ -25,7 +25,8 @@ bash "${SCRIPT_DIR}/assert-disposable-postgres.sh"
 
 # 1) 跑迁移
 log "执行迁移 ..."
-pnpm -C "$ROOT_DIR" -F @cb/db migrate
+EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql \
+  pnpm -C "$ROOT_DIR" -F @cb/db migrate
 
 # 2) 断言迁移文件全部记账
 log "断言 schema_migrations 记账数 = 迁移文件数 ..."
@@ -39,6 +40,7 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   auth_identities auth_otp_challenges auth_sessions auth_audit_events \
   billing_accounts billing_free_allowances usage_charges recharge_orders \
   payment_attempts payment_callback_events wallet_ledger \
+  agent_packages agent_package_releases agent_usage_receipts pending_usage_recoveries \
   agent_projects agent_revisions agent_tests agent_test_reviews agent_releases \
   project_agent_shares \
   project_history_agent_drafts project_history_agent_confirmations \
@@ -48,7 +50,7 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,project_agent_shares,project_history_agent_confirmations,project_history_agent_drafts,project_history_agent_shares,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
+expected_tables='agent_package_releases,agent_packages,agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,agent_usage_receipts,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,pending_usage_recoveries,project_agent_shares,project_history_agent_confirmations,project_history_agent_drafts,project_history_agent_shares,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables
@@ -150,7 +152,8 @@ log "0006 历史重复检查与事务回滚齐全 ✓"
 
 # 5) 幂等：再跑一次不应报错、不应重复记账
 log "二次迁移（幂等）..."
-pnpm -C "$ROOT_DIR" -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql \
+  pnpm -C "$ROOT_DIR" -F @cb/db migrate
 applied2="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 [ "$applied2" = "$expected" ] || fail "二次迁移后记账数变化 ${applied2} != ${expected}"
 

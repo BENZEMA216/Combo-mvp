@@ -17,13 +17,7 @@ import {
 } from '@cb/shared';
 import { buildApp } from '../bootstrap/app.js';
 import { loadEnv } from '../platform/config/env.js';
-import {
-  PROJECT_HISTORY_BUSINESS_HANDOFF,
-  PROJECT_HISTORY_INSTALL_PROMPT,
-  PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE,
-  PROJECT_HISTORY_RECOVERY_SUMMARIES,
-  renderProjectHistoryRecoveryPrompt,
-} from '../modules/external-mcp/handlers.js';
+import { PROJECT_HISTORY_INSTALL_PROMPT } from '../modules/external-mcp/handlers.js';
 import { registerExternalMcpRoutes } from '../modules/external-mcp/routes.js';
 
 const ORIGIN = 'https://test.43-160-242-46.sslip.io';
@@ -33,17 +27,19 @@ const CAPABILITY_ID = '00000000-0000-4000-8000-000000000004';
 const TASK_ID = '00000000-0000-4000-8000-000000000010';
 const NOW = '2026-08-06T00:00:00.000Z';
 const EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT =
-  '阅读 https://test.43-160-242-46.sslip.io/codex-plugin ，帮我安装 Combo 插件并创建一个新任务。';
+  '阅读 https://test.43-160-242-46.sslip.io/codex-plugin ，帮我安装或升级 Combo 插件；完成后只创建一个安装续接任务，不要直接开始制作 Agent。';
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA = 'combo.project-history-bootstrap-controller/1';
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_BYTES = 2_000;
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256 =
+  '33d94d776e9d4eb0cf2238358857c8e4b33427de655be6a52d33e834d460146d';
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_BYTES = 14_507;
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256 =
+  '0f57fd11fc2a45f4cd23f5718fa676e0b607b5c1a3dd10f3073acd444e2b7ca0';
+const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES = 1_074;
+const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256 =
+  '7df7bced005edd481e8eaa3169a8cac3dfa278d459942a15ef31bf595fd101fc';
 const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF =
-  'Combo 插件已经安装好了，请用 Combo 把我以前保存的 Project 里完成过的方法做成一个 Agent：先列出安全的 Project 名称让我选择来源，完整展示将分享的内容，等我确认后创建并核对分享；然后让我选择另一个 Project，并在为它创建的同一个新任务里连续验证两轮。';
-const EXPECTED_PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE =
-  'Combo 安装续接：上一步未完成的低敏摘要是“<summary>”。请只继续核对官方 Combo 0.8.6 安装、Test MCP 与当前任务的 Project-history 能力；不得把本续接任务当作 Project-history 业务已就绪，也不得再创建安装续接任务。修复并验证成功后，创建一个新的 Codex 顶层任务，并把下面这整段话作为唯一第一条消息原样发送：<exact-business-paragraph>';
-const EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES = [
-  '当前任务在 Combo 0.8.6 安装或升级前启动，尚未加载最新 Skill 和工具目录。',
-  'Combo 0.8.6 官方安装元数据尚未完成核对。',
-  'Combo Test MCP 元数据尚未通过核对。',
-  'Combo OAuth 尚未完成。',
-] as const;
+  'Combo 插件已经安装好了。这是 Project-history 专用流程，不是当前任务分享。请只使用当前任务已经显示的 Codex Host 工具和 Combo 远程工具，把我以前保存的 Project 里完成过的方法做成一个 Agent；不得使用 Terminal、子智能体或浏览器，不得读取本地文件、Skill、记忆、缓存或路径，不得使用 legacy 回退，也不得把路径或内部 ID 写进用户消息、Combo 参数或可见说明，Host 工具仅可在内部绑定时使用自身返回的标识。开始前先确认 create_agent_package_draft、render_agent_package_draft、create_agent_package_share、read_agent_package_share、prepare_agent_package_run 全部可用；任一缺失就在读取任何 Project 前只报告 PROJECT_HISTORY_AGENT_MCP=NOT_AVAILABLE 并停止。工具齐全时，先列出安全的 Project 名称让我选择来源 A，完整展示将分享的 Draft，等我确认后创建分享并立即核对；然后让我选择另一个 Project B，并在为它创建的同一个新任务里连续验证两轮。';
 const FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS = [
   '当前只在 Test 输出 Combo Plugin 0.8.6',
   '`/codex-plugin` 当前只在 Test 环境提供',
@@ -82,10 +78,16 @@ describe('Project-history fixed bootstrap request', () => {
     expect(PROJECT_HISTORY_INSTALL_PROMPT).not.toMatch(
       /create_agent_package|render_agent_package|schema|mcp login|plugin add|marketplace upgrade/iu,
     );
-    expect(Buffer.byteLength(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8')).toBe(111);
+    expect(Buffer.byteLength(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8')).toBe(174);
     expect(createHash('sha256').update(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8').digest('hex')).toBe(
-      'd93995bb094a7d58bd14b34dcc33869627a254694ad51444554441fbfe32525f',
+      '05321ad73850806a73167b366f7c2b06f053ca059b476ad22592997cdc45b98f',
     );
+    expect(Buffer.byteLength(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8')).toBe(
+      EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES,
+    );
+    expect(
+      createHash('sha256').update(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8').digest('hex'),
+    ).toBe(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
 
     const guideUrl = 'https://test.43-160-242-46.sslip.io/codex-plugin';
     const markdownMirror = PROJECT_HISTORY_INSTALL_PROMPT.replace(
@@ -104,50 +106,7 @@ describe('Project-history fixed bootstrap request', () => {
     }
   });
 
-  it('exports the exact single-paragraph business handoff for the fresh task', () => {
-    expect(PROJECT_HISTORY_BUSINESS_HANDOFF).toBe(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
-    expect(PROJECT_HISTORY_BUSINESS_HANDOFF).not.toMatch(/[\r\n]/u);
-    expect(PROJECT_HISTORY_BUSINESS_HANDOFF).not.toMatch(
-      /create_agent_package|render_agent_package|schema|mcp login|plugin add|marketplace upgrade/iu,
-    );
-    expect(Buffer.byteLength(PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8')).toBe(345);
-    expect(
-      createHash('sha256').update(PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8').digest('hex'),
-    ).toBe('86035706c60165e4e32f01a8b28cd44960f4a607197cb44dc3dae91ebeb8564b');
-  });
-
-  it('freezes the recovery template and accepts only the ordered low-sensitivity summaries', () => {
-    expect(PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE).toBe(
-      EXPECTED_PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE,
-    );
-    expect(PROJECT_HISTORY_RECOVERY_SUMMARIES).toEqual(EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES);
-    expect(Object.isFrozen(PROJECT_HISTORY_RECOVERY_SUMMARIES)).toBe(true);
-
-    for (const summary of EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES) {
-      const prompt = renderProjectHistoryRecoveryPrompt(summary);
-      expect(prompt).toBe(
-        EXPECTED_PROJECT_HISTORY_RECOVERY_PROMPT_TEMPLATE.replace('<summary>', summary).replace(
-          '<exact-business-paragraph>',
-          EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF,
-        ),
-      );
-      expect(prompt).not.toMatch(/<summary>|<exact-business-paragraph>/u);
-    }
-
-    for (const rejected of [
-      'raw error: unauthorized',
-      '/Users/example/project',
-      'threadId=abc',
-      'https://untrusted.example',
-      'token=secret',
-    ]) {
-      expect(() => renderProjectHistoryRecoveryPrompt(rejected)).toThrow(
-        'Project-history recovery summary is not allowed',
-      );
-    }
-  });
-
-  it('documents the 0.8.6 guide without freezing a stale deployment or UAT state', () => {
+  it('documents the 0.8.7 code candidate without leaking its static status into runtime truth', () => {
     const documents = [
       readFileSync(new URL('../../../../README.md', import.meta.url), 'utf8'),
       readFileSync(new URL('../modules/external-mcp/README.md', import.meta.url), 'utf8'),
@@ -158,8 +117,43 @@ describe('Project-history fixed bootstrap request', () => {
       expect(document).toContain('`sourceSha`');
       expect(document).toContain('`releaseId`');
       expect(document).toContain('`UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED`');
-      expect(document).not.toContain('`NOT_DEPLOYED`');
-      expect(document).not.toContain('`NOT_UAT`');
+      expect(document).toContain('`CODE_CONTRACT`');
+      expect(document).toContain('`NOT_DEPLOYED`');
+      expect(document).toContain('`NOT_UAT`');
+      expect(document).toContain(PROJECT_HISTORY_INSTALL_PROMPT);
+      expect(document).toContain('Plugin bundled typed controller');
+      expect(document).toContain(`\`schemaVersion=${EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA}\``);
+      expect(document).toContain('`childCreateBudget=1`');
+      expect(document).toContain(
+        '`plugin list --marketplace dangdang-tech-combo --available --json`',
+      );
+      expect(document).toContain('`source.path`');
+      expect(document).toContain('`scripts/project-history-bootstrap-controller.mjs`');
+      expect(document).toContain(
+        '`/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node`',
+      );
+      expect(document).toContain('`["./project-history-bootstrap-controller.mjs","setup"]`');
+      expect(document).toContain('零 stdin');
+      expect(document).toContain('8,192 bytes');
+      expect(document).toContain('5,000 ms');
+      expect(document).toContain('`SIGKILL`');
+      expect(document).toContain('empty environment');
+      expect(document).toContain(
+        '`/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u NODE_V8_COVERAGE -u NODE_COMPILE_CACHE -u NODE_REDIRECT_WARNINGS`',
+      );
+      expect(document).toContain('2,000 bytes');
+      expect(document).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256);
+      expect(document).toContain('14,507 bytes');
+      expect(document).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256);
+      expect(document).toContain('1,074 bytes');
+      expect(document).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
+      expect(document).toContain('禁止扫描 Plugin cache');
+      expect(document).toContain('`(mode & 0o7777) === 0o755`');
+      expect(document).toContain('setuid/setgid/sticky');
+      expect(document).toContain('`PROJECT_HISTORY_BOOTSTRAP_CONTROLLER_EXEC_FAILED`');
+      expect(document).toContain('`INITIAL_CONTINUATION_ENFORCEMENT=CODE_INTEGRATED`');
+      expect(document).toContain('`RECOVERY_BUSINESS_GATE=HOST_TRACE_REQUIRED`');
+      expect(document).not.toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
       expect(document).not.toContain('不是当前 Test 运行输出的证据');
       for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
         expect(document).not.toContain(claim);
@@ -312,13 +306,14 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('Combo Plugin 0.8.6 Test');
+    expect(response.body).toContain('Combo Plugin 0.8.7 Test');
     expect(response.body).toContain('Project-history Agent');
     expect(response.body).toContain('<code>TEST_RUNTIME</code>');
     expect(response.body).toContain('<code>environment=test</code>');
     expect(response.body).toContain(`<code>sourceSha=${'a'.repeat(40)}</code>`);
     expect(response.body).toContain(`<code>releaseId=release-${'a'.repeat(40)}</code>`);
     expect(response.body).toContain('<code>UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED</code>');
+    expect(response.body).not.toContain('CODE_CONTRACT');
     expect(response.body).toContain('<a href="/version.json">/version.json</a>');
     expect(response.body).toContain('与本页运行身份逐字一致');
     expect(response.body).not.toContain('NOT_DEPLOYED');
@@ -336,79 +331,127 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain('<strong>旧版：</strong>');
     expect(response.body).toContain('<strong>当前版：</strong>');
     expect(response.body).toContain('official stable 有效 semver');
-    expect(response.body).toContain('五个 Project-history 工具齐全');
-    expect(response.body).toContain('readiness 实际调用成功且 OAuth ready');
-    expect(response.body).toContain('仅重试该失败的 readiness 一次');
-    expect(response.body).toContain('business create 调用数为 0');
-    expect(response.body).toContain('metadata 已是当前版不等于 OAuth ready');
-    expect(response.body).toContain('在创建 recovery 任务前恰好执行一次 Codex-managed OAuth/login');
-    expect(response.body).toContain('登录成功时用第一个 stale-catalog allowlist 摘要');
-    expect(response.body).toContain('登录失败或用户取消时改用第四个 OAuth allowlist 摘要');
-    expect(response.body).toContain('初始 bootstrap 的 recovery create 总预算始终为 1');
-    expect(response.body).toContain('上述两分支互斥且 business create 调用数为 0');
-    expect(response.body).toContain('<h2>BLOCK：零子任务</h2>');
-    expect(response.body).toContain('同名错源、orphaned Plugin、无效或不兼容版本');
-    expect(response.body).toContain(
-      'remove、overwrite、盲目 upgrade、替换 source、其他 mutation、business create 与 recovery create 的调用数都为 0',
-    );
-    expect(response.body).toContain(
-      'Test MCP 的 name、enabled/disabled 状态、transport.type 或 URL 只要存在明确 mismatch',
-    );
-    expect(response.body).toContain(
-      'current task 已加载五个 Project-history 工具时，任何非 authorization 的 readiness 或内部失败',
-    );
-    expect(response.body).toContain('不得伪装成 OAuth recovery');
-    expect(response.body).toContain('BLOCK 不得映射到四个 recovery 摘要');
-    expect(response.body).toContain('<h2>RECOVERY：仅限四个 typed 分类</h2>');
-    expect(response.body).toContain(
-      '<strong>第二个摘要：</strong>仅限 initial official Marketplace/Plugin absent 或有效旧版',
-    );
-    expect(response.body).toContain(
-      '<strong>第一个摘要：</strong>仅限 final official metadata 与 Test MCP gate 精确通过',
-    );
-    expect(response.body).toContain(
-      '<strong>第三个摘要：</strong>仅限 official mutation 已完成后 Test MCP entry 暂时 missing 或 unavailable',
-    );
-    expect(response.body).toContain('明确 mismatch 或 disabled 属于 BLOCK');
-    expect(response.body).toContain(
-      '<strong>第四个摘要：</strong>仅限 OAuth incomplete、login failure 或用户取消',
-    );
-    expect(response.body).toContain('其他状态不得创建 recovery');
-    expect(response.body).toContain('<code>metadataMutationAttempted=true</code>');
-    expect(response.body).toContain('mutation history 优先于 frozen task catalog 的表面快照');
-    expect(response.body).toContain('无论五工具表面为 true 或 false');
-    expect(response.body).toContain('都必须恰好 login 一次');
-    expect(response.body).toContain('登录后只创建 typed recovery，business create=0');
-    expect(response.body).not.toContain(
-      '同名错源、Plugin/Marketplace orphan 或非法版本用第二个 official-install-metadata 摘要创建 recovery',
-    );
-    expect(response.body).toContain(
-      '不得把 metadata current 冒充为 authorization 或 business ready',
-    );
+    expect(response.body).toContain('exact 0.8.7');
     expect(response.body).toContain('安装或升级不会让已经运行的任务热加载');
-    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
-    expect(response.body).toContain('target:{type:&quot;projectless&quot;}');
-    expect(response.body).toContain('navigate_to_codex_page(threadId)');
-    expect(response.body).toContain('projectless setup 任务不是');
-    expect(response.body).toContain('Combo 安装续接：上一步未完成的低敏摘要是“&lt;summary&gt;”');
-    expect(response.body).toContain('&lt;exact-business-paragraph&gt;');
-    for (const summary of EXPECTED_PROJECT_HISTORY_RECOVERY_SUMMARIES) {
-      expect(response.body).toContain(`<li><code>${summary}</code></li>`);
-    }
-    expect(response.body).not.toContain('exact-low-sensitivity-step-summary');
-    expect(response.body).toContain('recovery 不得声称已安装');
+    expect(response.body).toContain('Plugin bundled typed controller');
     expect(response.body).toContain(
-      'create_thread({prompt:recoveryPrompt,target:{type:&quot;projectless&quot;}})',
+      `<code>schemaVersion=${EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA}</code>`,
     );
-    expect(response.body).toContain('business 与 recovery 两类 create_thread');
+    expect(response.body).toContain('<code>action=create-recovery</code>');
+    expect(response.body).toContain('<code>childCreateBudget=1</code>');
+    expect(response.body).toContain('<code>soleFirstPrompt</code>');
+    expect(response.body).toContain('controller 的 typed result 是唯一路由权威');
+    expect(response.body).toContain(
+      'plugin list --marketplace dangdang-tech-combo --available --json',
+    );
+    expect(response.body).toContain('pluginId=combo@dangdang-tech-combo');
+    expect(response.body).toContain('marketplaceSource.sourceType=git');
+    expect(response.body).toContain('source.path');
+    expect(response.body).toContain('source.source=local');
+    expect(response.body).toContain('realpath(source.path)');
+    expect(response.body).toContain('scripts/project-history-bootstrap-controller.mjs');
+    expect(response.body).toContain('regular file 且 mode 精确为 0755');
+    expect(response.body).toContain('(mode &amp; 0o7777) === 0o755');
+    expect(response.body).toContain('setuid/setgid/sticky 任一存在都拒绝');
+    expect(response.body).toContain(
+      '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node',
+    );
+    expect(response.body).toContain(
+      '[&quot;./project-history-bootstrap-controller.mjs&quot;,&quot;setup&quot;]',
+    );
+    expect(response.body).toContain('零 stdin');
+    expect(response.body).toContain('调用次数恰好为 1');
+    expect(response.body).toContain('/usr/bin/env');
+    for (const variable of [
+      'NODE_OPTIONS',
+      'NODE_PATH',
+      'NODE_V8_COVERAGE',
+      'NODE_COMPILE_CACHE',
+      'NODE_REDIRECT_WARNINGS',
+    ]) {
+      expect(response.body).toContain(`-u ${variable}`);
+    }
+    expect(response.body).toContain('5,000 ms');
+    expect(response.body).toContain('SIGKILL');
+    expect(response.body).toContain('empty environment');
+    expect(response.body).toContain('恰好一个 LF 结尾');
+    expect(response.body).toContain('8,192 bytes');
+    expect(response.body).toContain(
+      `<code>soleFirstPrompt</code> 必须为 ${EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_BYTES.toLocaleString('en-US')} UTF-8 bytes`,
+    );
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256);
+    expect(response.body).toContain(
+      `${EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_BYTES.toLocaleString('en-US')} UTF-8 bytes`,
+    );
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256);
+    expect(response.body).toContain(
+      `${EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES.toLocaleString('en-US')} UTF-8 bytes`,
+    );
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
+    expect(response.body).toContain('禁止扫描 Plugin cache');
+    expect(response.body).toContain('任一 locator、mode、exec 或 envelope 不符');
+    expect(response.body).toContain('PROJECT_HISTORY_BOOTSTRAP_CONTROLLER_EXEC_FAILED');
+    expect(response.body).toContain(
+      '<code>INITIAL_CONTINUATION_ENFORCEMENT=CODE_INTEGRATED</code>',
+    );
+    expect(response.body).toContain('<code>RECOVERY_BUSINESS_GATE=HOST_TRACE_REQUIRED</code>');
+    expect(response.body).toContain('controller 只在 initial setup 到安装续接这一跳提供代码级强制');
+    expect(response.body).toContain('自包含 prompt 与真实五 V3/OAuth Host trace');
+    expect(response.body).toContain('新安装、旧版和已是当前版三类初始状态');
+    expect(response.body).toContain('都不得直接创建 Project-history business');
+    expect(response.body).toContain(
+      'create_thread({prompt:controllerResult.soleFirstPrompt,target:{type:&quot;projectless&quot;}})',
+    );
+    expect(
+      response.body.match(/create_thread\(\{prompt:controllerResult\.soleFirstPrompt/gu),
+    ).toHaveLength(1);
+    expect(response.body).not.toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
+    expect(response.body).not.toContain('PROJECT_HISTORY_BUSINESS_HANDOFF');
+    expect(response.body).not.toContain('&lt;exact-business-paragraph&gt;');
+    expect(response.body).not.toContain('直接进入 business create');
+    expect(response.body).toContain('安装续接任务和其后业务任务');
+    for (const boundary of [
+      'Terminal',
+      '子智能体',
+      '浏览器',
+      '本地文件',
+      'Skill',
+      '记忆',
+      '缓存',
+      '路径',
+      'legacy 回退',
+    ]) {
+      expect(response.body).toContain(boundary);
+    }
+    expect(response.body).toContain('路径或内部 ID 不得进入用户消息、Combo 参数或可见说明');
+    expect(response.body).toContain('Host 工具内部绑定和结果处理仍可使用其自身返回的标识');
+    for (const toolName of [
+      'create_agent_package_draft',
+      'render_agent_package_draft',
+      'create_agent_package_share',
+      'read_agent_package_share',
+      'prepare_agent_package_run',
+    ]) {
+      expect(response.body).toContain(`<code>${toolName}</code>`);
+    }
+    expect(response.body).toContain('任一缺失就在读取任何 Project 前停止');
+    expect(response.body).toContain('<code>PROJECT_HISTORY_AGENT_MCP=NOT_AVAILABLE</code>');
+    expect(response.body).toContain('不得创建 business，也不得创建第二个安装续接任务');
+    expect(response.body).toContain('recovery-only');
+    expect(response.body).toContain('唯一一次 recovery create_thread');
     expect(response.body).toContain('只返回一个非空 clientThreadId 时分类为 QUEUED');
     expect(response.body).toContain(
       '不得把 clientThreadId 传给 wait_threads、read_thread 或 navigate_to_codex_page',
     );
     expect(response.body).toContain('不得重复调用 create_thread');
     expect(response.body).toContain('只有同一次 create_thread 同时返回 ready threadId 与 hostId');
+    expect(response.body).toContain(
+      '同时混入 clientThreadId、threadId 与 hostId 的 mixed 返回必须分类为 FAILED',
+    );
+    expect(response.body).toContain('mixed 返回的 wait、navigate 与 recreate 调用数都为 0');
     expect(response.body).toContain('wait_threads({targets:[{threadId,hostId}],timeoutMs:0})');
-    expect(response.body).toContain('wait 成功后才最多调用一次');
+    expect(response.body).toContain('create 返回 READY 时不得预发 navigate budget');
+    expect(response.body).toContain('只有 wait snapshot 成功后才允许最多一次 navigate');
     expect(response.body).toContain('wait 失败时 navigate 调用数为 0');
     expect(response.body).toContain('::created-thread{clientThreadId=&quot;...&quot;}');
     expect(response.body).toContain('::created-thread{threadId=&quot;...&quot;}');
@@ -428,10 +471,9 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain('setup 入口最多创建一个 recovery 任务');
     expect(response.body).toContain('recovery 入口创建 recovery 任务的预算为 0');
     expect(response.body).toContain('任何失败都不得继续链式创建');
-    expect(response.body).toContain('readiness 通过后最多创建一个固定 business 任务');
-    expect(response.body).toContain('仅供 Codex 自动处理失败时使用的命令 fallback');
+    expect(response.body).toContain('仅供 initial setup 自动安装时使用的命令 fallback');
     expect(response.body.indexOf(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT)).toBeLessThan(
-      response.body.indexOf('仅供 Codex 自动处理失败时使用的命令 fallback'),
+      response.body.indexOf('仅供 initial setup 自动安装时使用的命令 fallback'),
     );
     expect(response.body).toContain('Legacy current-task Codex Agent 流程');
     expect(response.body).not.toContain('0.8.4');
@@ -453,7 +495,7 @@ describe('external MCP root route integration', () => {
     expect(marketplaceAddIndex).toBeGreaterThan(-1);
     expect(pluginAddIndex).toBeGreaterThan(marketplaceAddIndex);
     expect(finalCheckIndex).toBeGreaterThan(pluginAddIndex);
-    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.8.6');
+    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.8.7');
     expect(response.body).toContain('marketplace upgrade 最多执行一次');
     expect(response.body).toContain('已有 official Marketplace 但 Plugin 缺失或版本过旧');
     expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
@@ -508,7 +550,7 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain(
       '只有初始检查既有四工具、新五工具与全部 metadata 已同时满足时才留在当前任务',
     );
-    expect(response.body).toContain('有效 semver &gt;=0.8.6');
+    expect(response.body).toContain('version&gt;=0.8.7');
     expect(response.body).toContain('Legacy 兼容不变');
     expect(response.body).toContain('后三项即使为空也显式写 []');
     expect(response.body).toContain('navigate_to_codex_page(threadId)');
