@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   availableBalance,
   ledgerIdempotencyKeys,
+  persistedMeteringIdempotencyKey,
   splitDeduction,
   type WalletView,
 } from '../service.js';
@@ -49,15 +50,29 @@ describe('pure accounting helpers', () => {
       bonus: 0,
       principal: 100,
     });
+    expect(splitDeduction({ ...base, principalBalance: 1000, bonusBalance: -50 }, 100)).toEqual({
+      bonus: 0,
+      principal: 100,
+    });
     expect(() => splitDeduction({ ...base, principalBalance: 0, bonusBalance: 0 }, -1)).toThrow(
       TypeError,
     );
   });
 
   it('ledger idempotency keys are deterministic per action', () => {
-    expect(ledgerIdempotencyKeys.hold('agent-a', 't1')).toBe('hold:agent-a:t1');
+    expect(ledgerIdempotencyKeys.hold('agent-a', 't1')).toMatch(/^hold:v1:[0-9a-f]{64}$/);
+    expect(ledgerIdempotencyKeys.hold('agent-a', 't1')).toBe(
+      ledgerIdempotencyKeys.hold('agent-a', 't1'),
+    );
+    expect(ledgerIdempotencyKeys.hold('agent-a', 't2')).not.toBe(
+      ledgerIdempotencyKeys.hold('agent-a', 't1'),
+    );
     expect(ledgerIdempotencyKeys.settle('h1', 'bonus')).toBe('settle:h1:bonus');
     expect(ledgerIdempotencyKeys.release('h1')).toBe('release:h1');
+    expect(ledgerIdempotencyKeys.recharge('settle:h1:bonus')).toMatch(/^recharge:v1:[0-9a-f]{64}$/);
+    expect(persistedMeteringIdempotencyKey('meter:estimated:v1:h1')).toMatch(
+      /^meter-reported:v1:[0-9a-f]{64}$/,
+    );
   });
 });
 
@@ -88,6 +103,38 @@ describe('hold / settle accounting discipline', () => {
     expect(second.replayed).toBe(true);
     expect(state.wallets.get(USER)!.heldAmount).toBe(300);
     expect(state.ledger).toHaveLength(1);
+  });
+
+  it('rejects hold key reuse with a different user, amount, or terminal state', async () => {
+    const otherUser = randomUUID();
+    const { store, state } = makeStore();
+    seedWallet(state, USER, { principalBalance: 1000, bonusBalance: 0, heldAmount: 0 });
+    seedWallet(state, otherUser, { principalBalance: 1000, bonusBalance: 0, heldAmount: 0 });
+    const input = {
+      userId: USER,
+      agentId: AGENT,
+      turnId: 'turn-conflict',
+      estimatedAmount: 100,
+      overdraftHardLimitCents: LIMIT,
+    };
+    const created = await store.createHold(input);
+    if (created.kind !== 'held') throw new Error('hold failed');
+
+    await expect(store.createHold({ ...input, userId: otherUser })).resolves.toEqual({
+      kind: 'conflict',
+      reason: 'idempotency_mismatch',
+    });
+    await expect(store.createHold({ ...input, estimatedAmount: 101 })).resolves.toEqual({
+      kind: 'conflict',
+      reason: 'idempotency_mismatch',
+    });
+    await store.settleHold({ holdId: created.hold.id, actualAmount: 80 });
+    await expect(store.createHold(input)).resolves.toEqual({
+      kind: 'conflict',
+      reason: 'terminal_replay',
+    });
+    expect(state.wallets.get(otherUser)!.heldAmount).toBe(0);
+    expect(state.ledger.filter((entry) => entry.kind === 'hold')).toHaveLength(1);
   });
 
   it('rejects with 402 semantics when available balance is short', async () => {
@@ -165,8 +212,13 @@ describe('hold / settle accounting discipline', () => {
     if (replay.kind !== 'settled') return;
     expect(replay.replayed).toBe(true);
     expect(replay.deductions).toEqual({ bonus: 200, principal: 100 });
+    expect(replay.estimatedUsageRecorded).toBe(true);
     expect(state.wallets.get(USER)).toEqual(wallet);
     expect(state.ledger.filter((entry) => entry.kind === 'consume')).toHaveLength(2);
+    await expect(store.settleHold({ holdId: held.hold.id, actualAmount: 301 })).resolves.toEqual({
+      kind: 'conflict',
+      reason: 'idempotency_mismatch',
+    });
   });
 
   it('does not record an estimated usage row when real usage exists for the turn', async () => {
@@ -189,11 +241,62 @@ describe('hold / settle accounting discipline', () => {
       dimension: 'llm_token_out',
       quantity: 42,
       source: 'gateway',
+      idempotencyKey: 'meter-test-turn-6-output',
     });
     const settled = await store.settleHold({ holdId: held.hold.id, actualAmount: 100 });
     if (settled.kind !== 'settled') throw new Error('settle failed');
     expect(settled.estimatedUsageRecorded).toBe(false);
     expect(state.metering.filter((event) => event.source === 'estimated')).toHaveLength(0);
+  });
+
+  it('binds metering idempotency to the exact active hold scope', async () => {
+    const { store, state } = makeStore();
+    seedWallet(state, USER, { principalBalance: 1000, bonusBalance: 0, heldAmount: 0 });
+    const held = await store.createHold({
+      userId: USER,
+      agentId: AGENT,
+      turnId: 'turn-meter',
+      estimatedAmount: 100,
+      overdraftHardLimitCents: LIMIT,
+    });
+    if (held.kind !== 'held') throw new Error('hold failed');
+    const event = {
+      agentId: AGENT,
+      userId: USER,
+      turnId: 'turn-meter',
+      holdId: held.hold.id,
+      dimension: 'llm_token_out' as const,
+      quantity: 42,
+      model: 'model-a',
+      unitCost: 2,
+      source: 'gateway' as const,
+      idempotencyKey: 'meter-turn-meter-output',
+    };
+
+    const first = await store.insertMeteringEvent(event);
+    expect(first).toMatchObject({ kind: 'recorded', replayed: false });
+    await expect(store.insertMeteringEvent(event)).resolves.toMatchObject({
+      kind: 'recorded',
+      replayed: true,
+      id: first.kind === 'recorded' ? first.id : '',
+    });
+    await expect(store.insertMeteringEvent({ ...event, quantity: 43 })).resolves.toEqual({
+      kind: 'conflict',
+      reason: 'idempotency_mismatch',
+    });
+    await expect(
+      store.insertMeteringEvent({
+        ...event,
+        userId: randomUUID(),
+        idempotencyKey: 'meter-wrong-scope',
+      }),
+    ).resolves.toEqual({ kind: 'conflict', reason: 'hold_scope_mismatch' });
+
+    await store.settleHold({ holdId: held.hold.id, actualAmount: 10 });
+    await expect(
+      store.insertMeteringEvent({ ...event, idempotencyKey: 'meter-after-settle' }),
+    ).resolves.toEqual({ kind: 'conflict', reason: 'hold_not_active' });
+    expect(state.metering.filter((row) => row.source === 'gateway')).toHaveLength(1);
   });
 
   it('rejects settling a released or expired hold', async () => {
@@ -265,6 +368,7 @@ describe('admin recharge', () => {
       idempotencyKey: 'admin-recharge-1',
       refId: 'ops-ticket-1',
     });
+    if (first.kind !== 'credited') throw new Error('recharge failed');
     expect(first.replayed).toBe(false);
     expect(first.wallet.principalBalance).toBe(1000);
 
@@ -272,7 +376,9 @@ describe('admin recharge', () => {
       userId: USER,
       amount: 1000,
       idempotencyKey: 'admin-recharge-1',
+      refId: 'ops-ticket-1',
     });
+    if (replay.kind !== 'credited') throw new Error('recharge replay failed');
     expect(replay.replayed).toBe(true);
     expect(replay.wallet.principalBalance).toBe(1000);
     expect(state.ledger.filter((entry) => entry.kind === 'recharge')).toHaveLength(1);
@@ -282,5 +388,52 @@ describe('admin recharge', () => {
       amount: 1000,
       refId: 'ops-ticket-1',
     });
+  });
+
+  it('rejects recharge key reuse with a different user, amount, or reference', async () => {
+    const otherUser = randomUUID();
+    const { store, state } = makeStore();
+    const original = {
+      userId: USER,
+      amount: 1000,
+      idempotencyKey: 'admin-recharge-conflict',
+      refId: 'ops-ticket-1',
+    };
+    const first = await store.adminRecharge(original);
+    expect(first.kind).toBe('credited');
+
+    for (const changed of [
+      { ...original, userId: otherUser },
+      { ...original, amount: 1001 },
+      { ...original, refId: 'ops-ticket-2' },
+      { userId: USER, amount: 1000, idempotencyKey: original.idempotencyKey },
+    ]) {
+      await expect(store.adminRecharge(changed)).resolves.toEqual({
+        kind: 'conflict',
+        reason: 'idempotency_mismatch',
+      });
+    }
+    expect(state.wallets.get(USER)!.principalBalance).toBe(1000);
+    expect(state.wallets.has(otherUser)).toBe(false);
+    expect(state.ledger.filter((entry) => entry.kind === 'recharge')).toHaveLength(1);
+  });
+
+  it('rejects a recharge that would make a wallet unsafe to represent', async () => {
+    const { store, state } = makeStore();
+    seedWallet(state, USER, {
+      principalBalance: Number.MAX_SAFE_INTEGER,
+      bonusBalance: 0,
+      heldAmount: 0,
+    });
+
+    await expect(
+      store.adminRecharge({
+        userId: USER,
+        amount: 1,
+        idempotencyKey: 'admin-recharge-overflow',
+      }),
+    ).resolves.toEqual({ kind: 'conflict', reason: 'balance_range_exceeded' });
+    expect(state.wallets.get(USER)!.principalBalance).toBe(Number.MAX_SAFE_INTEGER);
+    expect(state.ledger).toHaveLength(0);
   });
 });

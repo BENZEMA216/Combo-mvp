@@ -178,7 +178,11 @@ describe('billing HTTP flow', () => {
       payload: { hold_id: heldBody.data.hold_id, actual_amount: 250 },
     });
     expect(settledReplay.json()).toMatchObject({
-      data: { replayed: true, deductions: { bonus: 0, principal: 250 } },
+      data: {
+        replayed: true,
+        deductions: { bonus: 0, principal: 250 },
+        estimated_usage_recorded: true,
+      },
     });
 
     const wallet = await instance.inject({
@@ -189,6 +193,55 @@ describe('billing HTTP flow', () => {
     expect(wallet.json()).toMatchObject({
       data: { principalBalance: 9750, heldAmount: 0, availableBalance: 9750 },
     });
+  });
+
+  it('returns 409 when an idempotency key changes payload or reopens a terminal turn', async () => {
+    const otherUser = randomUUID();
+    const { app: instance, state } = await makeApp();
+    await recharge(instance, 1000, 'seed-conflict');
+    const created = await hold(instance, 'turn-conflict', 100);
+    const holdId = (created.json() as { data: { hold_id: string } }).data.hold_id;
+
+    const changedAmount = await hold(instance, 'turn-conflict', 101);
+    expect(changedAmount.statusCode).toBe(409);
+    expect(changedAmount.json()).toMatchObject({ data: { reason: 'idempotency_mismatch' } });
+    const changedUser = await instance.inject({
+      method: 'POST',
+      url: '/billing/holds',
+      headers: internalAuth,
+      payload: {
+        user_id: otherUser,
+        agent_id: AGENT,
+        turn_id: 'turn-conflict',
+        estimated_amount: 100,
+      },
+    });
+    expect(changedUser.statusCode).toBe(409);
+
+    expect(
+      (
+        await instance.inject({
+          method: 'POST',
+          url: '/billing/settlements',
+          headers: internalAuth,
+          payload: { hold_id: holdId, actual_amount: 80 },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const changedSettle = await instance.inject({
+      method: 'POST',
+      url: '/billing/settlements',
+      headers: internalAuth,
+      payload: { hold_id: holdId, actual_amount: 81 },
+    });
+    expect(changedSettle.statusCode).toBe(409);
+    const terminalReplay = await hold(instance, 'turn-conflict', 100);
+    expect(terminalReplay.statusCode).toBe(409);
+    expect(terminalReplay.json()).toMatchObject({ data: { reason: 'terminal_replay' } });
+
+    const rechargeConflict = await recharge(instance, 1001, 'seed-conflict');
+    expect(rechargeConflict.statusCode).toBe(409);
+    expect(state.wallets.get(USER)!.principalBalance).toBe(920);
   });
 
   it('answers 402 with the current wallet when balance is insufficient', async () => {
@@ -253,9 +306,50 @@ describe('billing HTTP flow', () => {
         model: 'deepseek-chat',
         unit_cost: 1,
         source: 'gateway',
+        idempotency_key: 'meter-turn-z-output',
       },
     });
     expect(event.statusCode).toBe(201);
+    const eventId = (event.json() as { data: { id: string } }).data.id;
+
+    const replay = await instance.inject({
+      method: 'POST',
+      url: '/metering/events',
+      headers: internalAuth,
+      payload: {
+        agent_id: AGENT,
+        user_id: USER,
+        turn_id: 'turn-z',
+        hold_id: holdId,
+        dimension: 'llm_token_out',
+        quantity: 128,
+        model: 'deepseek-chat',
+        unit_cost: 1,
+        source: 'gateway',
+        idempotency_key: 'meter-turn-z-output',
+      },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ data: { id: eventId, replayed: true } });
+
+    const mismatch = await instance.inject({
+      method: 'POST',
+      url: '/metering/events',
+      headers: internalAuth,
+      payload: {
+        agent_id: AGENT,
+        user_id: USER,
+        turn_id: 'turn-z',
+        hold_id: holdId,
+        dimension: 'llm_token_out',
+        quantity: 129,
+        model: 'deepseek-chat',
+        unit_cost: 1,
+        source: 'gateway',
+        idempotency_key: 'meter-turn-z-output',
+      },
+    });
+    expect(mismatch.statusCode).toBe(409);
 
     const settled = await instance.inject({
       method: 'POST',
@@ -265,6 +359,7 @@ describe('billing HTTP flow', () => {
     });
     expect(settled.json()).toMatchObject({ data: { estimated_usage_recorded: false } });
     expect(state.metering.filter((row) => row.source === 'estimated')).toHaveLength(0);
+    expect(state.metering.filter((row) => row.source === 'gateway')).toHaveLength(1);
   });
 
   it('validates request shapes with 400', async () => {
@@ -285,6 +380,22 @@ describe('billing HTTP flow', () => {
     });
     expect(badHold.statusCode).toBe(400);
 
+    const controlCharacterTurn = await instance.inject({
+      method: 'POST',
+      url: '/billing/holds',
+      headers: internalAuth,
+      payload: { user_id: USER, agent_id: AGENT, turn_id: 'turn\n2', estimated_amount: 1 },
+    });
+    expect(controlCharacterTurn.statusCode).toBe(400);
+
+    const loneSurrogateTurn = await instance.inject({
+      method: 'POST',
+      url: '/billing/holds',
+      headers: internalAuth,
+      payload: { user_id: USER, agent_id: AGENT, turn_id: 'turn\ud800', estimated_amount: 1 },
+    });
+    expect(loneSurrogateTurn.statusCode).toBe(400);
+
     const negativeAmount = await instance.inject({
       method: 'POST',
       url: '/billing/holds',
@@ -292,6 +403,65 @@ describe('billing HTTP flow', () => {
       payload: { user_id: USER, agent_id: AGENT, turn_id: 't', estimated_amount: -5 },
     });
     expect(negativeAmount.statusCode).toBe(400);
+
+    const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+    const unsafeRequests = [
+      instance.inject({
+        method: 'POST',
+        url: '/billing/holds',
+        headers: internalAuth,
+        payload: {
+          user_id: USER,
+          agent_id: AGENT,
+          turn_id: 'unsafe-hold',
+          estimated_amount: unsafeInteger,
+        },
+      }),
+      instance.inject({
+        method: 'POST',
+        url: '/billing/settlements',
+        headers: internalAuth,
+        payload: { hold_id: randomUUID(), actual_amount: unsafeInteger },
+      }),
+      instance.inject({
+        method: 'POST',
+        url: '/metering/events',
+        headers: internalAuth,
+        payload: {
+          agent_id: AGENT,
+          user_id: USER,
+          turn_id: 'unsafe-meter-quantity',
+          dimension: 'llm_token_in',
+          quantity: unsafeInteger,
+          source: 'gateway',
+          idempotency_key: 'unsafe-meter-quantity',
+        },
+      }),
+      instance.inject({
+        method: 'POST',
+        url: '/metering/events',
+        headers: internalAuth,
+        payload: {
+          agent_id: AGENT,
+          user_id: USER,
+          turn_id: 'unsafe-meter-cost',
+          dimension: 'llm_token_in',
+          quantity: 1,
+          unit_cost: unsafeInteger,
+          source: 'gateway',
+          idempotency_key: 'unsafe-meter-cost',
+        },
+      }),
+      instance.inject({
+        method: 'POST',
+        url: '/billing/admin/recharges',
+        headers: adminAuth,
+        payload: { user_id: USER, amount: unsafeInteger, idempotency_key: 'unsafe-recharge' },
+      }),
+    ];
+    for (const response of await Promise.all(unsafeRequests)) {
+      expect(response.statusCode).toBe(400);
+    }
 
     const badDimension = await instance.inject({
       method: 'POST',
