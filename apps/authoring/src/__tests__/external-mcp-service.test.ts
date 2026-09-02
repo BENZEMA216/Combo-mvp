@@ -97,6 +97,9 @@ describe('external MCP OAuth client and authorization validation', () => {
       expect.stringContaining('cleanup_expired_oauth_artifacts($1)'),
       [100],
     );
+    expect(String(query.mock.calls[0]?.[0])).toContain(
+      'cleanup_retired_project_history_confirmations($1)',
+    );
   });
 
   it('matches loopback redirects while ignoring only the callback port', () => {

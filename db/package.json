@@ -7,6 +7,8 @@
   "scripts": {
     "migrate": "node --experimental-strip-types scripts/migrate.ts",
     "migrate:status": "node --experimental-strip-types scripts/migrate.ts --status",
+    "migrate:v2": "node --experimental-strip-types scripts/migrate-v2.ts",
+    "migrate:v2:status": "node --experimental-strip-types scripts/migrate-v2.ts --status",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"

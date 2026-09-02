@@ -173,4 +173,47 @@ describe('external MCP one-time grants and token family rotation', () => {
     expect(firstFamilyLock).toBeGreaterThan(-1);
     expect(firstFamilyLock).toBeLessThan(firstRowLock);
   });
+
+  it('rejects an explicit refresh-scope expansion before consuming the legacy token', async () => {
+    let writes = 0;
+    const pool = transactionalPool(async (sql) => {
+      if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 };
+      if (sql.includes('FROM oauth_refresh_tokens') && !sql.includes('FOR UPDATE')) {
+        return { rows: [{ family_id: FAMILY_ID }], rowCount: 1 };
+      }
+      if (sql.includes('FROM oauth_refresh_tokens') && sql.includes('FOR UPDATE')) {
+        return {
+          rows: [
+            {
+              client_id: CLIENT_ID,
+              owner_user_id: OWNER_ID,
+              family_id: FAMILY_ID,
+              scope: 'combo.agent:read',
+              resource_uri: RESOURCE,
+              expires_at: new Date(Date.now() + 60_000),
+              used_at: null,
+              revoked_at: null,
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      writes += 1;
+      return { rows: [], rowCount: 1 };
+    });
+
+    await expect(
+      rotateRefreshToken(pool, {
+        refreshTokenDigest: Buffer.alloc(32, 4),
+        clientId: CLIENT_ID,
+        resourceUri: RESOURCE,
+        requestedScope: 'combo.agent:read combo.agent:write',
+        nextAccessTokenDigest: Buffer.alloc(32, 5),
+        nextRefreshTokenDigest: Buffer.alloc(32, 6),
+        accessTokenTtlSeconds: 3_600,
+        refreshTokenTtlSeconds: 30 * 86_400,
+      }),
+    ).resolves.toEqual({ kind: 'invalid_scope' });
+    expect(writes).toBe(0);
+  });
 });

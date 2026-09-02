@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0015`，共 16 个 SQL；已经发布的 `0000` 至 `0014` 保持原样，新结构只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0019`，共 20 个 SQL；已经发布的 `0000` 至 `0019` 文件名与字节保持原样，新结构只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
 
 ## 迁移文件
 
@@ -20,6 +20,22 @@
 - `0013_external_mcp_oauth.sql` 保存公开动态客户端元数据、短期授权事务、一次性 PKCE 授权码以及摘要化的访问令牌和轮换刷新令牌。授权页只用现有 `auth_sessions` 确认浏览器身份，任何 OAuth 表都不保存 Cookie 或令牌原文。
 - `0014_agent_test_reviews.sql` 创建不可变 Agent Test 质量复核，要求 normal、boundary 与 failure 三类案例分别保存执行终态和质量结论。例外接受必须保存理由、影响、复核用户和时间；新 Release 必须冻结同一 Test 的可发布复核 ID 与摘要，迁移前 Release 的复核字段保持为空并继续可读。
 - `0015_project_agent_shares.sql` 创建不可变 Project Agent 分享。每行冻结一份 Git Project manifest、owner 和创建幂等事实，并通过三十二字节随机的公开定位符读取；它不保存仓库文件、会话、凭据或环境变量值。
+- `0016_project_history_agent_flow.sql` 追加 strict typed Project-history Draft、由数据库 wall clock 原子签发且只存
+  摘要的五分钟单次确认、带完整 canonical JSON 摘要的不可变/不过期/不可撤回 public-by-link Agent Package
+  share，以及仅能有界清理已消费或已过期 confirmation 的受控函数。
+- `0017_agent_package_registry.sql` 创建 canonical `agent_packages` commit marker 与 immutable `agent_package_releases`，以 exact Package digest 作为唯一内容身份。
+- `0018_agent_session_usage_receipts.sql` 为受控 Test Agent Session 冻结 exact Release/Package 和 Knowledge resource 快照，并追加 immutable terminal usage receipt。
+- `0019_pending_usage_recovery.sql` 为 402 尚未 admission 的请求追加 server-authoritative pending recovery、price snapshot、recharge intent 和单调 terminal closure。
+
+`0012` 至 `0019` 是 live Test 已发布的 forward-only 兼容链。Test 若需回退应用，后续回退提交仍必须保留这些迁移源、账本前缀和 `0019_pending_usage_recovery.sql` expected head；不得部署不识别 live `0019` ledger 的旧镜像，也不得删除或改写已应用的表。本 79f 系页面候选携带 `0017`–`0019` 是 deployment compatibility 修复，不表示它激活了后续 Registry、receipt 或 recovery 业务 API。
+
+## V2 独立验证链
+
+`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0015_v2_billing_idempotency.sql`。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
+
+V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenges` 与 `v2_sessions`，和创作者域的 `auth_` 表互不引用。V2 计费域使用 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events`；流水和计量事件只允许追加。
+
+正式迁移完成后只配置 API、worker 与 runtime 三个角色。V2 独立链额外配置 `combo_authz` 与 `combo_billing`，并在连接数据库前强制五份密码同时提供；其中正式三角色密码必须与共享 PostgreSQL 实例中的现值一致。V2 重放含 NOLOGIN 的迁移时，会在同一 migration transaction 提交前恢复该文件涉及的角色，失败整体回滚，其他连接看不到禁用状态。
 
 `project_agent_shares` 独立冻结可公开读取的 Git Project manifest，不进入 Agent Runtime 模型。
 
@@ -47,10 +63,12 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_project_agent_shares.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
 ```
 
-`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
+`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明同一 production image 能从空库执行至 `0019`、对已到 `0019` 的账本再次幂等执行、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
+
+V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0015_v2_billing_idempotency.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。

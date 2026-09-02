@@ -1,4 +1,5 @@
 import {
+  PROJECT_AGENT_SHARE_SCHEMA_VERSION,
   ProjectAgentShareManifestSchema,
   canonicalJson,
   type ProjectAgentShareManifest,
@@ -26,6 +27,15 @@ export interface ProjectAgentShareRecord {
 
 const SHARE_COLUMNS = `id, owner_user_id, share_token, manifest, manifest_sha256,
   idempotency_key, idempotency_sha256, created_at`;
+
+function isProjectAgentManifest(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'schemaVersion' in value &&
+    value.schemaVersion === PROJECT_AGENT_SHARE_SCHEMA_VERSION
+  );
+}
 
 function toRecord(row: ProjectAgentShareRow): ProjectAgentShareRecord {
   const manifest = ProjectAgentShareManifestSchema.parse(row.manifest);
@@ -87,7 +97,11 @@ export async function insertProjectAgentShare(
     [input.ownerUserId, input.idempotencyKey],
   );
   const row = existing.rows[0];
-  if (!row || row.idempotency_sha256 !== input.idempotencySha256) {
+  if (
+    !row ||
+    row.idempotency_sha256 !== input.idempotencySha256 ||
+    !isProjectAgentManifest(row.manifest)
+  ) {
     return { kind: 'idempotency_conflict' };
   }
   return { kind: 'replayed', record: toRecord(row) };
@@ -105,5 +119,7 @@ export async function readProjectAgentShareByToken(
       LIMIT 1`,
     [shareToken],
   );
-  return result.rows[0] ? toRecord(result.rows[0]) : null;
+  const row = result.rows[0];
+  if (!row || !isProjectAgentManifest(row.manifest)) return null;
+  return toRecord(row);
 }

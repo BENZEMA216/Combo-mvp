@@ -40,6 +40,7 @@ const fullOriginWriteProbes = [
   ['POST', `/api/v1/agent-projects/${zeroId}/revisions`],
   ['POST', `/api/v1/agent-projects/${zeroId}/tests/${zeroId}/reviews`],
   ['POST', `/api/v1/agent-projects/${zeroId}/releases`],
+  ['POST', '/api/v1/codex-agent-shares'],
   ['POST', '/api/v1/runtime/studio/sessions'],
   ['POST', '/api/v1/runtime/sessions'],
   ['PATCH', `/api/v1/runtime/sessions/${zeroId}`],

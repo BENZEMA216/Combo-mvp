@@ -13,6 +13,14 @@ import {
   PROJECT_AGENT_SHARE_ENDPOINTS,
   registerProjectAgentShareRoutes,
 } from '../modules/project-agent-share/routes.js';
+import {
+  CODEX_AGENT_SHARE_ENDPOINTS,
+  registerCodexAgentShareRoutes,
+} from '../modules/codex-agent-share/routes.js';
+import {
+  PROJECT_HISTORY_AGENT_ENDPOINTS,
+  registerProjectHistoryAgentRoutes,
+} from '../modules/project-history-agent/routes.js';
 import { registerClientEventRoutes } from '../platform/http/client-events.js';
 import type { EndpointDecl } from '../platform/http/_helpers.js';
 
@@ -23,6 +31,8 @@ export const ALL_ENDPOINTS: EndpointDecl[] = [
   ...CAPABILITY_ENDPOINTS,
   ...AGENT_PROJECT_ENDPOINTS,
   ...PROJECT_AGENT_SHARE_ENDPOINTS,
+  ...CODEX_AGENT_SHARE_ENDPOINTS,
+  ...PROJECT_HISTORY_AGENT_ENDPOINTS,
   ...BILLING_ENDPOINTS,
 ];
 
@@ -35,6 +45,8 @@ export async function registerBusinessRoutes(app: FastifyInstance): Promise<void
       await registerCapabilityRoutes(scoped);
       await registerAgentProjectRoutes(scoped);
       await registerProjectAgentShareRoutes(scoped);
+      await registerCodexAgentShareRoutes(scoped);
+      await registerProjectHistoryAgentRoutes(scoped);
       await registerBillingRoutes(scoped);
       await registerClientEventRoutes(scoped); // 浏览器侧错误/调试事件（只落结构化日志）
     },

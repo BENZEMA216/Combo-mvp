@@ -32,6 +32,13 @@ describe('Project Agent share contract', () => {
         sourceRef: 'refs/heads/foo./bar',
       }).success,
     ).toBe(true);
+    // V0 is byte-frozen; the stricter shell-safe advertised-ref contract applies only to V1.
+    expect(
+      CreateProjectAgentShareBodySchema.safeParse({
+        ...validBody,
+        sourceRef: 'refs/heads/$(legacy)',
+      }).success,
+    ).toBe(true);
   });
 
   it.each([
@@ -80,6 +87,29 @@ describe('Project Agent share contract', () => {
         CreateProjectAgentShareBodySchema.safeParse({ ...validBody, ...candidate }).success,
       ).toBe(false);
     }
+  });
+
+  it('rejects V0 free text that PostgreSQL jsonb cannot persist', () => {
+    for (const invalidText of ['contains\u0000nul', 'lone-high-\ud800', 'lone-low-\udc00']) {
+      for (const candidate of [
+        { name: invalidText },
+        { description: invalidText },
+        { startPrompt: invalidText },
+        { sourceRef: `refs/heads/${invalidText}` },
+        { requirements: { ...validBody.requirements, codexVersion: invalidText } },
+      ]) {
+        expect(
+          CreateProjectAgentShareBodySchema.safeParse({ ...validBody, ...candidate }).success,
+        ).toBe(false);
+      }
+    }
+    expect(
+      CreateProjectAgentShareBodySchema.safeParse({
+        ...validBody,
+        description: '合法控制\u0001、CRLF\r\n与 astral 🙂',
+        startPrompt: 'Review\u0002🙂',
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects file, session and credential fields instead of silently dropping them', () => {

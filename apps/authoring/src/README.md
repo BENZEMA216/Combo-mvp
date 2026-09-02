@@ -6,7 +6,7 @@
 
 - `processes/` 放 API 与 worker 两个进程入口。
 - `bootstrap/` 组装 Fastify、基础设施、健康检查和业务路由。
-- `modules/` 按 account、task、capability、agent-project、project-agent-share、billing 和 external-mcp 业务领域组织代码。account 是第一方浏览器认证唯一写入方，external-mcp 用 OAuth 把同一用户安全映射给 Codex，agent-project 冻结可测试和发布的 Agent，project-agent-share 冻结可由真实 Codex 恢复的 Git Project manifest，billing 是外部充值与内部钱包入账的唯一写入方。
+- `modules/` 按 account、task、capability、agent-project、project-agent-share、codex-agent-share、billing 和 external-mcp 业务领域组织代码。account 是第一方浏览器认证唯一写入方，external-mcp 用 OAuth 把同一用户安全映射给 Codex，agent-project 冻结可测试和发布的 Agent，project-agent-share 保留 Git Project manifest 兼容链路，codex-agent-share 冻结当前任务本地派生的公开 Agent 定义和固定 Project，billing 是外部充值与内部钱包入账的唯一写入方。
 - `platform/` 提供配置、HTTP 边界、PostgreSQL、Redis、队列、对象存储、Resend、本地会话校验、链路追踪和事件流等公共设施。
 
 依赖保持单向。processes 使用 bootstrap 与 modules，bootstrap 使用 modules 与 platform，modules 使用 platform，platform 不依赖业务模块。共享类型、错误信封、Cookie 常量和校验契约来自 `@cb/shared`。
@@ -24,7 +24,8 @@
 4. 创作者创建任务后，本机助手凭配对码上传分片。worker 消费任务，读取原文、解析、脱敏、调用大模型并写入能力项。
 5. 浏览器通过任务事件流读取进度，终态仍以 PostgreSQL 中的任务状态为准。
 6. Codex 或 Studio 创建 Agent Project，提交带 Head CAS 的 Revision；编译器冻结 Capability、Miniapp 和 Runtime Bundle。Runtime Test 技术通过后，当前用户还必须确认 normal、boundary 与 failure 三类案例的执行和质量结果，Authoring 才保存不可变复核；只有技术通过、质量通过或已接受例外且仍是当前 Head 的同一 Revision 才能发布。
-7. Codex 插件通过根级 OAuth 发现和 PKCE 登录获得短期 Bearer Token；远程 MCP 的十七个工具始终要求显式资源 ID，不读取或暴露浏览器 Cookie。
+7. Codex 插件通过根级 OAuth 发现和 PKCE 登录获得短期 Bearer Token；远程 MCP 的二十三个工具不读取或暴露浏览器 Cookie。
+8. 默认 Creator Bootstrap 只把当前顶层任务里用户实际表达且对用户可见的需求、约束与结论作为派生输入，明确排除 recommended_plugins、in-app-browser-context、heartbeat、app-context、codex_delegation、source_thread_id 等 Host wrapper。工具 readiness 通过并由用户确认公开卡片前不写入；确认后 MCP 创建并立即回读同一 URL 的 `combo.codex-agent-share/1` manifest。服务端只校验字段形状，不能证明 instructions 已脱敏。Schema 没有独立 raw task blob，并保留旧 Project Agent 与 Agent Builder 工具的字节和行为兼容。
 
 ## 充值主链路
 

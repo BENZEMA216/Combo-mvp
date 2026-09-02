@@ -17,6 +17,7 @@ import { ReleasePage } from './pages/release/ReleasePage.js';
 import { PublicCapabilityPage } from './pages/public/PublicCapabilityPage.js';
 import { PublicCreatorPage } from './pages/public/PublicCreatorPage.js';
 import { ProjectAgentSharePage } from './pages/public/ProjectAgentSharePage.js';
+import { CodexAgentSharePage } from './pages/public/CodexAgentSharePage.js';
 import { LandingPage } from './pages/landing/LandingPage.js';
 import { ReleaseIdentityBadge } from './shell/releaseIdentity.js';
 
@@ -54,6 +55,7 @@ export function App(): ReactElement {
           <Route path="/a/:slug" element={<PublicCapabilityPage />} />
           <Route path="/c/:slug" element={<PublicCreatorPage />} />
           <Route path="/project-agent/:shareToken" element={<ProjectAgentSharePage />} />
+          <Route path="/agent/:shareToken" element={<CodexAgentSharePage />} />
           {/* 登录页：两步邮箱验证码表单，只接受共享契约允许的站内 returnTo。 */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="*" element={<NotFoundPage />} />

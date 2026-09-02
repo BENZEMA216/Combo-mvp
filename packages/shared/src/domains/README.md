@@ -11,8 +11,11 @@
 - `agent-ui.ts` 定义 Authoring 与 Runtime 共用的 Miniapp HTML 最小运行校验，要求自包含文档和真实 `combo:run` Bridge，并拒绝定时器、随机数和 mock 结果。
 - `mcp-oauth.ts` 定义远程 MCP 的稳定路径、OAuth 2.1 scope、RFC 9728 资源发现、RFC 8414 授权服务器发现、动态客户端注册、短期访问令牌与轮换刷新令牌响应契约。它不包含浏览器 Session Cookie，也不允许把 Cookie 当作 Bearer Token。
 - `project-agent-share.ts` 定义不可变 Git Project 分享契约，仅允许规范 GitHub HTTPS 仓库、精确 commit/tree SHA、启动说明和无值的依赖声明进入 manifest。输出只包含任何持链接者都可匿名读取的公开 manifest、分享链接和复制到 Codex 的文字，不包含 owner 或内部存储标识。V0 分享不撤销、不过期且不托管 Git 对象，调用方不得把秘密放进 manifest。
+- `codex-agent-share.ts` 定义 `combo.codex-agent-share/1` 当前任务派生 Agent 分享契约：公开 manifest、canonical digest、Test canonical URL、1–5 条有序 starter，以及没有独立 raw task blob 的边界。Receiver 的 reserved `codex_agent_restore` 请求严格只允许 `{stage,shareUrl,manifestSha256}`；Authoring 必须重新公开读取并校验 digest 后服务端构造完整 1+M 卡。共享包冻结不含 manifest 自由文本的 digest/M/N action、真正不可变的 canonical serialized card snapshot、只含 commitSha/treeSha 的 Creator 分享 action，以及 `starterOrdinal`+`starterPrompt` 双重绑定的 `prepare`/`COMBO_CODEX_AGENT_RUN/1` wire；服务端只接受 `starterPrompts[N-1]===starterPrompt`。Creator/Receiver/Run compact JSON 继续 Host-safe 转义实际 `<`、`>`、`&`、U+2028、U+2029，`expectedSourceRef` 只代表远端 provenance。
 
-Project Agent 的 schema version 也版本化服务端 `copyPrompt` renderer；v1 renderer 是 wire contract，必须永久保留并由完整 golden test 固定，不能在同一 schema version 下改写。
+Project Agent 与 Codex Agent 的 schema version 都版本化服务端 `copyPrompt` renderer；每个 v1 renderer 都是 wire contract，必须永久保留并由完整 contract 或 golden test 固定。普通文案不能在同一 schema version 下改写；ordinal action 的安全收紧只允许移除 user-role message 中的不可信自由文本，并必须同步共享 renderer、完整 golden、literal hash、UI/Service 测试和接收端实现。
+
+Codex Agent V1 digest 的 canonical JSON 不是 RFC 8785。它递归按 JavaScript 默认 UTF-16 code-unit 顺序排列对象键，对 primitive 使用 `JSON.stringify`，保持数组顺序，并拒绝 `undefined` 与非有限数字；摘要是该 UTF-8 字节串的 SHA-256。共享测试给出跨仓库必须完全匹配的 JSON 与 digest golden。
 
 - `trial.ts` 定义试用域：会话、消息、产物和 Turn 的视图，以及建会话、带 `usageId` 发消息和余额不足响应的契约；`usageId` 在校验 UUID 后统一输出小写规范形，Agent Builder 会话可携带固定的 Project、Revision 与 Release。Artifact 会带可选来源 Turn 和创建时间，会话详情能从 PostgreSQL 恢复 active Turn，并只用严格白名单码描述最近终态 Turn，绝不承载原始错误文本。`currentUiArtifactId` 标识 Studio 当前 UI 或普通会话创建时冻结的 UI 副本。会话详情里的能力摘要带开场表单字段与提示语（来自普通能力定义或固定 Revision Bundle，定义读不出时为空数组）。消息内容是 agent 原生分块格式，共享层只约束到「是数组」，严格校验在 runtime 侧。
 - `redaction.ts` 是去敏规则引擎，纯函数、无任何 IO：`redact` 与 `redactBatch` 按带版本号的规则集抹掉手机号、邮箱、密钥、证件号、银行卡号、IP 等隐私信息，产出只含类别与计数的聚合报告，且对已去敏文本重跑结果不变。

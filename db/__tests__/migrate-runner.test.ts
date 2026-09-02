@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0015_project_agent_shares.sql');
+    expect(plan.head).toBe('0019_pending_usage_recovery.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -23,6 +23,30 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual(migrations);
     expect(plan.pending).toEqual([]);
+  });
+
+  it('accepts the already-applied live 0019 ledger without pending work', () => {
+    const liveHeadIndex = migrations.indexOf('0019_pending_usage_recovery.sql');
+    const applied = migrations.slice(0, liveHeadIndex + 1);
+    const plan = planMigrations(migrations, applied, migrationHead(migrations));
+
+    expect(liveHeadIndex).toBeGreaterThan(0);
+    expect(plan.applied).toEqual(applied);
+    expect(plan.pending).toEqual([]);
+  });
+
+  it('plans the exact published 0017-0019 suffix from the live 0016 prefix', () => {
+    const livePrefixHeadIndex = migrations.indexOf('0016_project_history_agent_flow.sql');
+    const applied = migrations.slice(0, livePrefixHeadIndex + 1);
+    const plan = planMigrations(migrations, applied, migrationHead(migrations));
+
+    expect(livePrefixHeadIndex).toBeGreaterThan(0);
+    expect(plan.applied).toEqual(applied);
+    expect(plan.pending).toEqual([
+      '0017_agent_package_registry.sql',
+      '0018_agent_session_usage_receipts.sql',
+      '0019_pending_usage_recovery.sql',
+    ]);
   });
 
   it('defaults MIGRATION_RUNS to one and accepts only the explicit Test values', () => {
@@ -54,7 +78,7 @@ describe('migration runner contract', () => {
 
   it('rejects a release whose expected migration head differs from source', () => {
     expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
-      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0015_project_agent_shares\.sql/,
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0019_pending_usage_recovery\.sql/,
     );
   });
 

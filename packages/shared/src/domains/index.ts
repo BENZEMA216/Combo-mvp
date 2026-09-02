@@ -8,3 +8,4 @@ export * from './agent.js';
 export * from './agent-ui.js';
 export * from './mcp-oauth.js';
 export * from './project-agent-share.js';
+export * from './codex-agent-share.js';

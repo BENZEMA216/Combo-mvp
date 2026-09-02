@@ -334,6 +334,7 @@ interface RefreshTokenRow {
 export type RotateRefreshOutcome =
   | { kind: 'issued'; scope: string }
   | { kind: 'invalid_grant' }
+  | { kind: 'invalid_scope' }
   | { kind: 'replay_detected' };
 
 export async function rotateRefreshToken(
@@ -342,6 +343,7 @@ export async function rotateRefreshToken(
     refreshTokenDigest: Buffer;
     clientId: string;
     resourceUri: string;
+    requestedScope?: string;
     nextAccessTokenDigest: Buffer;
     nextRefreshTokenDigest: Buffer;
     accessTokenTtlSeconds: number;
@@ -395,6 +397,13 @@ export async function rotateRefreshToken(
     }
     if (new Date(row.expires_at).getTime() <= Date.now()) return { kind: 'invalid_grant' };
 
+    const grantedScopes = new Set(row.scope.split(' ').filter(Boolean));
+    const requestedScopes = input.requestedScope?.split(' ').filter(Boolean);
+    if (requestedScopes?.some((scope) => !grantedScopes.has(scope))) {
+      return { kind: 'invalid_scope' };
+    }
+    const effectiveScope = requestedScopes?.join(' ') || row.scope;
+
     await tx.query(`UPDATE oauth_refresh_tokens SET used_at = now() WHERE token_digest = $1`, [
       input.refreshTokenDigest,
     ]);
@@ -407,7 +416,7 @@ export async function rotateRefreshToken(
         row.client_id,
         row.owner_user_id,
         row.family_id,
-        row.scope,
+        effectiveScope,
         row.resource_uri,
         input.accessTokenTtlSeconds,
       ],
@@ -423,12 +432,12 @@ export async function rotateRefreshToken(
         row.owner_user_id,
         row.family_id,
         input.refreshTokenDigest,
-        row.scope,
+        effectiveScope,
         row.resource_uri,
         input.refreshTokenTtlSeconds,
       ],
     );
-    return { kind: 'issued', scope: row.scope };
+    return { kind: 'issued', scope: effectiveScope };
   });
 }
 
@@ -438,9 +447,10 @@ export interface OAuthArtifactCleanupResult {
   accessTokensDeleted: number;
   refreshTokensDeleted: number;
   clientsDeleted: number;
+  projectHistoryConfirmationsDeleted: number;
 }
 
-/** 通过迁移定义的 SECURITY DEFINER 函数做有界清理；API role 本身没有表 DELETE。 */
+/** 通过迁移定义的 SECURITY DEFINER 函数做共享有界清理；API role 本身没有表 DELETE。 */
 export async function cleanupExpiredOAuthArtifacts(
   db: Queryable,
   batchSize: number,
@@ -452,10 +462,13 @@ export async function cleanupExpiredOAuthArtifacts(
     access_tokens_deleted: number;
     refresh_tokens_deleted: number;
     clients_deleted: number;
+    project_history_confirmations_deleted?: number;
   }>(
     `SELECT authorization_requests_deleted, authorization_codes_deleted,
-            access_tokens_deleted, refresh_tokens_deleted, clients_deleted
-       FROM cleanup_expired_oauth_artifacts($1)`,
+            access_tokens_deleted, refresh_tokens_deleted, clients_deleted,
+            confirmations_deleted AS project_history_confirmations_deleted
+       FROM cleanup_expired_oauth_artifacts($1)
+       CROSS JOIN cleanup_retired_project_history_confirmations($1)`,
     [boundedBatchSize],
   );
   const row = result.rows[0];
@@ -466,6 +479,7 @@ export async function cleanupExpiredOAuthArtifacts(
     accessTokensDeleted: Number(row.access_tokens_deleted),
     refreshTokensDeleted: Number(row.refresh_tokens_deleted),
     clientsDeleted: Number(row.clients_deleted),
+    projectHistoryConfirmationsDeleted: Number(row.project_history_confirmations_deleted ?? 0),
   };
 }
 

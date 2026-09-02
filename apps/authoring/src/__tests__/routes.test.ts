@@ -31,8 +31,8 @@ async function call(handler: RouteHandlerMethod, req: FastifyRequest): Promise<C
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 31 endpoints including authenticated create and public Project Agent read', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(31);
+  it('registers exactly 38 endpoints including all three immutable share schema families', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(38);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -70,11 +70,14 @@ describe('route registry self-check', () => {
     expect(account.find((endpoint) => endpoint.url === '/me')?.preHandlers).toHaveLength(1);
   });
 
-  it('puts an Origin guard before every browser write and exempts only pairing-code uploads', () => {
+  it('puts an Origin guard before every browser write and exempts bounded non-browser routes', () => {
     const exempt = new Set([
       '/connect/prepare',
       '/connect/upload',
       '/billing/leshouying/payment-notify',
+      // This POST is a stateless public-by-link read projection. It requires the
+      // capability URL plus the authoritative digest and never mutates a share.
+      '/agent-package-runs/prepare',
     ]);
     for (const endpoint of ALL_ENDPOINTS) {
       if (endpoint.method === 'GET' || exempt.has(endpoint.url)) continue;
@@ -137,6 +140,44 @@ describe('route registry self-check', () => {
     );
     expect(read?.preHandlers ?? []).toHaveLength(0);
     expect(read?.config).toEqual({ rateLimit: { max: 120, timeWindow: '1 minute' } });
+  });
+
+  it('protects Codex Agent creation but keeps exact-token v2 reads public', () => {
+    const create = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.method === 'POST' && endpoint.url === '/codex-agent-shares',
+    );
+    expect(create).toMatchObject({
+      bodyLimit: 128 * 1_024,
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    });
+    expect(create?.preHandlers).toHaveLength(2);
+
+    const read = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.method === 'GET' && endpoint.url === '/codex-agent-shares/:shareToken',
+    );
+    expect(read?.preHandlers ?? []).toHaveLength(0);
+    expect(read?.config).toEqual({ rateLimit: { max: 120, timeWindow: '1 minute' } });
+  });
+
+  it('rate-limits every Project-history owner and public-by-link endpoint', () => {
+    const expected = new Map([
+      ['POST /agent-package-drafts', 30],
+      ['POST /agent-package-drafts/:draftId/render', 30],
+      ['POST /agent-package-shares', 30],
+      ['GET /agent-package-shares/:shareToken', 120],
+      ['POST /agent-package-runs/prepare', 60],
+    ]);
+
+    const projectHistory = ALL_ENDPOINTS.filter((endpoint) =>
+      expected.has(`${String(endpoint.method)} ${endpoint.url}`),
+    );
+    expect(projectHistory).toHaveLength(expected.size);
+    for (const endpoint of projectHistory) {
+      const key = `${String(endpoint.method)} ${endpoint.url}`;
+      expect(endpoint.config, key).toEqual({
+        rateLimit: { max: expected.get(key), timeWindow: '1 minute' },
+      });
+    }
   });
 });
 

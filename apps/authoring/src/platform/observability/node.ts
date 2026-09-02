@@ -31,7 +31,7 @@ function parseResourceAttributes(raw: string): Record<string, string> {
 }
 
 const BLOCKED_SPAN_ATTRIBUTE = [
-  /^url\.(?:full|query)$/i,
+  /^url\.(?:full|path|query)$/i,
   /^http\.(?:url|target|client_ip)$/i,
   /(?:^|\.)(?:request|response)\.headers?(?:\.|$)/i,
   /(?:^|\.)(?:cookie|set-cookie|authorization)(?:\.|$)/i,
@@ -42,17 +42,51 @@ const BLOCKED_SPAN_ATTRIBUTE = [
   /(?:^|\.)(?:request|response)\.body(?:\.|$)/i,
 ];
 
+// Route-aware fail-closed projection: spans are created before the HTTP handler rejects encoded or
+// malformed request-targets. Decode bounded ASCII percent layers only for classification, then
+// replace the entire value; never try to enumerate bearer-token spellings or suffixes.
+const PROJECT_HISTORY_SHARE_ROUTE_MARKER = 'agent-package-shares';
+const PROJECT_HISTORY_SHARE_ROUTE_TEMPLATE = '/api/v1/agent-package-shares/:shareToken';
+const MAX_ROUTE_CLASSIFICATION_INPUT_LENGTH = 16_384;
+const MAX_ROUTE_CLASSIFICATION_DECODE_LAYERS = 32;
+
+function containsProjectHistoryShareRoute(value: string): boolean {
+  if (value.length > MAX_ROUTE_CLASSIFICATION_INPUT_LENGTH) return true;
+  let candidate = value;
+  for (let layer = 0; layer <= MAX_ROUTE_CLASSIFICATION_DECODE_LAYERS; layer += 1) {
+    if (candidate.toLowerCase().includes(PROJECT_HISTORY_SHARE_ROUTE_MARKER)) return true;
+    const decoded = candidate.replace(/%([0-9A-Fa-f]{2})/gu, (_match, hex: string) =>
+      String.fromCharCode(Number.parseInt(hex, 16)),
+    );
+    if (decoded === candidate) return false;
+    if (layer === MAX_ROUTE_CLASSIFICATION_DECODE_LAYERS) return true;
+    candidate = decoded;
+  }
+  return true;
+}
+
+function redactPublicCapability(value: string): string {
+  return containsProjectHistoryShareRoute(value) ? PROJECT_HISTORY_SHARE_ROUTE_TEMPLATE : value;
+}
+
 function safeSpanAttributes(attributes: Attributes): Attributes {
   return Object.fromEntries(
-    Object.entries(attributes).filter(
-      ([key]) => !BLOCKED_SPAN_ATTRIBUTE.some((pattern) => pattern.test(key)),
-    ),
-  );
+    Object.entries(attributes)
+      .filter(([key]) => !BLOCKED_SPAN_ATTRIBUTE.some((pattern) => pattern.test(key)))
+      .map(([key, value]) => [
+        key,
+        typeof value === 'string'
+          ? redactPublicCapability(value)
+          : Array.isArray(value)
+            ? value.map((item) => (typeof item === 'string' ? redactPublicCapability(item) : item))
+            : value,
+      ]),
+  ) as Attributes;
 }
 
 function safeSpanName(name: string): string {
   const queryAt = name.indexOf('?');
-  return queryAt === -1 ? name : name.slice(0, queryAt);
+  return redactPublicCapability(queryAt === -1 ? name : name.slice(0, queryAt));
 }
 
 /** 在任何 span 离开进程前删除原始查询、客户端地址、头、正文与异常消息。 */
@@ -72,6 +106,7 @@ function safeReadableSpan(span: ReadableSpan): ReadableSpan {
     })),
     events: span.events.map((event) => ({
       ...event,
+      name: redactPublicCapability(event.name),
       ...(event.attributes ? { attributes: safeSpanAttributes(event.attributes) } : {}),
     })),
     duration: span.duration,

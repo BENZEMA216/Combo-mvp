@@ -1,6 +1,6 @@
 # modules — 业务模块层
 
-这个目录按业务领域组织模块。`account/` 管邮箱验证码、首次建号和 PostgreSQL 会话，`task/` 管任务生命周期、助手上传与提取流水线，`capability/` 管能力项读取与发布，`agent-project/` 管 Agent Project、不可变 Revision、Test Review、编译与 Release，`project-agent-share/` 管不可变 Git Project manifest 与公开分享读取，`billing/` 管钱包读取、配置化充值订单、支付确认和主动查单，`external-mcp/` 管 Codex 的 OAuth 与无状态远程 Agent Builder 工具。
+这个目录按业务领域组织模块。`account/` 管邮箱验证码、首次建号和 PostgreSQL 会话，`task/` 管任务生命周期、助手上传与提取流水线，`capability/` 管能力项读取与发布，`agent-project/` 管 Agent Project、不可变 Revision、Test Review、编译与 Release，`project-agent-share/` 管兼容的不可变 Git Project manifest，`codex-agent-share/` 管当前任务本地派生的公开 Agent 定义与固定 Project 分享，`billing/` 管钱包读取、配置化充值订单、支付确认和主动查单，`external-mcp/` 管 Codex 的 OAuth 与无状态远程 Agent Builder 工具。
 
 每个模块都用 `routes.ts` 声明端点，用 `handlers.ts` 处理 HTTP 输入输出，用 `repo.ts` 收拢本领域 SQL。account 模块另有认证密码学纯函数和事务编排服务，task 模块另有状态机、配对上传、流水线与会话解析等文件，agent-project 模块另有冻结 Capability 和 Miniapp 的编译器。
 

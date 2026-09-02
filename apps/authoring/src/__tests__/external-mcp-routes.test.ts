@@ -1,23 +1,52 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { Ajv } from 'ajv';
 import cookie from '@fastify/cookie';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AgentDefinitionSchema,
+  CodexAgentShareManifestSchema,
+  CodexAgentShareResultSchema,
   MCP_OAUTH_SCOPES,
   OAuthAuthorizationServerMetadataSchema,
   OAuthProtectedResourceMetadataSchema,
+  PrepareCodexAgentRunResultSchema,
+  canonicalJson,
+  renderCodexAgentRunEnvelope,
 } from '@cb/shared';
 import { buildApp } from '../bootstrap/app.js';
 import { loadEnv } from '../platform/config/env.js';
+import { PROJECT_HISTORY_INSTALL_PROMPT } from '../modules/external-mcp/handlers.js';
 import { registerExternalMcpRoutes } from '../modules/external-mcp/routes.js';
 
-const ORIGIN = 'http://localhost';
+const ORIGIN = 'https://test.43-160-242-46.sslip.io';
 const RESOURCE = `${ORIGIN}/api/external-mcp/mcp`;
 const TOKEN = `mat1.${'a'.repeat(43)}`;
 const CAPABILITY_ID = '00000000-0000-4000-8000-000000000004';
 const TASK_ID = '00000000-0000-4000-8000-000000000010';
 const NOW = '2026-08-06T00:00:00.000Z';
+const EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT =
+  '阅读 https://test.43-160-242-46.sslip.io/codex-plugin ，帮我安装或升级 Combo 插件；完成后只创建一个安装续接任务，不要直接开始制作 Agent。';
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA = 'combo.project-history-bootstrap-controller/1';
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_BYTES = 2_000;
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256 =
+  '33d94d776e9d4eb0cf2238358857c8e4b33427de655be6a52d33e834d460146d';
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_BYTES = 4_871;
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256 =
+  '0b50ef569b7ceb41816fbba3f7a5ede96323da3ca50ca10709ce660a23c90f05';
+const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES = 1_074;
+const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256 =
+  '7df7bced005edd481e8eaa3169a8cac3dfa278d459942a15ef31bf595fd101fc';
+const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF =
+  'Combo 插件已经安装好了。这是 Project-history 专用流程，不是当前任务分享。请只使用当前任务已经显示的 Codex Host 工具和 Combo 远程工具，把我以前保存的 Project 里完成过的方法做成一个 Agent；不得使用 Terminal、子智能体或浏览器，不得读取本地文件、Skill、记忆、缓存或路径，不得使用 legacy 回退，也不得把路径或内部 ID 写进用户消息、Combo 参数或可见说明，Host 工具仅可在内部绑定时使用自身返回的标识。开始前先确认 create_agent_package_draft、render_agent_package_draft、create_agent_package_share、read_agent_package_share、prepare_agent_package_run 全部可用；任一缺失就在读取任何 Project 前只报告 PROJECT_HISTORY_AGENT_MCP=NOT_AVAILABLE 并停止。工具齐全时，先列出安全的 Project 名称让我选择来源 A，完整展示将分享的 Draft，等我确认后创建分享并立即核对；然后让我选择另一个 Project B，并在为它创建的同一个新任务里连续验证两轮。';
+const FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS = [
+  '当前只在 Test 输出 Combo Plugin 0.8.6',
+  '`/codex-plugin` 当前只在 Test 环境提供',
+  '请使用已验收的 Test 安装页',
+  'Combo Plugin 0.8.6 已部署',
+  'Combo Plugin 0.8.6 已验收',
+] as const;
 
 function testEnv() {
   const sourceSha = 'a'.repeat(40);
@@ -41,6 +70,97 @@ function testEnv() {
     RESEND_API_BASE_URL: 'http://127.0.0.1:9',
   };
 }
+
+describe('Project-history fixed bootstrap request', () => {
+  it('exports the exact short installation request without implementation wires', () => {
+    expect(PROJECT_HISTORY_INSTALL_PROMPT).toBe(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT);
+    expect(PROJECT_HISTORY_INSTALL_PROMPT).not.toMatch(/[\r\n]/u);
+    expect(PROJECT_HISTORY_INSTALL_PROMPT).not.toMatch(
+      /create_agent_package|render_agent_package|schema|mcp login|plugin add|marketplace upgrade/iu,
+    );
+    expect(Buffer.byteLength(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8')).toBe(174);
+    expect(createHash('sha256').update(PROJECT_HISTORY_INSTALL_PROMPT, 'utf8').digest('hex')).toBe(
+      '05321ad73850806a73167b366f7c2b06f053ca059b476ad22592997cdc45b98f',
+    );
+    expect(Buffer.byteLength(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8')).toBe(
+      EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES,
+    );
+    expect(
+      createHash('sha256').update(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF, 'utf8').digest('hex'),
+    ).toBe(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
+
+    const guideUrl = 'https://test.43-160-242-46.sslip.io/codex-plugin';
+    const markdownMirror = PROJECT_HISTORY_INSTALL_PROMPT.replace(
+      guideUrl,
+      `[${guideUrl}](${guideUrl})`,
+    );
+    for (const [rendered, expectedOccurrences] of [
+      [PROJECT_HISTORY_INSTALL_PROMPT, 1],
+      [markdownMirror, 2],
+    ] as const) {
+      const urls = [...rendered.matchAll(/https:\/\/[a-z0-9.-]+(?:\/[a-z0-9._~-]+)*/giu)].map(
+        (match) => match[0],
+      );
+      expect(urls).toHaveLength(expectedOccurrences);
+      expect(new Set(urls)).toEqual(new Set([guideUrl]));
+    }
+  });
+
+  it('documents the 0.8.7 code candidate without leaking its static status into runtime truth', () => {
+    const documents = [
+      readFileSync(new URL('../../../../README.md', import.meta.url), 'utf8'),
+      readFileSync(new URL('../modules/external-mcp/README.md', import.meta.url), 'utf8'),
+    ];
+
+    for (const document of documents) {
+      expect(document).toContain('`/version.json`');
+      expect(document).toContain('`sourceSha`');
+      expect(document).toContain('`releaseId`');
+      expect(document).toContain('`UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED`');
+      expect(document).toContain('`CODE_CONTRACT`');
+      expect(document).toContain('`NOT_DEPLOYED`');
+      expect(document).toContain('`NOT_UAT`');
+      expect(document).toContain(PROJECT_HISTORY_INSTALL_PROMPT);
+      expect(document).toContain('Plugin bundled typed controller');
+      expect(document).toContain(`\`schemaVersion=${EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA}\``);
+      expect(document).toContain('`childCreateBudget=1`');
+      expect(document).toContain(
+        '`plugin list --marketplace dangdang-tech-combo --available --json`',
+      );
+      expect(document).toContain('`source.path`');
+      expect(document).toContain('`scripts/project-history-bootstrap-controller.mjs`');
+      expect(document).toContain(
+        '`/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node`',
+      );
+      expect(document).toContain('`["./project-history-bootstrap-controller.mjs","setup"]`');
+      expect(document).toContain('零 stdin');
+      expect(document).toContain('8,192 bytes');
+      expect(document).toContain('5,000 ms');
+      expect(document).toContain('`SIGKILL`');
+      expect(document).toContain('empty environment');
+      expect(document).toContain(
+        '`/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u NODE_V8_COVERAGE -u NODE_COMPILE_CACHE -u NODE_REDIRECT_WARNINGS`',
+      );
+      expect(document).toContain('2,000 bytes');
+      expect(document).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256);
+      expect(document).toContain('4,871 bytes');
+      expect(document).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256);
+      expect(document).toContain('1,074 bytes');
+      expect(document).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
+      expect(document).toContain('禁止扫描 Plugin cache');
+      expect(document).toContain('`(mode & 0o7777) === 0o755`');
+      expect(document).toContain('setuid/setgid/sticky');
+      expect(document).toContain('`PROJECT_HISTORY_BOOTSTRAP_CONTROLLER_EXEC_FAILED`');
+      expect(document).toContain('`INITIAL_CONTINUATION_ENFORCEMENT=CODE_INTEGRATED`');
+      expect(document).toContain('`RECOVERY_BUSINESS_GATE=HOST_TRACE_REQUIRED`');
+      expect(document).not.toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
+      expect(document).not.toContain('不是当前 Test 运行输出的证据');
+      for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
+        expect(document).not.toContain(claim);
+      }
+    }
+  });
+});
 
 describe('external MCP root route integration', () => {
   let app: FastifyInstance;
@@ -186,21 +306,266 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('Combo Plugin 0.6.0 Test');
+    expect(response.body).toContain('Combo Plugin 0.8.7 Test');
+    expect(response.body).toContain('Project-history Agent');
+    expect(response.body).toContain('<code>TEST_RUNTIME</code>');
+    expect(response.body).toContain('<code>environment=test</code>');
+    expect(response.body).toContain(`<code>sourceSha=${'a'.repeat(40)}</code>`);
+    expect(response.body).toContain(`<code>releaseId=release-${'a'.repeat(40)}</code>`);
+    expect(response.body).toContain('<code>UAT_STATUS=EXTERNAL_EVIDENCE_REQUIRED</code>');
+    expect(response.body).not.toContain('CODE_CONTRACT');
+    expect(response.body).toContain('<a href="/version.json">/version.json</a>');
+    expect(response.body).toContain('与本页运行身份逐字一致');
+    expect(response.body).not.toContain('NOT_DEPLOYED');
+    expect(response.body).not.toContain('NOT_UAT');
+    expect(response.body).not.toContain('不是当前 Test 运行输出的证据');
+    for (const claim of FORBIDDEN_PROJECT_HISTORY_RELEASE_CLAIMS) {
+      expect(response.body).not.toContain(claim.replaceAll('`', ''));
+    }
+    expect(response.body).toContain(
+      `<textarea readonly>${EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT}</textarea>`,
+    );
+    expect(response.body.split(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT)).toHaveLength(2);
+    expect(response.body).toContain('Combo Plugin 安装在 Codex Host，不是安装到当前 Project');
+    expect(response.body).toContain('<strong>新安装：</strong>');
+    expect(response.body).toContain('<strong>旧版：</strong>');
+    expect(response.body).toContain('<strong>当前版：</strong>');
+    expect(response.body).toContain('official stable 有效 semver');
+    expect(response.body).toContain('exact 0.8.7');
+    expect(response.body).toContain('安装或升级不会让已经运行的任务热加载');
+    expect(response.body).toContain('Plugin bundled typed controller');
+    expect(response.body).toContain(
+      `<code>schemaVersion=${EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA}</code>`,
+    );
+    expect(response.body).toContain('<code>action=create-recovery</code>');
+    expect(response.body).toContain('<code>childCreateBudget=1</code>');
+    expect(response.body).toContain('<code>soleFirstPrompt</code>');
+    expect(response.body).toContain('controller 的 typed result 是唯一路由权威');
+    expect(response.body).toContain(
+      'plugin list --marketplace dangdang-tech-combo --available --json',
+    );
+    expect(response.body).toContain('pluginId=combo@dangdang-tech-combo');
+    expect(response.body).toContain('marketplaceSource.sourceType=git');
+    expect(response.body).toContain('source.path');
+    expect(response.body).toContain('source.source=local');
+    expect(response.body).toContain('realpath(source.path)');
+    expect(response.body).toContain('scripts/project-history-bootstrap-controller.mjs');
+    expect(response.body).toContain('regular file 且 mode 精确为 0755');
+    expect(response.body).toContain('(mode &amp; 0o7777) === 0o755');
+    expect(response.body).toContain('setuid/setgid/sticky 任一存在都拒绝');
+    expect(response.body).toContain(
+      '/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node',
+    );
+    expect(response.body).toContain(
+      '[&quot;./project-history-bootstrap-controller.mjs&quot;,&quot;setup&quot;]',
+    );
+    expect(response.body).toContain('零 stdin');
+    expect(response.body).toContain('调用次数恰好为 1');
+    expect(response.body).toContain('/usr/bin/env');
+    for (const variable of [
+      'NODE_OPTIONS',
+      'NODE_PATH',
+      'NODE_V8_COVERAGE',
+      'NODE_COMPILE_CACHE',
+      'NODE_REDIRECT_WARNINGS',
+    ]) {
+      expect(response.body).toContain(`-u ${variable}`);
+    }
+    expect(response.body).toContain('5,000 ms');
+    expect(response.body).toContain('SIGKILL');
+    expect(response.body).toContain('empty environment');
+    expect(response.body).toContain('恰好一个 LF 结尾');
+    expect(response.body).toContain('8,192 bytes');
+    expect(response.body).toContain(
+      `<code>soleFirstPrompt</code> 必须为 ${EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_BYTES.toLocaleString('en-US')} UTF-8 bytes`,
+    );
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256);
+    expect(response.body).toContain(
+      `${EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_BYTES.toLocaleString('en-US')} UTF-8 bytes`,
+    );
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256);
+    expect(response.body).toContain(
+      `${EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES.toLocaleString('en-US')} UTF-8 bytes`,
+    );
+    expect(response.body).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
+    expect(response.body).toContain('禁止扫描 Plugin cache');
+    expect(response.body).toContain('任一 locator、mode、exec 或 envelope 不符');
+    expect(response.body).toContain('PROJECT_HISTORY_BOOTSTRAP_CONTROLLER_EXEC_FAILED');
+    expect(response.body).toContain(
+      '<code>INITIAL_CONTINUATION_ENFORCEMENT=CODE_INTEGRATED</code>',
+    );
+    expect(response.body).toContain('<code>RECOVERY_BUSINESS_GATE=HOST_TRACE_REQUIRED</code>');
+    expect(response.body).toContain('controller 只在 initial setup 到安装续接这一跳提供代码级强制');
+    expect(response.body).toContain('自包含 prompt 与真实五 V3/OAuth Host trace');
+    expect(response.body).toContain('新安装、旧版和已是当前版三类初始状态');
+    expect(response.body).toContain('都不得直接创建 Project-history business');
+    expect(response.body).toContain(
+      'create_thread({prompt:controllerResult.soleFirstPrompt,target:{type:&quot;projectless&quot;}})',
+    );
+    expect(
+      response.body.match(/create_thread\(\{prompt:controllerResult\.soleFirstPrompt/gu),
+    ).toHaveLength(1);
+    expect(response.body).not.toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF);
+    expect(response.body).not.toContain('PROJECT_HISTORY_BUSINESS_HANDOFF');
+    expect(response.body).not.toContain('&lt;exact-business-paragraph&gt;');
+    expect(response.body).not.toContain('直接进入 business create');
+    expect(response.body).toContain('安装续接任务和其后业务任务');
+    for (const boundary of [
+      'Terminal',
+      '子智能体',
+      '浏览器',
+      '本地文件',
+      'Skill',
+      '记忆',
+      '缓存',
+      '路径',
+      'legacy 回退',
+    ]) {
+      expect(response.body).toContain(boundary);
+    }
+    expect(response.body).toContain('路径或内部 ID 不得进入用户消息、Combo 参数或可见说明');
+    expect(response.body).toContain('Host 工具内部绑定和结果处理仍可使用其自身返回的标识');
+    for (const toolName of [
+      'create_agent_package_draft',
+      'render_agent_package_draft',
+      'create_agent_package_share',
+      'read_agent_package_share',
+      'prepare_agent_package_run',
+    ]) {
+      expect(response.body).toContain(`<code>${toolName}</code>`);
+    }
+    expect(response.body).toContain('任一缺失就在读取任何 Project 前停止');
+    expect(response.body).toContain('<code>PROJECT_HISTORY_AGENT_MCP=NOT_AVAILABLE</code>');
+    expect(response.body).toContain('不得创建 business，也不得创建第二个安装续接任务');
+    expect(response.body).toContain('recovery-only');
+    expect(response.body).toContain('唯一一次 recovery create_thread');
+    expect(response.body).toContain('只返回一个非空 clientThreadId 时分类为 QUEUED');
+    expect(response.body).toContain(
+      '不得把 clientThreadId 传给 wait_threads、read_thread 或 navigate_to_codex_page',
+    );
+    expect(response.body).toContain('不得重复调用 create_thread');
+    expect(response.body).toContain('只有同一次 create_thread 同时返回 ready threadId 与 hostId');
+    expect(response.body).toContain(
+      '同时混入 clientThreadId、threadId 与 hostId 的 mixed 返回必须分类为 FAILED',
+    );
+    expect(response.body).toContain('mixed 返回的 wait、navigate 与 recreate 调用数都为 0');
+    expect(response.body).toContain('wait_threads({targets:[{threadId,hostId}],timeoutMs:0})');
+    expect(response.body).toContain('create 返回 READY 时不得预发 navigate budget');
+    expect(response.body).toContain('只有 wait snapshot 成功后才允许最多一次 navigate');
+    expect(response.body).toContain('wait 失败时 navigate 调用数为 0');
+    expect(response.body).toContain('::created-thread{clientThreadId=&quot;...&quot;}');
+    expect(response.body).toContain('::created-thread{threadId=&quot;...&quot;}');
+    expect(response.body).toContain('该指令不能代替 ready/open 验证');
+    expect(response.body).toContain(
+      '即使随后的 snapshot 或 navigation 失败，也必须保留 threadId 机器指令这一独立最终行',
+    );
+    expect(response.body).toContain('不得丢弃指令后只返回 marker');
+    expect(response.body).toContain('PROJECT_HISTORY_BOOTSTRAP_CREATE_FAILED');
+    expect(response.body).toContain('PROJECT_HISTORY_BOOTSTRAP_OPEN_FAILED');
+    expect(response.body).toContain('create_thread 能力不可用也使用该 marker');
+    expect(response.body).toContain(
+      'wait_threads 或 navigate_to_codex_page 能力不可用也使用 OPEN_FAILED',
+    );
+    expect(response.body).toContain('用户 prose 只报告唯一固定 marker');
+    expect(response.body).not.toContain('PROJECT_HISTORY_BOOTSTRAP_WAIT_FAILED');
+    expect(response.body).toContain('setup 入口最多创建一个 recovery 任务');
+    expect(response.body).toContain('recovery 入口创建 recovery 任务的预算为 0');
+    expect(response.body).toContain('任何失败都不得继续链式创建');
+    expect(response.body).toContain('仅供 initial setup 自动安装时使用的命令 fallback');
+    expect(response.body.indexOf(EXPECTED_PROJECT_HISTORY_INSTALL_PROMPT)).toBeLessThan(
+      response.body.indexOf('仅供 initial setup 自动安装时使用的命令 fallback'),
+    );
+    expect(response.body).toContain('Legacy current-task Codex Agent 流程');
+    expect(response.body).not.toContain('0.8.4');
     expect(response.body).toContain('plugin marketplace upgrade dangdang-tech-combo --json');
-    expect(response.body).toContain('先检查 combo@dangdang-tech-combo 是否已安装');
-    expect(response.body).toContain('Marketplace 已存在，跳过第一条');
+    expect(response.body).toContain('plugin list --json');
+    expect(response.body).toContain('marketplaceInitiallyPresent');
+    expect(response.body).toContain('upgradePerformed=false');
+    expect(response.body).toContain(
+      '无论 marketplaceInitiallyPresent 初值为何，只要此时已确认 official Marketplace 且 Plugin 仍缺失，就恰好执行一次',
+    );
+    expect(response.body).toContain(
+      'fresh install 的固定顺序必须是 marketplace add→重新读取并确认 official source→plugin add→最终检查',
+    );
+    const marketplaceAddIndex = response.body.indexOf(
+      'plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git',
+    );
+    const pluginAddIndex = response.body.indexOf('plugin add combo@dangdang-tech-combo --json');
+    const finalCheckIndex = response.body.indexOf('最后再次执行');
+    expect(marketplaceAddIndex).toBeGreaterThan(-1);
+    expect(pluginAddIndex).toBeGreaterThan(marketplaceAddIndex);
+    expect(finalCheckIndex).toBeGreaterThan(pluginAddIndex);
+    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.8.7');
+    expect(response.body).toContain('marketplace upgrade 最多执行一次');
+    expect(response.body).toContain('已有 official Marketplace 但 Plugin 缺失或版本过旧');
     expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
     expect(response.body).toContain('mcp login combo');
-    expect(response.body).toContain('create_project_agent_share');
-    expect(response.body).toContain('read_project_agent_share');
-    expect(response.body).toContain('仅在配置正确但新任务工具清单仍未更新时');
+    expect(response.body.match(/mcp login combo/gu)).toHaveLength(5);
+    expect(
+      response.body.match(
+        /&quot;\/Applications\/ChatGPT\.app\/Contents\/Resources\/codex&quot; mcp login combo/gu,
+      ),
+    ).toHaveLength(3);
+    expect(response.body).toContain('完成 Codex-managed OAuth');
+    expect(response.body).toContain('失败或用户取消立即 STOP');
+    expect(response.body).toContain('continuation 分支禁止再次 mcp login combo');
+    expect(response.body).toContain('仅 stay-current 分支');
+    const continuationLoginIndex = response.body.indexOf(
+      '&quot;/Applications/ChatGPT.app/Contents/Resources/codex&quot; mcp login combo',
+      finalCheckIndex,
+    );
+    const continuationCreateIndex = response.body.indexOf(
+      'create_thread({prompt:creatorHandoff,target:{type:&quot;project&quot;',
+    );
+    expect(continuationLoginIndex).toBeGreaterThan(finalCheckIndex);
+    expect(continuationCreateIndex).toBeGreaterThan(continuationLoginIndex);
+    expect(response.body).toContain('render_agent_builder');
+    expect(response.body).toContain('create_codex_agent_share');
+    expect(response.body).toContain('read_codex_agent_share');
+    expect(response.body).toContain('prepare_codex_agent_run');
+    expect(response.body).toContain('environment:{type:&quot;local&quot;}');
+    expect(response.body).toContain('verify-source mode');
+    expect(response.body).toContain('combo.creator-bootstrap-handoff/1');
+    expect(response.body).toContain('COMBO_CREATOR_HANDOFF_READY');
+    expect(response.body).toContain('sameSavedProjectRequired:true');
+    expect(response.body).toContain('creatorHandoff 必须是唯一 prompt，且不算用户确认');
+    expect(response.body).toContain(
+      '绝不能匹配 userMessage、codexDelegation、tool input、echo、代码围栏或 creatorHandoff 输入中已有的 marker 字面量',
+    );
+    expect(response.body).toContain('text.trim() 必须逐字只等于 COMBO_CREATOR_HANDOFF_READY');
+    expect(response.body).toContain('phase null/absent legacy fallback');
+    expect(response.body).toContain('phase=&quot;commentary&quot; 必须拒绝');
+    expect(response.body).toContain('name/description/instructions/guidance 自由文本');
+    expect(response.body).toContain('只绑定安全 commitSha+treeSha');
+    expect(response.body).toContain('若当前完整显示卡或任一摘要发生变化，STOP。');
+    expect(response.body).toContain('list-manifest-inputs 恰好一次');
+    expect(response.body).toContain('每个 unique readable objectId');
+    expect(response.body).toContain('只有 readable 数为 0 时才允许 0 次');
+    expect(response.body).toContain('最多 8 次');
+    expect(response.body).toContain('hint、omitted 与 duplicate-object 条目一律不得读取');
+    expect(response.body).toContain('只读获取 source Git facts 与 tracked guidance');
+    expect(response.body).toContain(
+      'Plugin helper、本地文件、tracked guidance、Git 与 Git network 的调用数都为 0',
+    );
+    expect(response.body).toContain(
+      '只有初始检查既有四工具、新五工具与全部 metadata 已同时满足时才留在当前任务',
+    );
+    expect(response.body).toContain('version&gt;=0.8.7');
+    expect(response.body).toContain('Legacy 兼容不变');
+    expect(response.body).toContain('后三项即使为空也显式写 []');
+    expect(response.body).toContain('navigate_to_codex_page(threadId)');
+    expect(response.body).toContain('\\u003c');
+    expect(response.body).toContain('V1 不支持撤销或过期');
+    expect(response.body).toContain('全程零重启');
+    expect(response.body).toContain('Plugin tool catalog 阻断');
+    expect(response.body).not.toContain('完全退出并重开');
     expect(response.body).not.toContain('plugin remove');
     expect(response.body).not.toContain('marketplace remove');
     expect(response.body).not.toContain('mcp add combo');
+    expect(response.body).not.toContain('$COMBO_CODEX_CLI');
   });
 
-  it.each(['preview', 'production'] as const)(
+  it.each(['development', 'preview', 'production'] as const)(
     'does not expose a cross-environment install command in %s',
     async (environment) => {
       const isolated = Fastify({ logger: false });
@@ -217,6 +582,8 @@ describe('external MCP root route integration', () => {
         expect(response.body).not.toContain('plugin marketplace add');
         expect(response.body).not.toContain('mcp login combo');
         expect(response.body).not.toContain('codex/combo-plugin-v2-ui');
+        expect(response.body).not.toContain('已验收的 Test 安装页');
+        expect(response.body).toContain('部署并验证后');
       } finally {
         await isolated.close();
       }
@@ -322,6 +689,7 @@ describe('external MCP root route integration', () => {
       expect(cleanupQuery).toHaveBeenCalledTimes(6);
       for (const call of cleanupQuery.mock.calls) {
         expect(call[0]).toContain('cleanup_expired_oauth_artifacts($1)');
+        expect(call[0]).toContain('cleanup_retired_project_history_confirmations($1)');
         expect(call[1]).toEqual([100]);
       }
     } finally {
@@ -334,11 +702,43 @@ describe('external MCP root route integration', () => {
 describe('external MCP stateless machine contract', () => {
   let app: FastifyInstance;
   let scope = 'combo.agent:read combo.agent:write';
+  let storedCodexShare:
+    | {
+        id: string;
+        owner_user_id: string;
+        share_token: string;
+        manifest: unknown;
+        manifest_sha256: string;
+        idempotency_key: string;
+        idempotency_sha256: string;
+        created_at: string;
+      }
+    | undefined;
 
   beforeAll(async () => {
     app = Fastify({ logger: false });
     const db = {
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes('INSERT INTO project_agent_shares')) {
+          storedCodexShare = {
+            id: '00000000-0000-4000-8000-000000000099',
+            owner_user_id: String(params[0]),
+            share_token: String(params[1]),
+            manifest: JSON.parse(String(params[2])) as unknown,
+            manifest_sha256: String(params[3]),
+            idempotency_key: String(params[4]),
+            idempotency_sha256: String(params[5]),
+            created_at: String(params[6]),
+          };
+          return { rows: [storedCodexShare], rowCount: 1 };
+        }
+        if (sql.includes('FROM project_agent_shares') && sql.includes('WHERE share_token')) {
+          const found =
+            storedCodexShare && storedCodexShare.share_token === params[0]
+              ? [storedCodexShare]
+              : [];
+          return { rows: found, rowCount: found.length };
+        }
         if (sql.includes('FROM capabilities')) {
           return {
             rows: [
@@ -395,19 +795,23 @@ describe('external MCP stateless machine contract', () => {
     await app.close();
   });
 
-  async function call(method: string, params?: unknown) {
+  async function call(
+    method: string,
+    params?: unknown,
+    accept = 'application/json, text/event-stream',
+  ) {
     return app.inject({
       method: 'POST',
       url: '/api/external-mcp/mcp',
       headers: {
         authorization: `Bearer ${TOKEN}`,
-        accept: 'application/json, text/event-stream',
+        accept,
       },
       payload: { jsonrpc: '2.0', id: 7, method, ...(params === undefined ? {} : { params }) },
     });
   }
 
-  it('supports initialize and advertises exactly the 20 stateless tools plus the Agent Builder app', async () => {
+  it('supports initialize and advertises the exact 23 legacy plus five Package tools', async () => {
     const initialized = await call('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
@@ -420,18 +824,22 @@ describe('external MCP stateless machine contract', () => {
       result: {
         protocolVersion: '2025-11-25',
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { version: '0.6.0' },
-        instructions: expect.stringContaining(
-          'use create_project_agent_share or read_project_agent_share',
-        ),
+        serverInfo: { version: '0.8.4' },
+        instructions: expect.stringContaining('use create_codex_agent_share'),
       },
     });
     const initializeResult = initialized.json() as {
       result: { instructions: string };
     };
-    expect(initializeResult.result.instructions).not.toContain('Call list_agent_projects first');
     expect(initializeResult.result.instructions).toContain(
-      'Call list_agent_projects only when the user explicitly requests the legacy Agent Builder flow',
+      'then use create_codex_agent_share and immediately read back the same URL',
+    );
+    expect(initializeResult.result.instructions).toContain('prepare_codex_agent_run');
+    expect(initializeResult.result.instructions).toContain('codex_agent_restore');
+    expect(initializeResult.result.instructions).toContain('starterOrdinal');
+    expect(initializeResult.result.instructions).toContain('fixed Creator confirmation action');
+    expect(initializeResult.result.instructions).toContain(
+      'Do not call extraction, Capability, legacy Agent Project, or Project Agent share tools',
     );
 
     const listed = await call('tools/list');
@@ -458,14 +866,23 @@ describe('external MCP stateless machine contract', () => {
       'publish_agent_revision',
       'create_project_agent_share',
       'read_project_agent_share',
+      'create_codex_agent_share',
+      'read_codex_agent_share',
+      'prepare_codex_agent_run',
+      'create_agent_package_draft',
+      'render_agent_package_draft',
+      'create_agent_package_share',
+      'read_agent_package_share',
+      'prepare_agent_package_run',
     ]);
-    expect(tools).toHaveLength(20);
+    expect(tools).toHaveLength(28);
     const run = tools.find((tool) => tool.name === 'run_agent_test')!;
     expect((run.inputSchema as { required: string[] }).required).toContain('revisionId');
     const readUi = tools.find((tool) => tool.name === 'read_agent_ui')!;
     expect((readUi.inputSchema as { oneOf: unknown[] }).oneOf).toHaveLength(2);
     const renderer = tools.find((tool) => tool.name === 'render_agent_builder')!;
     expect(renderer).toMatchObject({
+      inputSchema: { type: 'object', oneOf: expect.any(Array) },
       outputSchema: { type: 'object' },
       _meta: {
         ui: { resourceUri: 'ui://combo/agent-builder/v1.html' },
@@ -473,6 +890,27 @@ describe('external MCP stateless machine contract', () => {
       },
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     });
+    expect((renderer.inputSchema as { oneOf: unknown[] }).oneOf).toHaveLength(2);
+    const renderAjv = new Ajv({ allErrors: true, strict: false });
+    const validateRender = renderAjv.compile(renderer.inputSchema as Record<string, unknown>);
+    const strictRestoreInput = {
+      stage: 'codex_agent_restore',
+      shareUrl: `${ORIGIN}/agent/${'A'.repeat(43)}`,
+      manifestSha256: 'c'.repeat(64),
+    };
+    expect(validateRender(strictRestoreInput), JSON.stringify(validateRender.errors)).toBe(true);
+    expect(validateRender({ ...strictRestoreInput, title: 'forbidden' })).toBe(false);
+    expect(
+      validateRender({
+        stage: 'project_restore',
+        title: 'Legacy V0',
+        summary: '保留字节兼容。',
+        progress: [],
+        items: [],
+        actions: [],
+      }),
+      JSON.stringify(validateRender.errors),
+    ).toBe(true);
     for (const name of ['create_project_agent_share', 'read_project_agent_share']) {
       expect(tools.find((tool) => tool.name === name)).toMatchObject({
         outputSchema: {
@@ -482,6 +920,28 @@ describe('external MCP stateless machine contract', () => {
         },
       });
     }
+    for (const name of ['create_codex_agent_share', 'read_codex_agent_share']) {
+      expect(tools.find((tool) => tool.name === name)).toMatchObject({
+        outputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['manifest', 'manifestSha256', 'shareUrl', 'copyPrompt'],
+        },
+      });
+    }
+    expect(tools.find((tool) => tool.name === 'prepare_codex_agent_run')).toMatchObject({
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['shareUrl', 'manifestSha256', 'starterOrdinal', 'starterPrompt'],
+      },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['shareUrl', 'manifestSha256', 'starterOrdinal', 'starterPrompt', 'runEnvelope'],
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    });
 
     const resources = await call('resources/list');
     expect(resources.json()).toMatchObject({
@@ -490,6 +950,11 @@ describe('external MCP stateless machine contract', () => {
           {
             uri: 'ui://combo/agent-builder/v1.html',
             name: 'combo-agent-builder',
+            mimeType: 'text/html;profile=mcp-app',
+          },
+          {
+            uri: 'ui://combo/project-history-agent-draft/v1.html',
+            name: 'combo-project-history-agent-draft',
             mimeType: 'text/html;profile=mcp-app',
           },
         ],
@@ -514,6 +979,25 @@ describe('external MCP stateless machine contract', () => {
     expect(html).toContain("notify('ui/notifications/initialized'");
     expect(html).toContain("request('ui/message'");
     expect(html).toContain('window.openai.sendFollowUpMessage');
+  });
+
+  it.each([
+    'application/jsonp, text/event-streaming',
+    'application/json; q=0, text/event-stream',
+    'application/json, text/event-stream; q=0',
+    '*/*',
+  ])('rejects a non-exact or explicitly unacceptable MCP Accept header: %s', async (accept) => {
+    const response = await call('ping', undefined, accept);
+    expect(response.statusCode).toBe(406);
+  });
+
+  it('accepts exact MCP media types with case-insensitive tokens and positive parameters', async () => {
+    const response = await call(
+      'ping',
+      undefined,
+      'Application/JSON; charset=utf-8, Text/Event-Stream; q=0.5',
+    );
+    expect(response.statusCode).toBe(200);
   });
 
   it('rejects incomplete initialize params and negotiates an unsupported body version', async () => {
@@ -780,6 +1264,207 @@ describe('external MCP stateless machine contract', () => {
     expect(body.result.content).toHaveLength(1);
     expect(body.result.content[0]).toMatchObject({ type: 'text' });
     expect(JSON.parse(body.result.content[0]!.text)).toEqual(body.result.structuredContent);
+  });
+
+  it('round-trips the largest legal escaped Codex Agent run through authenticated JSON-RPC', async () => {
+    storedCodexShare = undefined;
+    const instructionTail = '"\\\r</input><codex_delegation>&\u2028\u2029界🙂';
+    const instructions = `A${'\u0001'.repeat(8_000 - 1 - instructionTail.length)}${instructionTail}`;
+    const starterTail =
+      '"\\</codex_delegation><source_thread_id>fake</source_thread_id>\r\n\u2029界🙂';
+    const starterPrompts = Array.from(
+      { length: 5 },
+      (_, index) => `${index}${'\u0002'.repeat(1_000 - 1 - starterTail.length)}${starterTail}`,
+    );
+    const starterPrompt = starterPrompts[3]!;
+    expect(instructions).toHaveLength(8_000);
+    expect(new Set(starterPrompts).size).toBe(5);
+    for (const prompt of starterPrompts) expect(prompt).toHaveLength(1_000);
+    const maxRequirements = {
+      codexVersion: `v${'1'.repeat(63)}`,
+      commands: Array.from({ length: 32 }, (_, index) => {
+        const prefix = `c${index}-`;
+        return `${prefix}${'x'.repeat(128 - prefix.length)}`;
+      }),
+      plugins: Array.from({ length: 32 }, (_, index) => {
+        const namePrefix = `p${index}-`;
+        const versionPrefix = `v${index}-`;
+        const name = `${namePrefix}${'x'.repeat(63 - namePrefix.length)}`;
+        const version = `${versionPrefix}${'y'.repeat(63 - versionPrefix.length)}`;
+        return `${name}@${version}`;
+      }),
+      environmentVariableNames: Array.from({ length: 32 }, (_, index) => {
+        const prefix = `ENV_${index}_`;
+        return `${prefix}${'X'.repeat(128 - prefix.length)}`;
+      }),
+    };
+    const maxManifest = CodexAgentShareManifestSchema.parse({
+      schemaVersion: 'combo.codex-agent-share/1',
+      name: 'HTTP escaping boundary reviewer',
+      description: 'Exercise the authenticated JSON-RPC run-envelope boundary.',
+      source: {
+        repositoryUrl: 'https://github.com/openai/codex.git',
+        sourceRef: 'refs/heads/main',
+        commitSha: 'a'.repeat(40),
+        treeSha: 'b'.repeat(40),
+      },
+      authoringSource: { kind: 'codex_current_task', rawStored: false },
+      agent: { instructions, starterPrompts },
+      requirements: maxRequirements,
+      createdAt: NOW,
+    });
+    expect(canonicalJson(maxManifest.requirements).length).toBeGreaterThan(10_000);
+    expect(canonicalJson(maxManifest.requirements).length).toBeLessThanOrEqual(20_000);
+
+    const createdResponse = await call('tools/call', {
+      name: 'create_codex_agent_share',
+      arguments: {
+        name: maxManifest.name,
+        description: maxManifest.description,
+        repositoryUrl: maxManifest.source.repositoryUrl,
+        sourceRef: maxManifest.source.sourceRef,
+        commitSha: maxManifest.source.commitSha,
+        treeSha: maxManifest.source.treeSha,
+        agent: maxManifest.agent,
+        requirements: maxManifest.requirements,
+        idempotencyKey: '00000000-0000-4000-8000-000000000099',
+      },
+    });
+    expect(createdResponse.statusCode).toBe(200);
+    const createdBody = createdResponse.json() as {
+      result: {
+        content: Array<{ type: string; text?: string }>;
+        structuredContent: unknown;
+        isError?: boolean;
+      };
+    };
+    expect(createdBody.result.isError).toBeUndefined();
+    const created = CodexAgentShareResultSchema.parse(createdBody.result.structuredContent);
+    expect(created.manifest.agent).toEqual({ instructions, starterPrompts });
+    expect(createdBody.result.content[0]).toEqual({ type: 'text', text: '{"created":true}' });
+    expect(createdBody.result.content[0]?.text).not.toContain(instructions);
+    expect(createdBody.result.content[0]?.text).not.toContain(created.copyPrompt);
+    for (const prompt of starterPrompts) {
+      expect(createdBody.result.content[0]?.text).not.toContain(prompt);
+    }
+
+    const readResponse = await call('tools/call', {
+      name: 'read_codex_agent_share',
+      arguments: { shareUrl: created.shareUrl },
+    });
+    expect(readResponse.statusCode).toBe(200);
+    const readBody = readResponse.json() as {
+      result: {
+        content: Array<{ type: string; text?: string }>;
+        structuredContent: unknown;
+        isError?: boolean;
+      };
+    };
+    expect(readBody.result.isError).toBeUndefined();
+    expect(CodexAgentShareResultSchema.parse(readBody.result.structuredContent)).toEqual(created);
+    expect(readBody.result.content[0]).toEqual({ type: 'text', text: '{"read":true}' });
+    expect(readBody.result.content[0]?.text).not.toContain(instructions);
+    expect(readBody.result.content[0]?.text).not.toContain(created.copyPrompt);
+    for (const prompt of starterPrompts) {
+      expect(readBody.result.content[0]?.text).not.toContain(prompt);
+    }
+
+    const renderedResponse = await call('tools/call', {
+      name: 'render_agent_builder',
+      arguments: {
+        stage: 'codex_agent_restore',
+        shareUrl: created.shareUrl,
+        manifestSha256: created.manifestSha256,
+      },
+    });
+    expect(renderedResponse.statusCode).toBe(200);
+    const renderedBody = renderedResponse.json() as {
+      result: {
+        content: Array<{ type: string; text: string }>;
+        structuredContent: {
+          stage: string;
+          items: Array<{
+            summary: string;
+            facts: Array<{ label: string; value: string }>;
+            action?: { message: string };
+          }>;
+        };
+        isError?: boolean;
+      };
+    };
+    expect(renderedBody.result.isError).toBeUndefined();
+    expect(renderedBody.result.content).toEqual([
+      { type: 'text', text: '{"rendered":true,"stage":"codex_agent_restore"}' },
+    ]);
+    expect(renderedBody.result.structuredContent.stage).toBe('codex_agent_restore');
+    expect(renderedBody.result.structuredContent.items).toHaveLength(6);
+    expect(
+      renderedBody.result.structuredContent.items.slice(1).map((item) => item.summary),
+    ).toEqual(starterPrompts);
+    expect(
+      renderedBody.result.structuredContent.items[0]?.facts.find(
+        (fact) => fact.label === 'manifestSha256',
+      )?.value,
+    ).toBe(created.manifestSha256);
+    const renderedRequirements = renderedBody.result.structuredContent.items[0]?.facts.find(
+      (fact) => fact.label === 'requirements 完整 JSON',
+    )?.value;
+    expect(renderedRequirements).toBe(canonicalJson(maxRequirements));
+    expect(renderedRequirements?.length).toBeGreaterThan(10_000);
+    expect(renderedRequirements?.length).toBeLessThanOrEqual(20_000);
+    for (const item of renderedBody.result.structuredContent.items.slice(1)) {
+      for (const prompt of starterPrompts) {
+        expect(item.action?.message).not.toContain(prompt);
+      }
+    }
+
+    const preparedResponse = await call('tools/call', {
+      name: 'prepare_codex_agent_run',
+      arguments: {
+        shareUrl: created.shareUrl,
+        manifestSha256: created.manifestSha256,
+        starterOrdinal: 4,
+        starterPrompt,
+      },
+    });
+    expect(preparedResponse.statusCode).toBe(200);
+    const preparedBody = preparedResponse.json() as {
+      result: {
+        content: Array<{ type: string; text: string }>;
+        structuredContent: unknown;
+        isError?: boolean;
+      };
+    };
+    expect(preparedBody.result.isError).toBeUndefined();
+    const prepared = PrepareCodexAgentRunResultSchema.parse(preparedBody.result.structuredContent);
+    expect(prepared).toEqual({
+      shareUrl: created.shareUrl,
+      manifestSha256: created.manifestSha256,
+      starterOrdinal: 4,
+      starterPrompt,
+      runEnvelope: renderCodexAgentRunEnvelope({
+        manifest: created.manifest,
+        manifestSha256: created.manifestSha256,
+        shareUrl: created.shareUrl,
+        starterOrdinal: 4,
+        chosenStarterPrompt: starterPrompt,
+      }),
+    });
+    expect(prepared.runEnvelope.length).toBeLessThanOrEqual(64_000);
+    expect(prepared.runEnvelope).toContain('\\u0001');
+    expect(prepared.runEnvelope).not.toMatch(/[<>&\u2028\u2029]/u);
+    expect(JSON.parse(prepared.runEnvelope)).toMatchObject({
+      instructions,
+      starterOrdinal: 4,
+      starterPrompt,
+    });
+    expect(preparedBody.result.content).toEqual([{ type: 'text', text: '{"prepared":true}' }]);
+    expect(preparedBody.result.content[0]?.text).not.toContain(prepared.runEnvelope);
+    expect(preparedBody.result.content[0]?.text).not.toContain(instructions);
+    expect(preparedBody.result.content[0]?.text).not.toContain(starterPrompt);
+    for (const unchosen of starterPrompts.filter((prompt) => prompt !== starterPrompt)) {
+      expect(JSON.stringify(prepared)).not.toContain(unchosen);
+    }
   });
 
   it('denies a write tool when the access token has read-only scope', async () => {

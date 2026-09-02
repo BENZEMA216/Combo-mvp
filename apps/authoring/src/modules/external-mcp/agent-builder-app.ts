@@ -1,12 +1,12 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  'c3166e995618525912ae15e781ab634fe01a8f27d6edc048f6d0bebaecbbf670';
+  '04655ec709d28c57d5b98a74c619d980058378dca42b374e0d3b074a5049c3ad';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
   name: 'combo-agent-builder',
   title: 'Combo Agent Builder',
-  description: 'Render one model-checked Combo Agent Builder stage inside the conversation.',
+  description: 'Render one Combo Agent Builder stage inside the conversation.',
   mimeType: 'text/html;profile=mcp-app',
 } as const;
 
@@ -34,7 +34,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
       .item p { margin: 0; color: var(--color-text-secondary, #596579); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
       dl { display: grid; grid-template-columns: minmax(84px, .4fr) 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
       dt { color: var(--color-text-secondary, #6b7280); }
-      dd { margin: 0; overflow-wrap: anywhere; }
+      dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
       .actions { display: flex; flex-wrap: wrap; gap: 8px; }
       button { appearance: none; border: 1px solid var(--color-border-default, #cfd7e4); border-radius: 10px; padding: 9px 12px; background: var(--color-background-primary, #fff); color: inherit; font: inherit; font-size: 13px; font-weight: 680; cursor: pointer; }
       button[data-emphasis="primary"] { border-color: #3b5ccc; background: #3b5ccc; color: #fff; }
@@ -74,7 +74,8 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
         const stageLabels = {
           readiness: '就绪与范围', recommendations: 'Agent 建议', production: '生产进度',
           draft: 'Agent 草稿', test: '测试摘要', release: '发布确认',
-          project_share: 'Project Agent 分享', project_restore: 'Project Agent 恢复'
+          project_share: 'Project Agent 分享', project_restore: 'Project Agent 恢复',
+          codex_agent_restore: 'Codex Agent 恢复确认'
         };
         const pending = new Map();
         let nextId = 1;
@@ -273,7 +274,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           if (legacyPayload) render(legacyPayload);
           try {
             await request('ui/initialize', {
-              appInfo: { name: 'combo-agent-builder', version: '0.6.0' },
+              appInfo: { name: 'combo-agent-builder', version: '0.8.4' },
               appCapabilities: { availableDisplayModes: ['inline'] },
               protocolVersion: MCP_UI_PROTOCOL_VERSION
             });

@@ -125,6 +125,7 @@ AUTHORING_WRITE_PROBES=(
   "POST /api/v1/agent-projects/${ZERO_ID}/revisions"
   "POST /api/v1/agent-projects/${ZERO_ID}/tests/${ZERO_ID}/reviews"
   "POST /api/v1/agent-projects/${ZERO_ID}/releases"
+  'POST /api/v1/codex-agent-shares'
 )
 for probe in "${AUTHORING_WRITE_PROBES[@]}"; do
   assert_browser_write_guards "${probe%% *}" "${API_BASE}" "${probe#* }"

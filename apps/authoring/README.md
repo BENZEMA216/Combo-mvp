@@ -1,6 +1,6 @@
 # apps/authoring（创作端服务）
 
-本包是创作者业务、Agent 创作聚合和余额充值的唯一写入服务。API 进程提供第一方邮箱验证码认证、任务、上传、提取、能力管理、Agent Project/Revision/Test Review/Release、钱包读取与乐收赢充值接口；worker 进程消费提取队列并执行租约对账。只有 API 进程持有邮件供应商、验证码 HMAC 和支付机构密钥，worker 不依赖认证投递或支付配置。
+本包是创作者业务、Agent 创作聚合和余额充值的唯一写入服务。API 进程提供第一方邮箱验证码认证、任务、上传、提取、能力管理、Agent Project/Revision/Test Review/Release、兼容 Project Agent 分享、当前任务派生 Codex Agent 分享、钱包读取与乐收赢充值接口；worker 进程消费提取队列并执行租约对账。只有 API 进程持有邮件供应商、验证码 HMAC 和支付机构密钥，worker 不依赖认证投递或支付配置。
 
 ## 目录与文件
 
