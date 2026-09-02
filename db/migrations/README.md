@@ -12,3 +12,5 @@
 的一次性五分钟确认、带整份 canonical JSON digest 的不可变 public-by-link Agent Package share，以及每批最多
 100 条且只删除已消费/已过期 confirmation 的 SECURITY DEFINER 清理入口。`0012` 至 `0015` 的已应用字节保持
 不变；后续结构继续追加编号。
+
+`0017_agent_package_registry.sql` 创建 canonical `agent_packages` 与 `agent_package_releases`，`0018_agent_session_usage_receipts.sql` 追加 exact Agent Package Session 绑定和 immutable usage receipt，`0019_pending_usage_recovery.sql` 追加 402 pending request/recharge recovery 状态机。live Test 已记录 `0012`–`0019`，因此这八个文件名和精确字节全部不可变；任何应用回退镜像也必须携带完整到 `0019_pending_usage_recovery.sql` 的源前缀。本 79f 系页面候选携带 `0017`–`0019` 只为 migration-job forward compatibility，不代表后续 Registry、receipt 或 recovery 应用功能已在这份候选中激活。

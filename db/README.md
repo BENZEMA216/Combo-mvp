@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0016`，共 17 个 SQL；已经发布的 `0000` 至 `0015` 保持原样，新结构只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0019`，共 20 个 SQL；已经发布的 `0000` 至 `0019` 文件名与字节保持原样，新结构只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
 
 ## 迁移文件
 
@@ -23,8 +23,11 @@
 - `0016_project_history_agent_flow.sql` 追加 strict typed Project-history Draft、由数据库 wall clock 原子签发且只存
   摘要的五分钟单次确认、带完整 canonical JSON 摘要的不可变/不过期/不可撤回 public-by-link Agent Package
   share，以及仅能有界清理已消费或已过期 confirmation 的受控函数。
+- `0017_agent_package_registry.sql` 创建 canonical `agent_packages` commit marker 与 immutable `agent_package_releases`，以 exact Package digest 作为唯一内容身份。
+- `0018_agent_session_usage_receipts.sql` 为受控 Test Agent Session 冻结 exact Release/Package 和 Knowledge resource 快照，并追加 immutable terminal usage receipt。
+- `0019_pending_usage_recovery.sql` 为 402 尚未 admission 的请求追加 server-authoritative pending recovery、price snapshot、recharge intent 和单调 terminal closure。
 
-`0016` 是 forward-only 迁移。Test 若需回退应用，后续回退提交仍必须保留 `0016` 迁移源、账本前缀和当前 expected head；不得直接部署不含该迁移源的旧 `c54f751` 应用镜像，也不得删除或改写已经应用的表。
+`0012` 至 `0019` 是 live Test 已发布的 forward-only 兼容链。Test 若需回退应用，后续回退提交仍必须保留这些迁移源、账本前缀和 `0019_pending_usage_recovery.sql` expected head；不得部署不识别 live `0019` ledger 的旧镜像，也不得删除或改写已应用的表。本 79f 系页面候选携带 `0017`–`0019` 是 deployment compatibility 修复，不表示它激活了后续 Registry、receipt 或 recovery 业务 API。
 
 `project_agent_shares` 独立冻结可公开读取的 Git Project manifest，不进入 Agent Runtime 模型。
 
@@ -52,10 +55,10 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0016_project_history_agent_flow.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
 ```
 
-`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
+`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明同一 production image 能从空库执行至 `0019`、对已到 `0019` 的账本再次幂等执行、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。

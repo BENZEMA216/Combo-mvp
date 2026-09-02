@@ -98,8 +98,23 @@ docker run --rm --network "$NETWORK" --entrypoint node \
   -e POSTGRES_API_PASSWORD="$POSTGRES_API_PASSWORD" \
   -e POSTGRES_WORKER_PASSWORD="$POSTGRES_WORKER_PASSWORD" \
   -e POSTGRES_RUNTIME_PASSWORD="$POSTGRES_RUNTIME_PASSWORD" \
+  -e MIGRATION_RUNS=2 \
   "$IMAGE" --experimental-strip-types db/scripts/migrate.ts \
-  --expected-head 0016_project_history_agent_flow.sql
+  --expected-head 0019_pending_usage_recovery.sql
+
+log 'rerunning the same production image migration job against the already-0019 ledger'
+docker run --rm --network "$NETWORK" --entrypoint node \
+  -e PGHOST="$POSTGRES" \
+  -e PGPORT=5432 \
+  -e PGUSER=postgres \
+  -e PGPASSWORD="$POSTGRES_ADMIN_PASSWORD" \
+  -e PGDATABASE=postgres \
+  -e POSTGRES_API_PASSWORD="$POSTGRES_API_PASSWORD" \
+  -e POSTGRES_WORKER_PASSWORD="$POSTGRES_WORKER_PASSWORD" \
+  -e POSTGRES_RUNTIME_PASSWORD="$POSTGRES_RUNTIME_PASSWORD" \
+  -e MIGRATION_RUNS=2 \
+  "$IMAGE" --experimental-strip-types db/scripts/migrate.ts \
+  --expected-head 0019_pending_usage_recovery.sql
 
 log 'installing a disposable legacy-compatible OAuth bearer fixture'
 docker exec -i -e PGPASSWORD="$POSTGRES_ADMIN_PASSWORD" "$POSTGRES" \
@@ -180,8 +195,9 @@ done
   fail 'production API did not serve /health'
 }
 
-log 'verifying real HTTP health, initialize, exact 28 tools, exact 2 resources, and typed resource'
+log 'verifying real HTTP health/version/OAuth, exact 28 tools, exact 2 resources, and the 174-byte guide'
 docker exec "$API" node --input-type=module -e '
+  const base = "http://127.0.0.1:3000";
   const endpoint = "http://127.0.0.1:3000/api/external-mcp/mcp";
   const headers = {
     authorization: `Bearer ${process.env.SMOKE_TOKEN}`,
@@ -201,8 +217,53 @@ docker exec "$API" node --input-type=module -e '
     }
     return body.result;
   };
-  const health = await fetch("http://127.0.0.1:3000/health");
+  const health = await fetch(`${base}/health`);
   if (!health.ok || (await health.json()).status !== "ok") throw new Error("health failed");
+  const versionResponse = await fetch(`${base}/api/v1/version`);
+  const version = await versionResponse.json();
+  if (
+    !versionResponse.ok ||
+    version.environment !== "test" ||
+    version.sourceSha !== "1111111111111111111111111111111111111111" ||
+    version.releaseId !== "release-1111111111111111111111111111111111111111"
+  ) {
+    throw new Error("API release version identity failed");
+  }
+  const protectedPaths = [
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/api/external-mcp/mcp",
+  ];
+  for (const path of protectedPaths) {
+    const response = await fetch(`${base}${path}`);
+    const metadata = await response.json();
+    if (
+      !response.ok ||
+      metadata.resource !== "https://image-smoke.combo.invalid/api/external-mcp/mcp"
+    ) {
+      throw new Error(`OAuth protected-resource metadata failed: ${path}`);
+    }
+  }
+  const authorizationServerResponse = await fetch(
+    `${base}/.well-known/oauth-authorization-server`,
+  );
+  const authorizationServer = await authorizationServerResponse.json();
+  if (
+    !authorizationServerResponse.ok ||
+    authorizationServer.issuer !== "https://image-smoke.combo.invalid"
+  ) {
+    throw new Error("OAuth authorization-server metadata failed");
+  }
+  const unauthorized = await fetch(endpoint, {
+    method: "POST",
+    headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
+  });
+  if (
+    unauthorized.status !== 401 ||
+    !unauthorized.headers.get("www-authenticate")?.includes("oauth-protected-resource")
+  ) {
+    throw new Error("unauthenticated MCP OAuth challenge failed");
+  }
   const initialized = await call(1, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
@@ -241,7 +302,40 @@ docker exec "$API" node --input-type=module -e '
   ) {
     throw new Error("typed Draft resource is missing from the production runtime");
   }
-  process.stdout.write(`production API runtime ok (${names.length} tools, ${uris.length} resources)\n`);
+  const pageResponse = await fetch(`${base}/codex-plugin`);
+  const page = await pageResponse.text();
+  const installPrompt =
+    "阅读 https://test.43-160-242-46.sslip.io/codex-plugin ，帮我安装或升级 Combo 插件；完成后只创建一个安装续接任务，不要直接开始制作 Agent。";
+  if (
+    !pageResponse.ok ||
+    Buffer.byteLength(installPrompt, "utf8") !== 174 ||
+    page.split(installPrompt).length - 1 !== 1 ||
+    !page.includes("TEST_RUNTIME") ||
+    !page.includes(`sourceSha=${version.sourceSha}`) ||
+    !page.includes(`releaseId=${version.releaseId}`) ||
+    !page.includes("schemaVersion=combo.project-history-bootstrap-controller/1") ||
+    !page.includes("/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u NODE_V8_COVERAGE -u NODE_COMPILE_CACHE -u NODE_REDIRECT_WARNINGS") ||
+    !page.includes("5,000 ms") ||
+    !page.includes("SIGKILL") ||
+    !page.includes("empty environment") ||
+    !page.includes("2,000 UTF-8 bytes") ||
+    !page.includes("33d94d776e9d4eb0cf2238358857c8e4b33427de655be6a52d33e834d460146d") ||
+    !page.includes("14,507 UTF-8 bytes") ||
+    !page.includes("0f57fd11fc2a45f4cd23f5718fa676e0b607b5c1a3dd10f3073acd444e2b7ca0") ||
+    !page.includes("1,074 UTF-8 bytes") ||
+    !page.includes("7df7bced005edd481e8eaa3169a8cac3dfa278d459942a15ef31bf595fd101fc") ||
+    !page.includes("PROJECT_HISTORY_BOOTSTRAP_CONTROLLER_EXEC_FAILED") ||
+    page.includes("1,935 UTF-8 bytes") ||
+    page.includes("54c08151e07d7c43465a918e7cd4c4cc15d3e156d3e73ccc877b6cd379be9a0e") ||
+    page.includes("NOT_DEPLOYED") ||
+    page.includes("NOT_UAT") ||
+    page.includes("CODE_CONTRACT")
+  ) {
+    throw new Error("Project-history 174-byte live-truth guide failed");
+  }
+  process.stdout.write(
+    `production API runtime ok (${names.length} tools, ${uris.length} resources, 174-byte page)\n`,
+  );
 '
 
 log 'production image runtime smoke passed'
