@@ -8,9 +8,12 @@ import { fileURLToPath } from 'node:url';
 import {
   assessCumulative,
   assessPullRequest,
+  classifyPlatformV2Bootstrap,
   contractPath,
   defaultBaseRef,
   initialTrancheLock,
+  isAuthorizedPlatformV2AdmissionContext,
+  isExactPlatformV2AdmissionShape,
   isExactPlatformV2Bootstrap,
   isExactProductBaselineBootstrap,
   isExactMaintenanceModeBootstrap,
@@ -51,7 +54,7 @@ const authoringBillingRecoveryFiles = Object.freeze([
   'apps/authoring/src/modules/billing/types.ts',
 ]);
 
-const platformV2Files = Object.freeze([
+const platformV2BootstrapPaths = Object.freeze([
   'apps/authz/README.md',
   'apps/authz/package.json',
   'apps/authz/src/__tests__/app.test.ts',
@@ -184,11 +187,13 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(contract.baseSha, platformV2BootstrapLock.candidateSha);
   assert.deepEqual(contract.previousTranche, previousTrancheLock);
   assert.deepEqual(contract.platformV2Bootstrap, platformV2BootstrapLock);
+  assert.equal(platformV2BootstrapLock.repository, 'dangdang-tech/Combo');
+  assert.equal(platformV2BootstrapLock.pullRequestNumber, 223);
   assert.deepEqual(contract.compatibility, {
     preservePostgresMigrationHistory: true,
     preserveWorkerSqliteSchemaHistory: true,
   });
-  assert.equal(contract.scopeId, 'vnext-r1-r3-plus-v2-validation');
+  assert.equal(contract.scopeId, 'vnext-r1-r3-with-v2-bootstrap');
   assert.equal(contract.trancheId, 'v2-platform-validation-bootstrap');
   assert.equal(
     createHash('sha256')
@@ -225,6 +230,10 @@ test('the PR quality job retains full history and the budget-bearing test entryp
   const pullRequestWorkflow = readFileSync(join(repo, '.github/workflows/pr-ci.yml'), 'utf8');
   const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
   assert.match(pullRequestWorkflow, /fetch-depth: 0/);
+  assert.match(
+    pullRequestWorkflow,
+    /PULL_REQUEST_NUMBER: \$\{\{ github\.event\.pull_request\.number \}\}/,
+  );
   assert.match(pullRequestWorkflow, /run: pnpm test:fast/);
   assert.match(
     packageJson.scripts['test:workflow-contracts'],
@@ -421,7 +430,8 @@ test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => 
   );
   const exactContext = {
     rawDiffSha256: platformV2BootstrapLock.rawDiffSha256,
-    candidateIsAncestor: true,
+    bootstrapState: 'ADMITTING',
+    admissionShapeValid: true,
     previousMainIsAncestor: true,
   };
 
@@ -443,7 +453,15 @@ test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => 
     isExactPlatformV2Bootstrap({
       entries,
       ...exactContext,
-      candidateIsAncestor: false,
+      bootstrapState: 'CONSUMED',
+    }),
+    false,
+  );
+  assert.equal(
+    isExactPlatformV2Bootstrap({
+      entries,
+      ...exactContext,
+      admissionShapeValid: false,
     }),
     false,
   );
@@ -465,18 +483,119 @@ test('the V2 bootstrap bypass is bound to the immutable payload receipt', () => 
   assert.throws(() => assessPullRequest(contract, entries), /changed-file budget exceeded/);
 });
 
-test('the V2 validation scope opens only the 66 reviewed paths', () => {
-  assert.equal(platformV2Files.length, 66);
-  assert.deepEqual(platformV2Files, [...platformV2Files].sort());
+test('the V2 bootstrap state and merge shape consume the bypass exactly once', () => {
+  assert.equal(
+    classifyPlatformV2Bootstrap({ candidateInBase: false, candidateInHead: false }),
+    'PENDING',
+  );
+  assert.equal(
+    classifyPlatformV2Bootstrap({ candidateInBase: false, candidateInHead: true }),
+    'ADMITTING',
+  );
+  assert.equal(
+    classifyPlatformV2Bootstrap({ candidateInBase: true, candidateInHead: true }),
+    'CONSUMED',
+  );
+  assert.throws(
+    () => classifyPlatformV2Bootstrap({ candidateInBase: true, candidateInHead: false }),
+    /cannot be in base but absent from HEAD/,
+  );
 
-  for (const path of platformV2Files) {
-    assert.equal(contract.allowedFiles.filter((candidate) => candidate === path).length, 1, path);
+  const comparisonBase = '1'.repeat(40);
+  const candidateSha = '2'.repeat(40);
+  const sourceHead = '3'.repeat(40);
+  const exactOuterMerge = {
+    comparisonBase,
+    candidateSha,
+    headParents: [comparisonBase, sourceHead],
+    sourceParents: [candidateSha, comparisonBase],
+    requireOuterMerge: true,
+  };
+  assert.equal(isExactPlatformV2AdmissionShape(exactOuterMerge), true);
+  assert.equal(
+    isExactPlatformV2AdmissionShape({
+      ...exactOuterMerge,
+      headParents: [candidateSha, comparisonBase],
+      sourceParents: [],
+      requireOuterMerge: false,
+    }),
+    true,
+  );
+
+  for (const invalid of [
+    { ...exactOuterMerge, headParents: [sourceHead] },
+    { ...exactOuterMerge, headParents: [sourceHead, comparisonBase] },
+    { ...exactOuterMerge, headParents: [comparisonBase, sourceHead, '4'.repeat(40)] },
+    { ...exactOuterMerge, sourceParents: [comparisonBase, candidateSha] },
+    { ...exactOuterMerge, sourceParents: [candidateSha, '4'.repeat(40)] },
+    { ...exactOuterMerge, sourceParents: [candidateSha, comparisonBase, '4'.repeat(40)] },
+    {
+      ...exactOuterMerge,
+      headParents: [candidateSha, comparisonBase],
+      sourceParents: [],
+      requireOuterMerge: true,
+    },
+  ]) {
+    assert.equal(isExactPlatformV2AdmissionShape(invalid), false);
+  }
+
+  const githubContext = {
+    githubActions: 'true',
+    repository: 'dangdang-tech/Combo',
+    eventName: 'pull_request',
+    pullRequestNumber: '223',
+  };
+  assert.equal(isAuthorizedPlatformV2AdmissionContext(githubContext), true);
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({ ...githubContext, pullRequestNumber: '224' }),
+    false,
+  );
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({ ...githubContext, repository: 'fork/Combo' }),
+    false,
+  );
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({ ...githubContext, eventName: 'workflow_call' }),
+    true,
+  );
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({ ...githubContext, eventName: 'workflow_dispatch' }),
+    true,
+  );
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({
+      ...githubContext,
+      eventName: 'push',
+      ref: 'refs/heads/main',
+    }),
+    true,
+  );
+  assert.equal(
+    isAuthorizedPlatformV2AdmissionContext({
+      ...githubContext,
+      eventName: 'push',
+      ref: 'refs/heads/feature',
+    }),
+    false,
+  );
+  assert.equal(isAuthorizedPlatformV2AdmissionContext({ githubActions: undefined }), true);
+});
+
+test('V2 paths remain closed after the exact bootstrap is consumed', () => {
+  assert.equal(platformV2BootstrapPaths.length, 66);
+  assert.deepEqual(platformV2BootstrapPaths, [...platformV2BootstrapPaths].sort());
+  for (const path of platformV2BootstrapPaths) {
+    assert.equal(contract.allowedFiles.includes(path), false, path);
     assert.equal(
       contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
       false,
       path,
     );
-    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
   }
 
   for (const path of [
@@ -611,11 +730,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    [
-      ...allowedKnowledgeInfraFiles,
-      ...allowedPublisherInfraFiles,
-      ...platformV2Files.filter((path) => path.startsWith('infra/')),
-    ].sort(),
+    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
@@ -879,7 +994,6 @@ test('Agent Package Publisher Test scope opens only exact config and render wiri
       ...allowedPublisherInfraFiles,
       'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
       'infra/k8s/runtime.yaml',
-      ...platformV2Files.filter((path) => path.startsWith('infra/k8s/')),
     ].sort(),
   );
   assert.deepEqual(

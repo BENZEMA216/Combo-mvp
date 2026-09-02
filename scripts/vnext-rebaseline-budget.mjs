@@ -56,6 +56,8 @@ export const previousTrancheLock = Object.freeze({
 
 export const platformV2BootstrapLock = Object.freeze({
   protocol: 'combo.platform-v2-bootstrap/1',
+  repository: 'dangdang-tech/Combo',
+  pullRequestNumber: 223,
   previousMainSha: '353c25a4b318daa1893207e993dd0f1d2067c28e',
   candidateSha: '0cfeb3c981bc7807ff000713b64a6dbf280e274b',
   rawDiffSha256: '9b9bc134973ae113e2516c97bf479d842e0f491ff7baf13efa4dc9f3e280533d',
@@ -195,7 +197,7 @@ export function parseContract(source) {
   );
   invariant(value.protocol === protocol, 'budget protocol changed');
   invariant(value.schemaVersion === 3, 'budget schemaVersion must be 3');
-  invariant(value.scopeId === 'vnext-r1-r3-plus-v2-validation', 'budget scopeId changed');
+  invariant(value.scopeId === 'vnext-r1-r3-with-v2-bootstrap', 'budget scopeId changed');
   invariant(value.trancheId === 'v2-platform-validation-bootstrap', 'budget trancheId changed');
   invariant(shaPattern.test(value.baseSha), 'baseSha must be a full lowercase commit SHA');
   exactKeys(
@@ -220,6 +222,8 @@ export function parseContract(source) {
     value.platformV2Bootstrap,
     [
       'protocol',
+      'repository',
+      'pullRequestNumber',
       'previousMainSha',
       'candidateSha',
       'rawDiffSha256',
@@ -326,17 +330,66 @@ function maxChangedLines(entries) {
 export function isExactPlatformV2Bootstrap({
   entries,
   rawDiffSha256,
-  candidateIsAncestor,
+  bootstrapState,
+  admissionShapeValid,
   previousMainIsAncestor,
 }) {
   const summary = summarize(entries);
   return (
-    candidateIsAncestor === true &&
+    bootstrapState === 'ADMITTING' &&
+    admissionShapeValid === true &&
     previousMainIsAncestor === true &&
     rawDiffSha256 === platformV2BootstrapLock.rawDiffSha256 &&
     summary.changedFiles === platformV2BootstrapLock.changedFiles &&
     summary.changedLines === platformV2BootstrapLock.changedLines &&
     maxChangedLines(entries) === platformV2BootstrapLock.maxChangedLinesPerFile
+  );
+}
+
+export function classifyPlatformV2Bootstrap({ candidateInBase, candidateInHead }) {
+  invariant(
+    !candidateInBase || candidateInHead,
+    'V2 candidate cannot be in base but absent from HEAD',
+  );
+  if (candidateInBase) return 'CONSUMED';
+  if (candidateInHead) return 'ADMITTING';
+  return 'PENDING';
+}
+
+export function isAuthorizedPlatformV2AdmissionContext({
+  githubActions,
+  eventName,
+  ref,
+  repository,
+  pullRequestNumber,
+}) {
+  if (githubActions !== 'true') return true;
+  if (repository !== platformV2BootstrapLock.repository) return false;
+  if (eventName === 'pull_request') {
+    return String(pullRequestNumber) === String(platformV2BootstrapLock.pullRequestNumber);
+  }
+  if (eventName === 'workflow_call' || eventName === 'workflow_dispatch') return true;
+  return eventName === 'push' && ref === 'refs/heads/main';
+}
+
+export function isExactPlatformV2AdmissionShape({
+  comparisonBase,
+  candidateSha,
+  headParents,
+  sourceParents,
+  requireOuterMerge,
+}) {
+  const directSourceIntegration =
+    headParents.length === 2 &&
+    headParents[0] === candidateSha &&
+    headParents[1] === comparisonBase;
+  if (!requireOuterMerge && directSourceIntegration) return true;
+  return (
+    headParents.length === 2 &&
+    headParents[0] === comparisonBase &&
+    sourceParents.length === 2 &&
+    sourceParents[0] === candidateSha &&
+    sourceParents[1] === comparisonBase
   );
 }
 
@@ -355,7 +408,8 @@ export function assessPullRequest(
   {
     comparisonBase,
     rawDiffSha256,
-    candidateIsAncestor = false,
+    bootstrapState = 'PENDING',
+    admissionShapeValid = false,
     previousMainIsAncestor = false,
   } = {},
 ) {
@@ -364,7 +418,8 @@ export function assessPullRequest(
   const exactPlatformV2Bootstrap = isExactPlatformV2Bootstrap({
     entries,
     rawDiffSha256,
-    candidateIsAncestor,
+    bootstrapState,
+    admissionShapeValid,
     previousMainIsAncestor,
   });
   let mode;
@@ -502,9 +557,7 @@ function verifyPlatformV2Bootstrap(contract) {
     'V2 bootstrap previous Main changed',
   );
   invariant(bootstrap.candidateSha === contract.baseSha, 'V2 bootstrap candidate changed');
-  if (!commitExists(bootstrap.candidateSha)) {
-    return { status: 'PENDING', candidateAvailable: false, active: false };
-  }
+  invariant(commitExists(bootstrap.candidateSha), 'V2 bootstrap candidate is unavailable');
   invariant(
     isAncestor(bootstrap.previousMainSha, bootstrap.candidateSha),
     'V2 bootstrap candidate must descend from previous Main',
@@ -522,12 +575,7 @@ function verifyPlatformV2Bootstrap(contract) {
       bootstrap.rawDiffSha256,
     'V2 bootstrap raw diff receipt changed',
   );
-  const active = isAncestor(bootstrap.candidateSha, 'HEAD');
-  return {
-    status: active ? 'ACTIVE' : 'PENDING',
-    candidateAvailable: true,
-    active,
-  };
+  return { candidateAvailable: true };
 }
 
 export function isExactProductBaselineBootstrap({ comparisonBase, entries, contract }) {
@@ -638,6 +686,37 @@ function commitExists(sha) {
   throw new Error(result.stderr.trim() || `cannot inspect ${sha}`);
 }
 
+function commitParents(commit) {
+  const fields = git(['rev-list', '--parents', '-n', '1', commit]).trim().split(' ');
+  invariant(
+    fields.length >= 1 && shaPattern.test(fields[0]),
+    `cannot inspect parents for ${commit}`,
+  );
+  return fields.slice(1);
+}
+
+function verifyPlatformV2AdmissionShape({ comparisonBase, candidateSha, requireOuterMerge }) {
+  const headParents = commitParents('HEAD');
+  const sourceParents =
+    headParents.length === 2 && headParents[0] === comparisonBase
+      ? commitParents(headParents[1])
+      : [];
+  invariant(
+    isExactPlatformV2AdmissionShape({
+      comparisonBase,
+      candidateSha,
+      headParents,
+      sourceParents,
+      requireOuterMerge,
+    }),
+    'V2 bootstrap must be an exact two-parent Main integration merge',
+  );
+  return {
+    valid: true,
+    shape: headParents[0] === comparisonBase ? 'GITHUB_MERGE_COMMIT' : 'LOCAL_SOURCE_INTEGRATION',
+  };
+}
+
 function collectDiff(base) {
   return parseNumstat(
     git(['diff', '--cached', '--no-renames', '--numstat', '-z', base]),
@@ -677,8 +756,15 @@ export function defaultBaseRef(environment = process.env) {
   return 'origin/main';
 }
 
-export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
+export function verifyRepository({ baseRef, environment = process.env } = {}) {
+  const resolvedBaseRef = baseRef ?? defaultBaseRef(environment);
   const contract = parseContract(readFileSync(join(repoRoot, contractPath), 'utf8'));
+  if (environment.GITHUB_ACTIONS === 'true') {
+    invariant(
+      environment.GITHUB_REPOSITORY === contract.platformV2Bootstrap.repository,
+      'budget gate is running in the wrong GitHub repository',
+    );
+  }
   const untracked = git(['ls-files', '--others', '--exclude-standard', '-z'])
     .split('\0')
     .filter(Boolean);
@@ -691,25 +777,63 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
     'budget check requires all tracked changes to be staged',
   );
   const previousTranche = verifyPreviousTranche(contract);
-  const platformV2Bootstrap = verifyPlatformV2Bootstrap(contract);
-  const comparisonBase = git(['merge-base', baseRef, 'HEAD']).trim();
+  const platformV2Receipt = verifyPlatformV2Bootstrap(contract);
+  const comparisonBase = git(['merge-base', resolvedBaseRef, 'HEAD']).trim();
   invariant(shaPattern.test(comparisonBase), 'comparison base is unavailable');
   const previousMainIsAncestor = isAncestor(
     contract.platformV2Bootstrap.previousMainSha,
     comparisonBase,
   );
   invariant(previousMainIsAncestor, 'pull request base must descend from previous Main');
+  const candidateInBase = isAncestor(contract.platformV2Bootstrap.candidateSha, comparisonBase);
+  const candidateInHead = isAncestor(contract.platformV2Bootstrap.candidateSha, 'HEAD');
+  const bootstrapState = classifyPlatformV2Bootstrap({ candidateInBase, candidateInHead });
+  const admission =
+    bootstrapState === 'ADMITTING'
+      ? verifyPlatformV2AdmissionShape({
+          comparisonBase,
+          candidateSha: contract.platformV2Bootstrap.candidateSha,
+          requireOuterMerge:
+            environment.GITHUB_EVENT_NAME === 'pull_request' ||
+            (environment.GITHUB_EVENT_NAME === 'push' &&
+              environment.GITHUB_REF === 'refs/heads/main'),
+        })
+      : { valid: false, shape: null };
+  const platformV2Bootstrap = {
+    ...platformV2Receipt,
+    state: bootstrapState,
+    candidateInBase,
+    candidateInHead,
+    admissionShape: admission.shape,
+  };
   const pullRequestEntries = collectDiff(comparisonBase);
   const pullRequest = assessPullRequest(contract, pullRequestEntries, {
     comparisonBase,
     rawDiffSha256: collectRawDiffSha256(comparisonBase),
-    candidateIsAncestor: platformV2Bootstrap.active,
+    bootstrapState,
+    admissionShapeValid: admission.valid,
     previousMainIsAncestor,
   });
-  if (!platformV2Bootstrap.active) {
+  if (bootstrapState === 'PENDING') {
     invariant(
       pullRequest.mode === 'GOVERNANCE_ONLY',
       'only governance changes are allowed until the V2 bootstrap candidate is integrated',
+    );
+  }
+  if (bootstrapState === 'ADMITTING') {
+    invariant(
+      isAuthorizedPlatformV2AdmissionContext({
+        githubActions: environment.GITHUB_ACTIONS,
+        eventName: environment.GITHUB_EVENT_NAME,
+        ref: environment.GITHUB_REF,
+        repository: environment.GITHUB_REPOSITORY,
+        pullRequestNumber: environment.PULL_REQUEST_NUMBER,
+      }),
+      'V2 bootstrap admission is not authorized in this GitHub context',
+    );
+    invariant(
+      pullRequest.mode === 'PLATFORM_V2_BOOTSTRAP',
+      'the V2 admission must match the exact bootstrap payload',
     );
   }
   const projectPath = join(repoRoot, 'PROJECT.md');
@@ -730,9 +854,10 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
         contract,
       }),
   });
-  const cumulative = platformV2Bootstrap.active
-    ? { status: 'ACTIVE', ...assessCumulative(contract, collectDiff(contract.baseSha)) }
-    : { status: 'PENDING_PLATFORM_V2_BOOTSTRAP', changedFiles: 0, changedLines: 0 };
+  const cumulative =
+    bootstrapState !== 'PENDING'
+      ? { status: bootstrapState, ...assessCumulative(contract, collectDiff(contract.baseSha)) }
+      : { status: 'PENDING_PLATFORM_V2_BOOTSTRAP', changedFiles: 0, changedLines: 0 };
   return {
     pullRequest,
     productBaseline,
