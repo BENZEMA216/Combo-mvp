@@ -3,6 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: restart-life
+  namespace: combo-v2
   labels:
     app: restart-life
 spec:
@@ -17,6 +18,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: restart-life
+  namespace: combo-v2
   labels:
     app: restart-life
 spec:

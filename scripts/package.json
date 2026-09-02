@@ -11,7 +11,7 @@
     "acceptance:smoke": "./acceptance-smoke.sh",
     "sandbox:e2e": "./integration/sandbox-tools-local.sh",
     "typecheck": "tsc -b",
-    "test": "node --test resend-sent-email.test.mjs render-env.test.mjs"
+    "test": "node --test resend-sent-email.test.mjs render-env.test.mjs render-v2.test.mjs migrate-v2-host.test.mjs"
   },
   "dependencies": {
     "@cb/shared": "workspace:*",
