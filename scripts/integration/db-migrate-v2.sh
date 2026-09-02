@@ -19,14 +19,14 @@ fail() {
 command -v pnpm >/dev/null 2>&1 || fail '需要 pnpm'
 command -v psql >/dev/null 2>&1 || fail '需要 psql'
 
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0014_v2_email_login.sql \
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_v2_billing_idempotency.sql \
   pnpm -F @cb/db migrate:v2
 
 migration_head=$(node --experimental-strip-types db/scripts/migrate-v2.ts --head)
-[[ "$migration_head" == 0014_v2_email_login.sql ]] || fail "迁移头错误：$migration_head"
+[[ "$migration_head" == 0015_v2_billing_idempotency.sql ]] || fail "迁移头错误：$migration_head"
 
 applied=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')
-[[ "$applied" == 15 ]] || fail "迁移账本数量错误：$applied"
+[[ "$applied" == 16 ]] || fail "迁移账本数量错误：$applied"
 
 for table in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls \
   auth_identities auth_otp_challenges auth_sessions auth_audit_events \
@@ -44,5 +44,10 @@ for canonical_only_table in agent_projects agent_packages agent_usage_receipts; 
   [[ "$exists" == f ]] || fail "V2 链混入正式表 $canonical_only_table"
 done
 
-APPLICATION_V2_ROLE_PG_TEST=1 pnpm --dir db exec vitest run \
-  __tests__/application-database-v2-roles.pg.test.ts
+APPLICATION_V2_ROLE_PG_TEST=1 V2_BILLING_UPGRADE_PG_TEST=1 pnpm --dir db exec vitest run \
+  __tests__/application-database-v2-roles.pg.test.ts \
+  __tests__/v2-role-restoration.pg.test.ts \
+  __tests__/v2-billing-idempotency-upgrade.pg.test.ts
+
+BILLING_V2_REPO_PG_TEST=1 BILLING_V2_TEST_DATABASE_URL="$DATABASE_URL" \
+  pnpm --dir apps/billing exec vitest run src/__tests__/repo.pg.test.ts

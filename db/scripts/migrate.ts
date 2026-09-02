@@ -185,6 +185,24 @@ function migrationClient(): Client {
   return new Client({ connectionString: 'postgres://combo:combo@localhost:5432/combo' });
 }
 
+export async function applyMigrationFile(
+  client: Pick<Client, 'query'>,
+  file: string,
+  sql: string,
+  beforeLedger?: () => Promise<void>,
+): Promise<void> {
+  await client.query('BEGIN');
+  try {
+    await client.query(sql);
+    await beforeLedger?.();
+    await client.query('INSERT INTO schema_migrations(filename) VALUES ($1)', [file]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw new Error(`migration ${file} failed: ${(error as Error).message}`);
+  }
+}
+
 export async function runMigrationCli(chain: MigrationChain = 'canonical'): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const files = listMigrations(chain);
@@ -205,9 +223,17 @@ export async function runMigrationCli(chain: MigrationChain = 'canonical'): Prom
     return;
   }
 
+  const v2RoleModule =
+    chain === 'v2' && !options.statusOnly ? await import('./provision-v2-app-roles.ts') : undefined;
+  if (v2RoleModule) {
+    // 在连接数据库或执行任何 DDL 前 fail-fast，禁止 fresh V2 链静默留下 NOLOGIN 角色。
+    v2RoleModule.assertV2ApplicationRolePasswords();
+  }
+
   const client = migrationClient();
   await client.connect();
   try {
+    let preexistingV2Roles = new Set<string>();
     let ledgerExists = (
       await client.query<{ exists: boolean }>(
         `SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists`,
@@ -245,6 +271,9 @@ export async function runMigrationCli(chain: MigrationChain = 'canonical'): Prom
 
     if (!options.statusOnly) {
       await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
+      if (v2RoleModule) {
+        preexistingV2Roles = await v2RoleModule.snapshotExistingV2ApplicationRoles(client);
+      }
       ledgerExists = (
         await client.query<{ exists: boolean }>(
           `SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists`,
@@ -300,15 +329,15 @@ export async function runMigrationCli(chain: MigrationChain = 'canonical'): Prom
         const sql = readFileSync(migrationFilePath(chain, file), 'utf-8');
 
         console.log(`applying ${file} ...`);
-        await client.query('BEGIN');
-        try {
-          await client.query(sql);
-          await client.query('INSERT INTO schema_migrations(filename) VALUES ($1)', [file]);
-          await client.query('COMMIT');
-        } catch (error) {
-          await client.query('ROLLBACK');
-          throw new Error(`migration ${file} failed: ${(error as Error).message}`);
-        }
+        await applyMigrationFile(
+          client,
+          file,
+          sql,
+          v2RoleModule
+            ? () =>
+                v2RoleModule!.restoreV2RoleLoginsWithinMigration(client, file, preexistingV2Roles)
+            : undefined,
+        );
       }
 
       const finalApplied = (
@@ -328,8 +357,10 @@ export async function runMigrationCli(chain: MigrationChain = 'canonical'): Prom
     // 0008 先以 NOLOGIN 创建并收口角色权限；全部迁移和账本复验成功后，才参数化设置密码。
     let roleLoginsConfigured: boolean;
     if (chain === 'v2') {
-      const { provisionV2ApplicationRoleLogins } = await import('./provision-v2-app-roles.ts');
-      roleLoginsConfigured = await provisionV2ApplicationRoleLogins(client);
+      roleLoginsConfigured = await v2RoleModule!.provisionV2ApplicationRoleLogins(
+        client,
+        preexistingV2Roles,
+      );
     } else {
       roleLoginsConfigured = await provisionApplicationRoleLogins(client);
     }

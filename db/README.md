@@ -23,11 +23,11 @@
 
 ## V2 独立验证链
 
-`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql`、`0013_v2_billing.sql` 与 `0014_v2_email_login.sql`。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
+`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0015_v2_billing_idempotency.sql`。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
 
 V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenges` 与 `v2_sessions`，和创作者域的 `auth_` 表互不引用。V2 计费域使用 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events`；流水和计量事件只允许追加。
 
-正式迁移完成后只配置 API、worker 与 runtime 三个角色。V2 独立链额外配置 `combo_authz` 与 `combo_billing`，并要求五份密码同时提供；其中正式三角色密码必须与共享 PostgreSQL 实例中的现值一致。
+正式迁移完成后只配置 API、worker 与 runtime 三个角色。V2 独立链额外配置 `combo_authz` 与 `combo_billing`，并在连接数据库前强制五份密码同时提供；其中正式三角色密码必须与共享 PostgreSQL 实例中的现值一致。V2 重放含 NOLOGIN 的迁移时，会在同一 migration transaction 提交前恢复该文件涉及的角色，失败整体回滚，其他连接看不到禁用状态。
 
 上述正式链中的 `0012` 至 `0016` 五个迁移只用于保持源码迁移前缀与 Test 的 `schema_migrations` 账本兼容，不表示当前应用已经激活对应旧业务协议。尤其是 `0012` 创建的 `agent_releases` 属于旧 Revision 与 Runtime Bundle 模型，`0016` 创建的 Project-history Draft、confirmation 与 share 也属于旧流程；它们都不是 [PROJECT.md](../PROJECT.md) 定义的 `AgentPackageRelease` 真源。新的 Agent Package、知识 Agent、分享或计费能力不得把这些旧表复用为产品真相；所需新结构必须从 `0017` 追加，并显式绑定 exact Package digest 与 Release 合同。
 
@@ -79,4 +79,4 @@ pnpm -F @cb/db test
 
 `MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0019`、从 live `0018` 账本只追加 pending recovery `0019` 且历史订单保留 `NULL`、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
 
-V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0014_v2_email_login.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。
+V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0015_v2_billing_idempotency.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。

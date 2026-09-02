@@ -1,6 +1,10 @@
 import type { Client } from 'pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { provisionV2ApplicationRoleLogins } from '../scripts/provision-v2-app-roles.js';
+import {
+  assertV2ApplicationRolePasswords,
+  provisionV2ApplicationRoleLogins,
+  restoreV2RoleLoginsWithinMigration,
+} from '../scripts/provision-v2-app-roles.js';
 
 const PASSWORD_KEYS = [
   'POSTGRES_API_PASSWORD',
@@ -26,9 +30,12 @@ function clientDouble() {
 }
 
 describe('V2 application database role login provisioning', () => {
-  it('does nothing when no V2 role password is configured', async () => {
+  it('rejects an empty five-role password set before issuing SQL', async () => {
     const client = clientDouble();
-    await expect(provisionV2ApplicationRoleLogins(client)).resolves.toBe(false);
+    expect(() => assertV2ApplicationRolePasswords()).toThrow(
+      /POSTGRES_API_PASSWORD, POSTGRES_WORKER_PASSWORD, POSTGRES_RUNTIME_PASSWORD, POSTGRES_AUTHZ_PASSWORD, POSTGRES_BILLING_PASSWORD/,
+    );
+    await expect(provisionV2ApplicationRoleLogins(client)).rejects.toThrow(/配置不完整/);
     expect(client.query).not.toHaveBeenCalled();
   });
 
@@ -65,6 +72,54 @@ describe('V2 application database role login provisioning', () => {
     for (const key of PASSWORD_KEYS) expect(sqlText).not.toContain(process.env[key]);
     expect(client.query.mock.calls.at(0)?.[0]).toBe('BEGIN');
     expect(client.query.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+  });
+
+  it('preserves passwords for cluster-global roles that existed before the V2 run', async () => {
+    process.env.POSTGRES_API_PASSWORD = 'wrong-api-value-must-not-be-applied';
+    process.env.POSTGRES_WORKER_PASSWORD = 'wrong-worker-value-must-not-be-applied';
+    process.env.POSTGRES_RUNTIME_PASSWORD = 'wrong-runtime-value-must-not-be-applied';
+    process.env.POSTGRES_AUTHZ_PASSWORD = 'new-authz-secret';
+    process.env.POSTGRES_BILLING_PASSWORD = 'new-billing-secret';
+    const client = clientDouble();
+
+    await provisionV2ApplicationRoleLogins(
+      client,
+      new Set(['combo_api', 'combo_worker', 'combo_runtime', 'combo_authz', 'combo_billing']),
+    );
+
+    const sql = client.query.mock.calls.map(([statement]) => String(statement));
+    for (const role of ['combo_api', 'combo_worker', 'combo_runtime']) {
+      expect(sql).toContain(
+        `ALTER ROLE ${role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`,
+      );
+    }
+    const passwordBindings = client.query.mock.calls
+      .filter(([statement]) => String(statement).includes('SELECT format('))
+      .map(([, values]) => values);
+    expect(passwordBindings).toEqual([['new-authz-secret'], ['new-billing-secret']]);
+  });
+
+  it('restores each NOLOGIN migration inside its existing transaction', async () => {
+    for (const [index, key] of PASSWORD_KEYS.entries()) process.env[key] = `secret-${index}`;
+    const client = clientDouble();
+
+    await restoreV2RoleLoginsWithinMigration(client, '0008_application_database_roles.sql');
+    await restoreV2RoleLoginsWithinMigration(client, '0012_v2_end_user_identity.sql');
+    await restoreV2RoleLoginsWithinMigration(client, '0013_v2_billing.sql');
+    await restoreV2RoleLoginsWithinMigration(client, '0015_v2_billing_idempotency.sql');
+
+    const roleSql = client.query.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.startsWith('ALTER ROLE combo_'));
+    expect(roleSql).toEqual([
+      "ALTER ROLE combo_api LOGIN PASSWORD '<server-formatted>'",
+      "ALTER ROLE combo_worker LOGIN PASSWORD '<server-formatted>'",
+      "ALTER ROLE combo_runtime LOGIN PASSWORD '<server-formatted>'",
+      "ALTER ROLE combo_authz LOGIN PASSWORD '<server-formatted>'",
+      "ALTER ROLE combo_billing LOGIN PASSWORD '<server-formatted>'",
+    ]);
+    expect(client.query.mock.calls.some(([sql]) => sql === 'BEGIN')).toBe(false);
+    expect(client.query.mock.calls.some(([sql]) => sql === 'COMMIT')).toBe(false);
   });
 
   it('replaces PostgreSQL diagnostics with a stable password-free error', async () => {

@@ -37,6 +37,19 @@ async function tablePrivilege(
   return result.rows[0]?.allowed === true;
 }
 
+async function columnPrivilege(
+  client: Client,
+  relation: string,
+  column: string,
+  privilegeName: string,
+): Promise<boolean> {
+  const result = await client.query<{ allowed: boolean }>(
+    'SELECT has_column_privilege(current_user, $1, $2, $3) AS allowed',
+    [relation, column, privilegeName],
+  );
+  return result.rows[0]?.allowed === true;
+}
+
 pgDescribe('isolated V2 application roles on PostgreSQL', () => {
   const clients = new Map<ApplicationRole, Client>();
 
@@ -89,17 +102,30 @@ pgDescribe('isolated V2 application roles on PostgreSQL', () => {
 
   it('keeps V2 ledger and metering append-only and hidden from other roles', async () => {
     const billing = clients.get('combo_billing')!;
+    expect(await tablePrivilege(billing, 'public.v2_users', 'SELECT')).toBe(false);
+    expect(await columnPrivilege(billing, 'public.v2_users', 'id', 'SELECT')).toBe(true);
+    expect(await columnPrivilege(billing, 'public.v2_users', 'created_at', 'SELECT')).toBe(false);
     for (const table of ['v2_ledger', 'v2_metering_events']) {
       expect(await tablePrivilege(billing, `public.${table}`, 'SELECT')).toBe(true);
       expect(await tablePrivilege(billing, `public.${table}`, 'INSERT')).toBe(true);
       expect(await tablePrivilege(billing, `public.${table}`, 'UPDATE')).toBe(false);
       expect(await tablePrivilege(billing, `public.${table}`, 'DELETE')).toBe(false);
     }
-    for (const table of ['v2_wallets', 'v2_orders', 'v2_packages', 'v2_holds']) {
+    for (const table of ['v2_wallets', 'v2_orders', 'v2_packages']) {
       for (const action of ['SELECT', 'INSERT', 'UPDATE']) {
         expect(await tablePrivilege(billing, `public.${table}`, action)).toBe(true);
       }
       expect(await tablePrivilege(billing, `public.${table}`, 'DELETE')).toBe(false);
+    }
+    expect(await tablePrivilege(billing, 'public.v2_holds', 'SELECT')).toBe(true);
+    expect(await tablePrivilege(billing, 'public.v2_holds', 'INSERT')).toBe(true);
+    expect(await tablePrivilege(billing, 'public.v2_holds', 'UPDATE')).toBe(false);
+    expect(await tablePrivilege(billing, 'public.v2_holds', 'DELETE')).toBe(false);
+    for (const column of ['status', 'actual_amount', 'settled_at']) {
+      expect(await columnPrivilege(billing, 'public.v2_holds', column, 'UPDATE')).toBe(true);
+    }
+    for (const column of ['user_id', 'agent_id', 'turn_id', 'estimated_amount', 'expires_at']) {
+      expect(await columnPrivilege(billing, 'public.v2_holds', column, 'UPDATE')).toBe(false);
     }
     for (const role of ['combo_api', 'combo_worker', 'combo_runtime', 'combo_authz'] as const) {
       expect(await tablePrivilege(clients.get(role)!, 'public.v2_ledger', 'SELECT')).toBe(false);
