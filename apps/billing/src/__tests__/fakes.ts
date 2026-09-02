@@ -3,6 +3,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   HOLD_TTL_SECONDS,
+  ledgerIdempotencyKeys,
+  persistedMeteringIdempotencyKey,
   splitDeduction,
   type BillingStore,
   type HoldOutcome,
@@ -39,6 +41,26 @@ export interface FakeMeteringEvent {
   model?: string;
   unitCost?: number;
   source: 'gateway' | 'agent_report' | 'estimated';
+  idempotencyKey: string;
+}
+
+const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+
+function walletStateIsSafe(principal: bigint, bonus: bigint, held: bigint): boolean {
+  const net = principal + bonus;
+  const available = net - held;
+  return (
+    principal >= -MAX_SAFE_INTEGER &&
+    principal <= MAX_SAFE_INTEGER &&
+    bonus >= -MAX_SAFE_INTEGER &&
+    bonus <= MAX_SAFE_INTEGER &&
+    held >= 0n &&
+    held <= MAX_SAFE_INTEGER &&
+    net >= -MAX_SAFE_INTEGER &&
+    net <= MAX_SAFE_INTEGER &&
+    available >= -MAX_SAFE_INTEGER &&
+    available <= MAX_SAFE_INTEGER
+  );
 }
 
 export function createFakeBillingStore(now: () => number = () => Date.now()) {
@@ -83,10 +105,15 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
     }): Promise<HoldOutcome> {
       const existingId = state.holdsByTurn.get(`${agentId}:${turnId}`);
       if (existingId) {
+        const hold = state.holds.get(existingId)!;
+        if (hold.userId !== userId || hold.estimatedAmount !== estimatedAmount) {
+          return { kind: 'conflict', reason: 'idempotency_mismatch' };
+        }
+        if (hold.status !== 'held') return { kind: 'conflict', reason: 'terminal_replay' };
         return {
           kind: 'held',
-          hold: state.holds.get(existingId)!,
-          wallet: walletView(userId),
+          hold,
+          wallet: walletView(hold.userId),
           replayed: true,
         };
       }
@@ -119,7 +146,7 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
         bucket: null,
         amount: estimatedAmount,
         refId: hold.id,
-        idempotencyKey: `hold:${agentId}:${turnId}`,
+        idempotencyKey: ledgerIdempotencyKeys.hold(agentId, turnId),
       });
       return { kind: 'held', hold, wallet: walletView(userId), replayed: false };
     },
@@ -129,6 +156,9 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
       if (!hold) return { kind: 'not_found' };
 
       if (hold.status === 'settled') {
+        if (hold.actualAmount !== actualAmount) {
+          return { kind: 'conflict', reason: 'idempotency_mismatch' };
+        }
         const deductions = { bonus: 0, principal: 0 };
         for (const entry of state.ledger) {
           if (entry.refId === hold.id && entry.kind === 'consume') {
@@ -141,7 +171,9 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
           hold,
           wallet: walletView(hold.userId),
           deductions,
-          estimatedUsageRecorded: false,
+          estimatedUsageRecorded: state.metering.some(
+            (event) => event.holdId === hold.id && event.source === 'estimated',
+          ),
           replayed: true,
         };
       }
@@ -149,6 +181,15 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
 
       const wallet = walletOf(hold.userId);
       const deductions = splitDeduction(walletView(hold.userId), actualAmount);
+      if (
+        !walletStateIsSafe(
+          BigInt(wallet.principalBalance) - BigInt(deductions.principal),
+          BigInt(wallet.bonusBalance) - BigInt(deductions.bonus),
+          BigInt(wallet.heldAmount) - BigInt(hold.estimatedAmount),
+        )
+      ) {
+        return { kind: 'conflict', reason: 'balance_range_exceeded' };
+      }
       wallet.bonusBalance -= deductions.bonus;
       wallet.principalBalance -= deductions.principal;
       wallet.heldAmount -= hold.estimatedAmount;
@@ -174,7 +215,9 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
       }
 
       const hasUsage = state.metering.some(
-        (event) => event.agentId === hold.agentId && event.turnId === hold.turnId,
+        (event) =>
+          event.holdId === hold.id &&
+          (event.source === 'gateway' || event.source === 'agent_report'),
       );
       const estimatedUsageRecorded = !hasUsage && actualAmount > 0;
       if (estimatedUsageRecorded) {
@@ -187,6 +230,7 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
           dimension: null,
           quantity: actualAmount,
           source: 'estimated',
+          idempotencyKey: `meter:estimated:v1:${hold.id}`,
         });
       }
 
@@ -203,16 +247,67 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
     },
 
     async insertMeteringEvent(input) {
-      const event = { id: randomUUID(), ...input };
+      const persistentKey = persistedMeteringIdempotencyKey(input.idempotencyKey);
+      const existing = state.metering.find((event) => event.idempotencyKey === persistentKey);
+      if (existing) {
+        const matches =
+          existing.agentId === input.agentId &&
+          existing.userId === input.userId &&
+          existing.turnId === input.turnId &&
+          existing.holdId === input.holdId &&
+          existing.dimension === input.dimension &&
+          existing.quantity === input.quantity &&
+          existing.model === input.model &&
+          existing.unitCost === input.unitCost &&
+          existing.source === input.source;
+        return matches
+          ? { kind: 'recorded', id: existing.id, replayed: true }
+          : { kind: 'conflict', reason: 'idempotency_mismatch' };
+      }
+      if (input.holdId) {
+        const hold = state.holds.get(input.holdId);
+        if (
+          !hold ||
+          hold.userId !== input.userId ||
+          hold.agentId !== input.agentId ||
+          hold.turnId !== input.turnId
+        ) {
+          return { kind: 'conflict', reason: 'hold_scope_mismatch' };
+        }
+        if (hold.status !== 'held') {
+          return { kind: 'conflict', reason: 'hold_not_active' };
+        }
+      }
+      const event = { id: randomUUID(), ...input, idempotencyKey: persistentKey };
       state.metering.push(event);
-      return { id: event.id };
+      return { kind: 'recorded', id: event.id, replayed: false };
     },
 
     async adminRecharge({ userId, amount, idempotencyKey, refId }): Promise<RechargeOutcome> {
-      if (state.ledger.some((row) => row.idempotencyKey === idempotencyKey)) {
-        return { kind: 'credited', wallet: walletView(userId), replayed: true };
+      const persistentKey = ledgerIdempotencyKeys.recharge(idempotencyKey);
+      const existing = state.ledger.find((row) => row.idempotencyKey === persistentKey);
+      if (existing) {
+        if (
+          existing.kind !== 'recharge' ||
+          existing.bucket !== 'principal' ||
+          existing.userId !== userId ||
+          existing.amount !== amount ||
+          existing.refId !== (refId ?? null)
+        ) {
+          return { kind: 'conflict', reason: 'idempotency_mismatch' };
+        }
+        return { kind: 'credited', wallet: walletView(existing.userId), replayed: true };
       }
       const wallet = walletOf(userId);
+      if (
+        !walletStateIsSafe(
+          BigInt(wallet.principalBalance) + BigInt(amount),
+          BigInt(wallet.bonusBalance),
+          BigInt(wallet.heldAmount),
+        )
+      ) {
+        return { kind: 'conflict', reason: 'balance_range_exceeded' };
+      }
       wallet.principalBalance += amount;
       appendLedger({
         userId,
@@ -220,7 +315,7 @@ export function createFakeBillingStore(now: () => number = () => Date.now()) {
         bucket: 'principal',
         amount,
         refId: refId ?? null,
-        idempotencyKey,
+        idempotencyKey: persistentKey,
       });
       return { kind: 'credited', wallet: walletView(userId), replayed: false };
     },

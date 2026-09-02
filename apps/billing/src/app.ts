@@ -28,20 +28,24 @@ declare module 'fastify' {
 
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTROL_FREE_PATTERN = /^[^\p{Cc}\p{Cs}]+$/u;
+const SafePositiveIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const SafeNonNegativeIntegerSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const ControlFreeText128Schema = z.string().min(1).max(128).regex(CONTROL_FREE_PATTERN);
 
 const HoldBodySchema = z
   .object({
     user_id: z.string().regex(UUID_PATTERN),
     agent_id: z.string().regex(AGENT_ID_PATTERN),
-    turn_id: z.string().min(1).max(128),
-    estimated_amount: z.number().int().positive(),
+    turn_id: ControlFreeText128Schema,
+    estimated_amount: SafePositiveIntegerSchema,
   })
   .strict();
 
 const SettleBodySchema = z
   .object({
     hold_id: z.string().regex(UUID_PATTERN),
-    actual_amount: z.number().int().nonnegative(),
+    actual_amount: SafeNonNegativeIntegerSchema,
   })
   .strict();
 
@@ -49,7 +53,7 @@ const MeteringBodySchema = z
   .object({
     agent_id: z.string().regex(AGENT_ID_PATTERN),
     user_id: z.string().regex(UUID_PATTERN),
-    turn_id: z.string().min(1).max(128),
+    turn_id: ControlFreeText128Schema,
     hold_id: z.string().regex(UUID_PATTERN).optional(),
     dimension: z.enum([
       'llm_token_in',
@@ -59,19 +63,20 @@ const MeteringBodySchema = z
       'retrieval_call',
       'audio_second',
     ]),
-    quantity: z.number().int().positive(),
-    model: z.string().min(1).max(128).optional(),
-    unit_cost: z.number().int().nonnegative().optional(),
+    quantity: SafePositiveIntegerSchema,
+    model: ControlFreeText128Schema.optional(),
+    unit_cost: SafeNonNegativeIntegerSchema.optional(),
     source: z.enum(['gateway', 'agent_report']),
+    idempotency_key: ControlFreeText128Schema,
   })
   .strict();
 
 const AdminRechargeBodySchema = z
   .object({
     user_id: z.string().regex(UUID_PATTERN),
-    amount: z.number().int().positive(),
-    idempotency_key: z.string().min(1).max(128),
-    ref_id: z.string().min(1).max(128).optional(),
+    amount: SafePositiveIntegerSchema,
+    idempotency_key: ControlFreeText128Schema,
+    ref_id: ControlFreeText128Schema.optional(),
   })
   .strict();
 
@@ -185,11 +190,17 @@ export async function buildApp(deps: BillingAppDependencies): Promise<FastifyIns
         estimatedAmount: parsed.data.estimated_amount,
         overdraftHardLimitCents: deps.overdraftHardLimitCents,
       });
+      if (outcome.kind === 'invalid_user') {
+        return sendError(req, reply, 404, 'not_found', { reason: 'user_not_found' });
+      }
       if (outcome.kind === 'insufficient' || outcome.kind === 'overdraft_blocked') {
         return sendError(req, reply, 402, 'payment_required', {
           reason: outcome.kind,
           wallet: walletData(outcome.wallet),
         });
+      }
+      if (outcome.kind === 'conflict') {
+        return sendError(req, reply, 409, 'conflict', { reason: outcome.reason });
       }
       return reply.code(outcome.replayed ? 200 : 201).send({
         data: {
@@ -219,6 +230,9 @@ export async function buildApp(deps: BillingAppDependencies): Promise<FastifyIns
         actualAmount: parsed.data.actual_amount,
       });
       if (outcome.kind === 'not_found') return sendError(req, reply, 404, 'not_found');
+      if (outcome.kind === 'conflict') {
+        return sendError(req, reply, 409, 'conflict', { reason: outcome.reason });
+      }
       if (outcome.kind === 'invalid_state') {
         return sendError(req, reply, 409, 'conflict', { status: outcome.hold.status });
       }
@@ -257,8 +271,15 @@ export async function buildApp(deps: BillingAppDependencies): Promise<FastifyIns
         model: parsed.data.model,
         unitCost: parsed.data.unit_cost,
         source: parsed.data.source,
+        idempotencyKey: parsed.data.idempotency_key,
       });
-      return reply.code(201).send({ data: { id: inserted.id }, meta: { traceId: req.id } });
+      if (inserted.kind === 'conflict') {
+        return sendError(req, reply, 409, 'conflict', { reason: inserted.reason });
+      }
+      return reply.code(inserted.replayed ? 200 : 201).send({
+        data: { id: inserted.id, replayed: inserted.replayed },
+        meta: { traceId: req.id },
+      });
     } catch (error) {
       req.log.warn({ err: error }, 'metering event insert failed');
       return sendError(req, reply, 503, 'unavailable');
@@ -278,6 +299,12 @@ export async function buildApp(deps: BillingAppDependencies): Promise<FastifyIns
         idempotencyKey: parsed.data.idempotency_key,
         refId: parsed.data.ref_id,
       });
+      if (outcome.kind === 'invalid_user') {
+        return sendError(req, reply, 404, 'not_found', { reason: 'user_not_found' });
+      }
+      if (outcome.kind === 'conflict') {
+        return sendError(req, reply, 409, 'conflict', { reason: outcome.reason });
+      }
       return reply.code(outcome.replayed ? 200 : 201).send({
         data: { wallet: walletData(outcome.wallet), replayed: outcome.replayed },
         meta: { traceId: req.id },

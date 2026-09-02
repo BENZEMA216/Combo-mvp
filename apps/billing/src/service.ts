@@ -1,6 +1,7 @@
 // 计费业务逻辑与持久层端口。记账纪律在这里和 repo 里共同执行：流水 append-only、
 // 先赠后本、幂等重放返回原结果。金额一律整数分（number 安全整数范围内）。
 // 依赖以端口注入：repo.ts 提供 PostgreSQL 实现，测试注入内存假实现。
+import { createHash } from 'node:crypto';
 
 /** hold TTL 固定五分钟（spec 八），与 0013 的 ck_v2_hold_ttl 约束一致。 */
 export const HOLD_TTL_SECONDS = 5 * 60;
@@ -25,6 +26,8 @@ export interface HoldView {
 
 export type HoldOutcome =
   | { kind: 'held'; hold: HoldView; wallet: WalletView; replayed: boolean }
+  | { kind: 'conflict'; reason: 'idempotency_mismatch' | 'terminal_replay' }
+  | { kind: 'invalid_user' }
   | { kind: 'insufficient'; wallet: WalletView }
   | { kind: 'overdraft_blocked'; wallet: WalletView };
 
@@ -43,13 +46,17 @@ export type SettleOutcome =
       replayed: boolean;
     }
   | { kind: 'not_found' }
+  | { kind: 'conflict'; reason: 'idempotency_mismatch' | 'balance_range_exceeded' }
   | { kind: 'invalid_state'; hold: HoldView };
 
-export type RechargeOutcome = {
-  kind: 'credited';
-  wallet: WalletView;
-  replayed: boolean;
-};
+export type RechargeOutcome =
+  | {
+      kind: 'credited';
+      wallet: WalletView;
+      replayed: boolean;
+    }
+  | { kind: 'invalid_user' }
+  | { kind: 'conflict'; reason: 'idempotency_mismatch' | 'balance_range_exceeded' };
 
 export interface MeteringEventInput {
   agentId: string;
@@ -67,7 +74,15 @@ export interface MeteringEventInput {
   model?: string;
   unitCost?: number;
   source: 'gateway' | 'agent_report';
+  idempotencyKey: string;
 }
+
+export type MeteringOutcome =
+  | { kind: 'recorded'; id: string; replayed: boolean }
+  | {
+      kind: 'conflict';
+      reason: 'idempotency_mismatch' | 'hold_scope_mismatch' | 'hold_not_active';
+    };
 
 /** 计费持久层端口（PostgreSQL 事实源）。每个写方法内部是一个完整事务。 */
 export interface BillingStore {
@@ -89,7 +104,7 @@ export interface BillingStore {
    * 该 turn 没有任何计量事件时补一条 source=estimated 的兜底行。
    */
   settleHold(input: { holdId: string; actualAmount: number }): Promise<SettleOutcome>;
-  insertMeteringEvent(input: MeteringEventInput): Promise<{ id: string }>;
+  insertMeteringEvent(input: MeteringEventInput): Promise<MeteringOutcome>;
   /** 管理端手工充值：本金桶入账，idempotency_key 幂等。 */
   adminRecharge(input: {
     userId: string;
@@ -110,13 +125,26 @@ export function splitDeduction(wallet: WalletView, actualAmount: number): Settle
   if (!Number.isSafeInteger(actualAmount) || actualAmount < 0) {
     throw new TypeError('actual amount must be a non-negative integer');
   }
-  const bonus = Math.min(wallet.bonusBalance, actualAmount);
+  const bonus = Math.min(Math.max(wallet.bonusBalance, 0), actualAmount);
   return { bonus, principal: actualAmount - bonus };
 }
 
 /** ledger 幂等键约定：同一动作重放永远得到同一键。 */
+function scopedIdempotencyKey(scope: string, value: string): string {
+  return `${scope}:v1:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
+}
+
 export const ledgerIdempotencyKeys = {
-  hold: (agentId: string, turnId: string) => `hold:${agentId}:${turnId}`,
+  hold: (agentId: string, turnId: string) =>
+    `hold:v1:${createHash('sha256')
+      .update(JSON.stringify([agentId, turnId]))
+      .digest('hex')}`,
   settle: (holdId: string, bucket: 'principal' | 'bonus') => `settle:${holdId}:${bucket}`,
   release: (holdId: string) => `release:${holdId}`,
+  recharge: (callerKey: string) => scopedIdempotencyKey('recharge', callerKey),
 };
+
+/** 调用方 metering key 进入独立持久化域，不能预占 settle 生成的 estimated key。 */
+export function persistedMeteringIdempotencyKey(callerKey: string): string {
+  return scopedIdempotencyKey('meter-reported', callerKey);
+}
