@@ -39,7 +39,7 @@ async function login(deps: AuthzServiceDependencies, email = EMAIL) {
   return verifyOtp(deps, { email, code: DEV_CODE });
 }
 
-describe('dev OTP login（未配发信通道，挑战写万能码）', () => {
+describe('development OTP login（未配发信通道，固定码仍走挑战）', () => {
   it('creates the user and email identity on first login and reuses them later', async () => {
     const { deps, storeState } = makeDeps();
 
@@ -156,7 +156,7 @@ describe('email delivery login（配置发信通道）', () => {
     expect(sent.to).toBe(EMAIL);
     expect(sent.code).toMatch(/^[0-9]{6}$/);
     expect(sent.challengeId).toBeTruthy();
-    // 邮件里是随机码，不是万能码；挑战落库的是随机码摘要。
+    // 邮件里是随机码，不是固定开发码；挑战落库的是随机码摘要。
     expect(sent.code).not.toBe(DEV_CODE);
     const targetDigest = digestEmailTarget(SECRET, EMAIL);
     expect(
@@ -167,7 +167,7 @@ describe('email delivery login（配置发信通道）', () => {
     expect(verified.kind).toBe('ok');
   });
 
-  it('keeps the dev code usable even when the mailer is configured（万能码旁路）', async () => {
+  it('rejects the development code when the mailer issued a random challenge', async () => {
     const { deps } = makeDeps();
     const { mailer, state: mailerState } = createFakeMailer();
     deps.mailer = mailer;
@@ -176,7 +176,7 @@ describe('email delivery login（配置发信通道）', () => {
     expect(mailerState.messages[0]!.code).not.toBe(DEV_CODE);
 
     const verified = await verifyOtp(deps, { email: EMAIL, code: DEV_CODE });
-    expect(verified.kind).toBe('ok');
+    expect(verified.kind).toBe('invalid_code');
   });
 
   it('maps transient and configuration delivery failures to unavailable', async () => {
@@ -203,13 +203,13 @@ describe('email delivery login（配置发信通道）', () => {
     expect(result.kind).toBe('accepted');
     if (result.kind === 'accepted') expect(result.via).toBe('uniform_rejection');
     expect(storeState.challenges).toHaveLength(0);
-    // 没有挑战可消费，真实验证码不能登录该邮箱（万能码旁路不受此限，见旁路用例）。
+    // 没有挑战可消费，任何验证码都不能登录该邮箱。
     expect((await verifyOtp(deps, { email: EMAIL, code: '000000' })).kind).toBe('invalid_code');
   });
 });
 
 describe('session resolution', () => {
-  it('serves cached sessions without touching PostgreSQL', async () => {
+  it('revalidates cached sessions against PostgreSQL before granting access', async () => {
     const { deps, cacheState, storeState } = makeDeps();
     const loginResult = await login(deps);
     if (loginResult.kind !== 'ok') throw new Error('login failed');
@@ -217,7 +217,7 @@ describe('session resolution', () => {
 
     const resolved = await resolveSession(deps, loginResult.sessionCookie);
     expect(resolved?.userId).toBe(loginResult.userId);
-    expect(storeState.resolveCalls).toBe(0);
+    expect(storeState.resolveCalls).toBe(1);
     expect(cacheState.getCalls).toBe(1);
   });
 
@@ -258,6 +258,22 @@ describe('session resolution', () => {
 
     expect(storeState.revokeCalls).toBe(1);
     expect(await resolveSession(deps, loginResult.sessionCookie)).toBeNull();
+  });
+
+  it('rejects a revoked session even when Redis deletion leaves a stale cache entry', async () => {
+    const { deps, cacheState, storeState } = makeDeps();
+    const loginResult = await login(deps);
+    if (loginResult.kind !== 'ok') throw new Error('login failed');
+    const digest = digestSessionCookieValue(loginResult.sessionCookie)!.toString('hex');
+    expect(cacheState.entries.has(digest)).toBe(true);
+    cacheState.failDeletes = true;
+
+    await logout(deps, loginResult.sessionCookie);
+
+    expect(cacheState.entries.has(digest)).toBe(true);
+    expect(storeState.sessions.get(digest)?.revoked).toBe(true);
+    expect(await resolveSession(deps, loginResult.sessionCookie)).toBeNull();
+    expect(storeState.resolveCalls).toBeGreaterThan(0);
   });
 
   it('drops an expired cached entry and falls back to the store', async () => {

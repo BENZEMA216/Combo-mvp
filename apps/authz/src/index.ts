@@ -6,13 +6,14 @@ import { createAssertionSigner } from './assertion.js';
 import { buildApp } from './app.js';
 import { createRedisSessionCache } from './cache.js';
 import { loadEnv } from './env.js';
+import { createRedisOtpRateLimiter } from './rate-limit.js';
 import { createPgAuthzStore } from './repo.js';
 import { createResendMailer } from './resend.js';
 
 const env = loadEnv();
 
-// 配置了 Resend 两键时验证码经邮件真实投递；缺省时挑战退化为万能码（仅验证期），
-// 万能码本身无论是否配置 Resend 都可通过校验。
+// 配置了 Resend 两键时验证码经邮件真实投递；非 production 缺省时挑战使用固定开发码，
+// 但仍经过正常挑战、次数和 TTL 校验，不存在无挑战旁路。
 const mailer =
   env.RESEND_API_KEY && env.RESEND_FROM_EMAIL
     ? createResendMailer({
@@ -46,6 +47,7 @@ const app = await buildApp({
   hmacSecret: env.HMAC_SECRET,
   mailer,
   devOtpCode: env.DEV_OTP_CODE,
+  otpRateLimiter: createRedisOtpRateLimiter(redis),
   sessionCookieDomain: env.SESSION_COOKIE_DOMAIN,
   sessionCookieSecure: env.SESSION_COOKIE_SECURE,
   readiness: async () => {
@@ -62,7 +64,7 @@ const app = await buildApp({
 if (mailer) {
   app.log.info('resend mailer enabled: OTP codes are delivered by email');
 } else {
-  app.log.warn('resend not configured: challenges fall back to AUTHZ_DEV_OTP_CODE (dev bypass)');
+  app.log.warn('resend not configured: challenges use the bounded development OTP');
 }
 
 async function shutdown(signal: string): Promise<void> {

@@ -16,8 +16,24 @@ export function sanitizeLoginNext(value: unknown): string {
 }
 
 export function loginPageHtml(next: string): string {
-  // next 已经收敛为站内路径；经 JSON.stringify 嵌入脚本，杜绝 HTML/JS 注入。
-  const nextJson = JSON.stringify(next);
+  // HTML parser 会在 JavaScript 字符串语义之前识别 </script>。JSON 序列化后继续
+  // 转义所有能改变 HTML/脚本边界的字符，确保 next 只能成为字符串数据。
+  const nextJson = JSON.stringify(next).replace(/[<>&\u2028\u2029]/g, (character) => {
+    switch (character) {
+      case '<':
+        return '\\u003c';
+      case '>':
+        return '\\u003e';
+      case '&':
+        return '\\u0026';
+      case '\u2028':
+        return '\\u2028';
+      case '\u2029':
+        return '\\u2029';
+      default:
+        throw new Error('unreachable inline script escape');
+    }
+  });
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -40,7 +56,7 @@ export function loginPageHtml(next: string): string {
 <body>
 <main>
   <h1>登录</h1>
-  <p class="hint">验证码发到你的邮箱；验证环境也可用万能码。</p>
+  <p class="hint">验证码将发送到你的邮箱。</p>
   <form id="login-form">
     <label for="email">邮箱</label>
     <input id="email" name="email" type="email" autocomplete="email" required>

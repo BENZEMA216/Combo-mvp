@@ -8,8 +8,16 @@ import {
   OTP_CHALLENGE_TTL_SECONDS,
   V2_SESSION_COOKIE_NAME,
   V2_SESSION_TTL_SECONDS,
+  digestEmailTarget,
+  normalizeEmail,
 } from './crypto.js';
 import { loginPageHtml, sanitizeLoginNext } from './login-page.js';
+import {
+  digestOtpRateLimitClient,
+  type OtpRateLimitResult,
+  type OtpRateLimitOperation,
+  type OtpRateLimiter,
+} from './rate-limit.js';
 import type { OtpMailer } from './resend.js';
 import {
   logout,
@@ -25,9 +33,10 @@ export interface AuthzAppDependencies {
   cache: SessionCache;
   signer: AssertionSigner;
   hmacSecret: string;
-  /** 真实发信端口；未配置时挑战退化为万能码（仅验证期）。 */
+  /** 真实发信端口；非 production 未配置时挑战使用固定开发码。 */
   mailer?: OtpMailer;
   devOtpCode?: string;
+  otpRateLimiter: OtpRateLimiter;
   sessionCookieDomain?: string;
   sessionCookieSecure: boolean;
   /** /ready 探针：检查 PostgreSQL 与 Redis 可达性。 */
@@ -49,7 +58,12 @@ export const ASSERTION_RESPONSE_HEADER = 'x-combo-assertion';
 
 const NO_STORE = 'no-store';
 
-type ErrorCode = 'invalid_request' | 'unauthenticated' | 'invalid_code' | 'unavailable';
+type ErrorCode =
+  | 'invalid_request'
+  | 'unauthenticated'
+  | 'invalid_code'
+  | 'rate_limited'
+  | 'unavailable';
 
 function sendError(
   req: FastifyRequest,
@@ -76,7 +90,10 @@ function requestSessionCookie(req: FastifyRequest): string | undefined {
 }
 
 export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInstance> {
-  const app = Fastify({ logger: deps.logger ?? false });
+  const app = Fastify({
+    logger: deps.logger ?? false,
+    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
+  });
   await app.register(fastifyCookie);
 
   const serviceDeps = {
@@ -85,6 +102,18 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
     hmacSecret: deps.hmacSecret,
     mailer: deps.mailer,
     devOtpCode: deps.devOtpCode,
+  };
+
+  const enforceOtpRateLimit = async (
+    req: FastifyRequest,
+    operation: OtpRateLimitOperation,
+    normalizedEmail: string,
+  ): Promise<OtpRateLimitResult> => {
+    return deps.otpRateLimiter.consume(
+      operation,
+      digestEmailTarget(deps.hmacSecret, normalizedEmail),
+      digestOtpRateLimitClient(deps.hmacSecret, req.ip),
+    );
   };
 
   app.get('/health', async () => ({ status: 'ok' as const }));
@@ -115,9 +144,16 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
     reply.header('cache-control', NO_STORE);
     const parsed = ChallengeBodySchema.safeParse(req.body);
     if (!parsed.success) return sendError(req, reply, 400, 'invalid_request');
+    const email = normalizeEmail(parsed.data.email);
+    if (!email) return sendError(req, reply, 400, 'invalid_request');
 
     try {
-      const result = await requestOtp(serviceDeps, { email: parsed.data.email });
+      const rateLimit = await enforceOtpRateLimit(req, 'challenge', email);
+      if (!rateLimit.allowed) {
+        reply.header('retry-after', String(rateLimit.retryAfterSeconds));
+        return sendError(req, reply, 429, 'rate_limited');
+      }
+      const result = await requestOtp(serviceDeps, { email });
       if (result.kind === 'invalid_input') return sendError(req, reply, 400, 'invalid_request');
       if (result.kind === 'unavailable') return sendError(req, reply, 503, 'unavailable');
       // 只记录受理路径分类，不记录邮箱与验证码。
@@ -136,9 +172,16 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
     reply.header('cache-control', NO_STORE);
     const parsed = VerificationBodySchema.safeParse(req.body);
     if (!parsed.success) return sendError(req, reply, 400, 'invalid_request');
+    const email = normalizeEmail(parsed.data.email);
+    if (!email) return sendError(req, reply, 400, 'invalid_request');
 
     try {
-      const result = await verifyOtp(serviceDeps, parsed.data);
+      const rateLimit = await enforceOtpRateLimit(req, 'verification', email);
+      if (!rateLimit.allowed) {
+        reply.header('retry-after', String(rateLimit.retryAfterSeconds));
+        return sendError(req, reply, 429, 'rate_limited');
+      }
+      const result = await verifyOtp(serviceDeps, { ...parsed.data, email });
       if (result.kind === 'invalid_input') return sendError(req, reply, 400, 'invalid_request');
       if (result.kind === 'invalid_code') return sendError(req, reply, 401, 'invalid_code');
       if (result.kind === 'unavailable') return sendError(req, reply, 503, 'unavailable');

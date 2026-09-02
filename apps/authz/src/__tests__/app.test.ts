@@ -1,11 +1,13 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createLocalJWKSet, jwtVerify, type JWK } from 'jose';
 import type { FastifyInstance } from 'fastify';
 import { createAssertionSigner } from '../assertion.js';
 import { ASSERTION_RESPONSE_HEADER, buildApp } from '../app.js';
 import { V2_SESSION_COOKIE_NAME } from '../crypto.js';
-import { createFakeCache, createFakeStore } from './fakes.js';
+import { loadEnv } from '../env.js';
+import { loginPageHtml } from '../login-page.js';
+import { createFakeCache, createFakeOtpRateLimiter, createFakeStore } from './fakes.js';
 
 const SECRET = 's'.repeat(32);
 const DEV_CODE = '246810';
@@ -21,11 +23,13 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
   await app?.close();
   app = undefined;
+  vi.unstubAllEnvs();
 });
 
 async function makeApp() {
   const { store, state: storeState } = createFakeStore();
   const { cache, state: cacheState } = createFakeCache();
+  const { limiter: otpRateLimiter, state: rateLimitState } = createFakeOtpRateLimiter();
   app = await buildApp({
     store,
     cache,
@@ -37,10 +41,11 @@ async function makeApp() {
     }),
     hmacSecret: SECRET,
     devOtpCode: DEV_CODE,
+    otpRateLimiter,
     sessionCookieDomain: '.buildwithcombo.com',
     sessionCookieSecure: true,
   });
-  return { app, storeState, cacheState };
+  return { app, store, storeState, cacheState, rateLimitState };
 }
 
 function parseSetCookie(response: { headers: Record<string, unknown> }): {
@@ -178,6 +183,64 @@ describe('authz HTTP surface', () => {
     expect(badEmail.statusCode).toBe(400);
   });
 
+  it('returns 429 with the remaining retry window and fails closed when the limiter is unavailable', async () => {
+    const { app: instance, rateLimitState, storeState } = await makeApp();
+    const first = await instance.inject({
+      method: 'POST',
+      url: '/authz/otp/challenges',
+      payload: { email: EMAIL },
+    });
+    expect(first.statusCode).toBe(202);
+    rateLimitState.nextResult = { allowed: false, retryAfterSeconds: 47 };
+    const limited = await instance.inject({
+      method: 'POST',
+      url: '/authz/otp/challenges',
+      payload: { email: `  ${EMAIL.toUpperCase()} ` },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBe('47');
+    expect(limited.json()).toMatchObject({ error: { code: 'rate_limited' } });
+    expect(storeState.challenges).toHaveLength(1);
+    expect(
+      rateLimitState.calls[0]!.targetDigest.equals(rateLimitState.calls[1]!.targetDigest),
+    ).toBe(true);
+
+    rateLimitState.fail = true;
+    const unavailable = await instance.inject({
+      method: 'POST',
+      url: '/authz/otp/challenges',
+      payload: { email: 'another@example.com' },
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(storeState.challenges).toHaveLength(1);
+  });
+
+  it('rate limits verification before consuming a challenge or creating a session', async () => {
+    const { app: instance, rateLimitState, storeState } = await makeApp();
+    expect(
+      (
+        await instance.inject({
+          method: 'POST',
+          url: '/authz/otp/challenges',
+          payload: { email: EMAIL },
+        })
+      ).statusCode,
+    ).toBe(202);
+    rateLimitState.nextResult = { allowed: false, retryAfterSeconds: 29 };
+
+    const limited = await instance.inject({
+      method: 'POST',
+      url: '/authz/otp/verifications',
+      payload: { email: EMAIL, code: DEV_CODE },
+    });
+
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBe('29');
+    expect(storeState.challenges[0]!.attempts).toBe(0);
+    expect(storeState.challenges[0]!.consumed).toBe(false);
+    expect(storeState.sessions.size).toBe(0);
+  });
+
   it('logout revokes the session and blocks further assertions', async () => {
     const { app: instance } = await makeApp();
     const verification = await injectLogin(instance);
@@ -197,6 +260,24 @@ describe('authz HTTP surface', () => {
       headers: { cookie: `${cookie.name}=${cookie.value}` },
     });
     expect(after.statusCode).toBe(401);
+  });
+
+  it('fails closed when PostgreSQL cannot revalidate an otherwise cached session', async () => {
+    const { app: instance, store } = await makeApp();
+    const verification = await injectLogin(instance);
+    const cookie = parseSetCookie(verification);
+    store.resolveSession = async () => {
+      throw new Error('pg unavailable');
+    };
+
+    const assertion = await instance.inject({
+      method: 'GET',
+      url: '/authz/assert?agent_id=agent-a',
+      headers: { cookie: `${cookie.name}=${cookie.value}` },
+    });
+
+    expect(assertion.statusCode).toBe(503);
+    expect(assertion.headers[ASSERTION_RESPONSE_HEADER]).toBeUndefined();
   });
 
   it('reports readiness through the injected probe and always answers health', async () => {
@@ -223,6 +304,26 @@ describe('authz HTTP surface', () => {
       url: '/authz/login?next=/api/chat%3Fx%3D1',
     });
     expect(withNext.body).toContain('var NEXT = "/api/chat?x=1"');
+  });
+
+  it('keeps closing script text and Unicode separators inside the next string', async () => {
+    const { app: instance } = await makeApp();
+    const payload = '/</script><script>globalThis.__comboXss=1</script>&\u2028\u2029';
+    const page = await instance.inject({
+      method: 'GET',
+      url: `/authz/login?next=${encodeURIComponent(payload)}`,
+    });
+
+    expect(page.statusCode).toBe(200);
+    expect(page.body.match(/<script>/g)).toHaveLength(1);
+    expect(page.body).not.toContain('</script><script>');
+    expect(page.body).not.toContain('globalThis.__comboXss=1</script>');
+    expect(page.body).toContain(
+      'var NEXT = "/\\u003c/script\\u003e\\u003cscript\\u003eglobalThis.__comboXss=1\\u003c/script\\u003e\\u0026\\u2028\\u2029"',
+    );
+
+    const direct = loginPageHtml(payload);
+    expect(direct).not.toContain(payload);
   });
 
   it('collapses open-redirect next values back to /', async () => {
@@ -284,6 +385,7 @@ describe('authz HTTP surface', () => {
       }),
       hmacSecret: SECRET,
       devOtpCode: DEV_CODE,
+      otpRateLimiter: createFakeOtpRateLimiter().limiter,
       sessionCookieSecure: false,
     });
 
@@ -293,5 +395,37 @@ describe('authz HTTP surface', () => {
       payload: { email: EMAIL },
     });
     expect(response.statusCode).toBe(503);
+  });
+});
+
+describe('authz production configuration', () => {
+  it('rejects the global development OTP before the public process can start', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('DATABASE_URL', 'postgres://authz.invalid/combo_v2');
+    vi.stubEnv('REDIS_URL', 'redis://authz.invalid:6379/0');
+    vi.stubEnv('AUTHZ_HMAC_SECRET', SECRET);
+    vi.stubEnv('AUTHZ_ASSERTION_PRIVATE_KEY', 'test-private-key');
+    vi.stubEnv('RESEND_API_KEY', 'test-resend-key');
+    vi.stubEnv('RESEND_FROM_EMAIL', 'Combo <auth@example.com>');
+    vi.stubEnv('AUTHZ_DEV_OTP_CODE', DEV_CODE);
+
+    expect(() => loadEnv()).toThrow(/AUTHZ_DEV_OTP_CODE must not be configured in production/);
+  });
+
+  it('fails startup when production email delivery is not configured', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('DATABASE_URL', 'postgres://authz.invalid/combo_v2');
+    vi.stubEnv('REDIS_URL', 'redis://authz.invalid:6379/0');
+    vi.stubEnv('AUTHZ_HMAC_SECRET', SECRET);
+    vi.stubEnv('AUTHZ_ASSERTION_PRIVATE_KEY', 'test-private-key');
+
+    expect(() => loadEnv()).toThrow(
+      /production authz requires RESEND_API_KEY and RESEND_FROM_EMAIL/,
+    );
+  });
+
+  it('rejects a misspelled production environment instead of enabling development behavior', () => {
+    vi.stubEnv('NODE_ENV', 'prod');
+    expect(() => loadEnv()).toThrow(/NODE_ENV must be development, test, or production/);
   });
 });

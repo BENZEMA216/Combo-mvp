@@ -1,6 +1,7 @@
 // 内存版 AuthzStore / SessionCache / OtpMailer：忠实复刻 repo.ts、cache.ts 与
 // resend.ts 端口语义，供不依赖 PostgreSQL / Redis / Resend 的单元与路由测试注入。
 import { OTP_MAX_ATTEMPTS } from '../crypto.js';
+import type { OtpRateLimitResult, OtpRateLimiter } from '../rate-limit.js';
 import type { LoginCodeMessage, OtpDeliveryResult, OtpMailer } from '../resend.js';
 import type { AuthzStore, ResolvedSession, SessionCache } from '../service.js';
 
@@ -98,6 +99,7 @@ export function createFakeCache() {
   const state = {
     entries: new Map<string, ResolvedSession>(),
     failReads: false,
+    failDeletes: false,
     getCalls: 0,
     setCalls: 0,
     delCalls: 0,
@@ -114,10 +116,33 @@ export function createFakeCache() {
     },
     async del(tokenDigest) {
       state.delCalls += 1;
+      if (state.failDeletes) return;
       state.entries.delete(tokenDigest.toString('hex'));
     },
   };
   return { cache, state };
+}
+
+export function createFakeOtpRateLimiter() {
+  const state = {
+    calls: [] as Array<{
+      operation: 'challenge' | 'verification';
+      targetDigest: Buffer;
+      clientDigest: Buffer;
+    }>,
+    fail: false,
+    nextResult: null as OtpRateLimitResult | null,
+  };
+  const limiter: OtpRateLimiter = {
+    async consume(operation, targetDigest, clientDigest) {
+      if (state.fail) throw new Error('redis rate limiter down');
+      state.calls.push({ operation, targetDigest, clientDigest });
+      const result = state.nextResult ?? { allowed: true, retryAfterSeconds: 0 };
+      state.nextResult = null;
+      return result;
+    },
+  };
+  return { limiter, state };
 }
 
 /** 内存版发信端口：记录每次投递请求，可按收件人预设投递结果分类。 */

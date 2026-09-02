@@ -60,11 +60,11 @@ export interface AuthzServiceDependencies {
   hmacSecret: string;
   /**
    * 真实发信端口（Resend）。配置后挑战码随机生成并邮件投递；
-   * 未配置时挑战码退化为 devOtpCode（仅验证期开发旁路）。
+   * 未配置时挑战码退化为 devOtpCode（仅非 production 的固定开发挑战）。
    */
   mailer?: OtpMailer;
   /**
-   * 开发态万能码。无论是否配置发信通道都可以通过校验（验证期便利）；
+   * 开发态固定码。只在没有发信通道时写入有次数与 TTL 限制的正常挑战；
    * 与发信通道同时缺失时登录接口返回 503。
    */
   devOtpCode?: string;
@@ -85,7 +85,7 @@ export type RequestOtpResult =
 /**
  * 请求登录验证码。配置了发信通道时生成随机码并投递：供应商受理才落库挑战；
  * 永久拒绝返回统一受理结果（不暴露邮箱可达性，也不回退明文）；暂时性故障与
- * 配置故障返回 unavailable。未配置发信通道时挑战直接写万能码摘要。
+ * 配置故障返回 unavailable。非 production 未配置发信通道时挑战写固定开发码摘要。
  */
 export async function requestOtp(
   deps: AuthzServiceDependencies,
@@ -144,9 +144,8 @@ export type VerifyOtpResult =
 
 /**
  * 校验 OTP；首次登录自动建用户与邮箱身份，随后签发不透明会话 Cookie。
- * 万能码（验证期旁路）：配了发信通道时挑战存的是随机码摘要，输入等于万能码
- * 直接放行、不消耗挑战；未配发信通道时挑战本来就是万能码摘要，走常规消费
- * （TTL 与次数限制照常生效）。
+ * 开发态固定码也必须先创建挑战并走同一消费路径；配置真实发信通道时只接受
+ * 当前随机邮件码，不存在绕过挑战、次数或 TTL 的万能旁路。
  */
 export async function verifyOtp(
   deps: AuthzServiceDependencies,
@@ -157,13 +156,10 @@ export async function verifyOtp(
   if (!secretsReady(deps)) return { kind: 'unavailable' };
 
   const targetDigest = digestEmailTarget(deps.hmacSecret, email);
-  const devBypass = deps.mailer !== undefined && deps.devOtpCode === input.code;
-  const consumed =
-    devBypass ||
-    (await deps.store.consumeChallenge({
-      targetDigest,
-      candidateCodeDigest: digestEmailCode(deps.hmacSecret, targetDigest, input.code),
-    }));
+  const consumed = await deps.store.consumeChallenge({
+    targetDigest,
+    candidateCodeDigest: digestEmailCode(deps.hmacSecret, targetDigest, input.code),
+  });
   if (!consumed) return { kind: 'invalid_code' };
 
   const userId = await deps.store.findOrCreateEmailUser(email);
@@ -191,8 +187,9 @@ function secretsReady(deps: AuthzServiceDependencies): boolean {
 }
 
 /**
- * 解析会话 Cookie：Redis 缓存优先（PostgreSQL 抖动不影响已登录用户），
- * 缓存未命中或不可用时回源 PostgreSQL 并尽力回填。存储异常向上抛给路由层映射 503。
+ * 解析会话 Cookie：Redis 只提供缓存提示，PostgreSQL 每次都确认未撤销事实。
+ * 这样即使 logout 的缓存删除失败，旧 Cookie 也不能从陈旧缓存恢复权限。
+ * PostgreSQL 异常向上抛给路由层映射 503（认证 fail-closed）。
  */
 export async function resolveSession(
   deps: Pick<AuthzServiceDependencies, 'store' | 'cache'>,
@@ -208,13 +205,20 @@ export async function resolveSession(
   } catch {
     cached = null;
   }
-  const now = Date.now();
-  if (cached && cached.expiresAt.getTime() > now) return cached;
-  if (cached) await deps.cache.del(tokenDigest);
-
+  if (cached && cached.expiresAt.getTime() <= Date.now()) await deps.cache.del(tokenDigest);
   const session = await deps.store.resolveSession(tokenDigest);
-  if (!session) return null;
-  await deps.cache.set(session, tokenDigest);
+  if (!session) {
+    if (cached) await deps.cache.del(tokenDigest);
+    return null;
+  }
+  if (
+    !cached ||
+    cached.sessionId !== session.sessionId ||
+    cached.userId !== session.userId ||
+    cached.expiresAt.getTime() !== session.expiresAt.getTime()
+  ) {
+    await deps.cache.set(session, tokenDigest);
+  }
   return session;
 }
 

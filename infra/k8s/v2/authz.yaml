@@ -3,6 +3,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: authz
+  namespace: combo-v2
   labels:
     app: authz
 spec:
@@ -17,6 +18,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: authz
+  namespace: combo-v2
   labels:
     app: authz
 spec:
@@ -46,8 +48,7 @@ spec:
             - name: PGPORT
               value: '5432'
             - name: PGDATABASE
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+              value: combo_v2
             - name: PGUSER
               value: combo_authz
             - name: PGPASSWORD
@@ -60,9 +61,6 @@ spec:
             - name: AUTHZ_HMAC_SECRET
               valueFrom:
                 secretKeyRef: { name: combo-env, key: AUTHZ_HMAC_SECRET }
-            - name: AUTHZ_DEV_OTP_CODE
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: AUTHZ_DEV_OTP_CODE }
             # 验证码经 Resend 真实投递；发件人与 base URL 不是密钥，与三环境 api.yaml 同值。
             - name: RESEND_API_KEY
               valueFrom:

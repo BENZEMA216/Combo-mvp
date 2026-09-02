@@ -10,9 +10,9 @@ export interface AuthzEnv {
   REDIS_URL: string;
   /** 目标与验证码摘要的 HMAC 密钥，至少 32 字符。 */
   HMAC_SECRET: string;
-  /** 开发态 OTP 万能码；无论是否配置 Resend 都可通过校验，与 Resend 同时缺失时登录接口返回 503。 */
+  /** 非 production 固定开发码；只在未配置 Resend 时通过正常挑战消费。 */
   DEV_OTP_CODE?: string;
-  /** Resend 发信；两键必须同时配置或同时缺省，缺省时登录只走万能码。 */
+  /** Resend 发信；两键必须同时配置，production 强制存在。 */
   RESEND_API_KEY?: string;
   RESEND_FROM_EMAIL?: string;
   RESEND_API_BASE_URL: string;
@@ -86,6 +86,10 @@ function parseResendBaseUrl(value: string | undefined): string {
 }
 
 export function loadEnv(): AuthzEnv {
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  if (!['development', 'test', 'production'].includes(nodeEnv)) {
+    throw new Error('NODE_ENV must be development, test, or production');
+  }
   const hmacSecret = required('AUTHZ_HMAC_SECRET');
   if (hmacSecret.length < 32) {
     throw new Error('AUTHZ_HMAC_SECRET must be at least 32 characters');
@@ -93,6 +97,9 @@ export function loadEnv(): AuthzEnv {
   const devOtpCode = optional('AUTHZ_DEV_OTP_CODE');
   if (devOtpCode !== undefined && !OTP_CODE_PATTERN.test(devOtpCode)) {
     throw new Error('AUTHZ_DEV_OTP_CODE must be exactly six digits');
+  }
+  if (nodeEnv === 'production' && devOtpCode !== undefined) {
+    throw new Error('AUTHZ_DEV_OTP_CODE must not be configured in production');
   }
   const cookieDomain = optional('AUTHZ_SESSION_COOKIE_DOMAIN');
   if (cookieDomain !== undefined && !/^\.?[a-z0-9.-]+\.[a-z]{2,}$/i.test(cookieDomain)) {
@@ -103,10 +110,12 @@ export function loadEnv(): AuthzEnv {
   if ((resendApiKey === undefined) !== (resendFromEmail === undefined)) {
     throw new Error('RESEND_API_KEY and RESEND_FROM_EMAIL must be configured together');
   }
+  if (nodeEnv === 'production' && (resendApiKey === undefined || resendFromEmail === undefined)) {
+    throw new Error('production authz requires RESEND_API_KEY and RESEND_FROM_EMAIL');
+  }
   if (resendFromEmail !== undefined && !isValidResendFromAddress(resendFromEmail)) {
     throw new Error('RESEND_FROM_EMAIL must be a mailbox or `Display <mailbox>` form');
   }
-  const nodeEnv = process.env.NODE_ENV ?? 'development';
   return {
     NODE_ENV: nodeEnv,
     PORT: parsePort(process.env.PORT),
