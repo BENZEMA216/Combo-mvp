@@ -75,9 +75,7 @@ describe('V2 application database role login provisioning', () => {
     });
     const client = { query } as unknown as Client;
 
-    const failure = await provisionV2ApplicationRoleLogins(client).catch(
-      (error: unknown) => error,
-    );
+    const failure = await provisionV2ApplicationRoleLogins(client).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toBe('[db-v2-roles] V2 应用数据库角色配置失败');
     for (const key of PASSWORD_KEYS) {
