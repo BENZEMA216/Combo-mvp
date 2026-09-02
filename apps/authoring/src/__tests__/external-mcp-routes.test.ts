@@ -32,9 +32,9 @@ const EXPECTED_PROJECT_HISTORY_CONTROLLER_SCHEMA = 'combo.project-history-bootst
 const EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_BYTES = 2_000;
 const EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256 =
   '33d94d776e9d4eb0cf2238358857c8e4b33427de655be6a52d33e834d460146d';
-const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_BYTES = 14_507;
+const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_BYTES = 4_871;
 const EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256 =
-  '0f57fd11fc2a45f4cd23f5718fa676e0b607b5c1a3dd10f3073acd444e2b7ca0';
+  '0b50ef569b7ceb41816fbba3f7a5ede96323da3ca50ca10709ce660a23c90f05';
 const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_BYTES = 1_074;
 const EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256 =
   '7df7bced005edd481e8eaa3169a8cac3dfa278d459942a15ef31bf595fd101fc';
@@ -143,7 +143,7 @@ describe('Project-history fixed bootstrap request', () => {
       );
       expect(document).toContain('2,000 bytes');
       expect(document).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_PROMPT_SHA256);
-      expect(document).toContain('14,507 bytes');
+      expect(document).toContain('4,871 bytes');
       expect(document).toContain(EXPECTED_PROJECT_HISTORY_CONTROLLER_BUNDLE_SHA256);
       expect(document).toContain('1,074 bytes');
       expect(document).toContain(EXPECTED_PROJECT_HISTORY_BUSINESS_HANDOFF_SHA256);
