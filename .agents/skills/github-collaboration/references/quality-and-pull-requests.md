@@ -22,7 +22,9 @@ pnpm typecheck:test
 pnpm test:local
 ```
 
-PR checks 在 Linux 上继续执行 `COMBO_RUN_CONTAINER_CONTRACTS=0 pnpm test:fast`，其中包含 GNU/Linux 主机控制面契约；不要为了让 macOS 本地执行这组契约而放宽生产部署脚本的固定 PATH 或主机安全约束。`test:local` 与 `test:fast` 都必须覆盖 Preview 身份验证器和工作树守卫测试。
+`test:local` 会包含 `@cb/scripts` 的 Node 测试，`test:fast` 不包含该 workspace；两者都必须覆盖 Preview 身份验证器、测试真实性协议和工作树守卫测试。PR checks 在 Linux 上运行 `pnpm test:fast` 和 ShellCheck，并对登记的 Contract、Fake unit、local adapter 与真实 PostgreSQL 套件生成绑定 merge/base/head SHA 的机器结果。保留名称 `CI / quality` 的聚合 job 只有在源码 job、PostgreSQL job 和全部必需机器结果都通过时才成功；它必须把未调度的 real Codex、浏览器 Agent Journey 与 Desktop UAT 显示为 `NOT_RUN` 或 `NOT_IMPLEMENTED`，不得把它们折叠进绿灯。
+
+`scripts/test-truth.mjs` 只允许从框架机器报告推导测试套件 PASS；Vitest 顶层 `success` 或 Node 进程退出码都不足以证明没有 skip。任何必需套件的报告/脱敏机器 artifact 缺失、artifact 摘要不一致、候选 SHA 不一致、零测试、失败、cancel、skip、todo 或必需环境缺失都使聚合门禁失败。J-011 台账还必须通过五门与证据类型的一致性校验；在外部签名 evidence adapter 实现前，任何 tracked PASS 或 partial evidence 都只显示 `INVALID`。未登记测试继续执行但只能标为 `NO_EVIDENCE_CLAIMS`；基线后新增的未登记文件必须单独计数，后续通过治理 PR 才能升级为 evidence suite。
 
 修改 shell 脚本时，还要对拉取请求持续集成中列出的脚本运行 ShellCheck。不得用 Docker 或 Docker Compose 替代测试证据；本流程也不授权部署环境验证。
 
@@ -80,4 +82,5 @@ PR checks 在 Linux 上继续执行 `COMBO_RUN_CONTAINER_CONTRACTS=0 pnpm test:f
 - 基线前进：更新任务分支，重新运行受影响的本地检查，并等待新提交的远端门禁。
 - 冲突：由任务负责人在自己的工作树中解决；复核解决后的完整差异。
 - 检查缺失或显示已跳过：确认该状态是否被远端规则明确接受。项目政策要求实际运行的检查不能用已跳过状态代替。
+- 冒烟脚本退出码 `2` 表示 `NOT_RUN`（环境或必要输入缺失），不能记录为 PASS；只凭退出码 `0` 也只能引用脚本明确执行的边界。
 - 合并策略：遵守仓库设置。没有书面约定时先向维护者确认，因为策略会影响提交历史和清理时的祖先关系判断。

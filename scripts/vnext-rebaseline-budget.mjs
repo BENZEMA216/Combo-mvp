@@ -17,12 +17,22 @@ export const policyPaths = Object.freeze([
   '.github/workflows/pr-ci.yml',
   'AGENTS.md',
   legacyContractPath,
+  'docs/reliable-development-and-preview.md',
   'package.json',
   previousContractPath,
   supersededContractPath,
   contractPath,
+  'scripts/README.md',
+  'scripts/acceptance-smoke.sh',
+  'scripts/node-test-truth-reporter.mjs',
+  'scripts/smoke-status.test.mjs',
+  'scripts/smoke.sh',
+  'scripts/test-truth.mjs',
+  'scripts/test-truth-core.mjs',
+  'scripts/test-truth.test.mjs',
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
+  'tests/test-suites/manifest.v1.json',
 ]);
 
 const protocol = 'combo.vnext-rebaseline-budget/4';

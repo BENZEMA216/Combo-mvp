@@ -7,8 +7,11 @@ WEB_BASE="${WEB_BASE:-http://localhost}"
 CB_SESSION_COOKIE_JAR="${CB_SESSION_COOKIE_JAR:-}"
 
 pass() { printf '\033[1;32m[pass]\033[0m %s\n' "$*"; }
-skip() { printf '\033[1;33m[skip]\033[0m %s\n' "$*"; }
 log() { printf '\033[1;34m[accept]\033[0m %s\n' "$*"; }
+not_run() {
+  printf '\033[1;33m[not-run]\033[0m %s\n' "$*" >&2
+  exit 2
+}
 fail() {
   printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2
   exit 1
@@ -17,8 +20,7 @@ http_code() { curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$@"; }
 
 command -v curl >/dev/null 2>&1 || fail '需要 curl'
 if ! curl -fsS -o /dev/null --max-time 5 "${API_BASE}/health" 2>/dev/null; then
-  skip "live 全栈未就绪（${API_BASE}/health 不可达），未执行验收"
-  exit 0
+  not_run "live 全栈未就绪（${API_BASE}/health 不可达），未执行验收"
 fi
 ready="$(curl -fsS --max-time 10 "${API_BASE}/ready")" || fail '/ready 不可达'
 grep -q '"ready":true' <<<"${ready}" || fail '/ready 未就绪'
@@ -68,12 +70,11 @@ if curl -fsS -o /dev/null --max-time 5 "${WEB_BASE}/" 2>/dev/null; then
     || fail '匿名 runtime 受保护路径未返回 401'
   pass 'runtime 同源反代返回 401'
 else
-  skip 'Web 未起，跳过 runtime 反代检查'
+  not_run 'Web 未起，runtime 反代检查未执行'
 fi
 
 if [[ -z "${CB_SESSION_COOKIE_JAR}" ]]; then
-  skip '未提供 CB_SESSION_COOKIE_JAR，鉴权主链路由 resend-auth E2E 覆盖'
-  exit 0
+  not_run '未提供 CB_SESSION_COOKIE_JAR，鉴权主链路未执行'
 fi
 [[ -f "${CB_SESSION_COOKIE_JAR}" && -r "${CB_SESSION_COOKIE_JAR}" ]] \
   || fail 'CB_SESSION_COOKIE_JAR 不可读'

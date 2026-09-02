@@ -43,6 +43,8 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## 其他脚本
 
-- `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
+- `start.sh` / `migrate.sh`：本地开发与迁移。
+- `smoke.sh` / `acceptance-smoke.sh`：对已经就绪的完整目标执行冒烟；缺少 API、Web、Cookie jar 或其他必需前置条件时以退出码 `2` 报告 `NOT_RUN`，不能记为 PASS。
+- `test-truth.mjs` 与 `tests/test-suites/manifest.v1.json`：校验分层测试目录、从 Vitest JSON 与 Node test 事件流逐 case 推导 PASS/FAIL，并生成绑定候选 SHA 的 PR truth report。CI 上传脱敏后的框架报告并在聚合时复核 SHA-256；缺报告、零测试、cancel、skip 或 todo 都不能变成 PASS。所有未登记测试明确属于 `NO_EVIDENCE_CLAIMS`；基线后新增的未登记文件会单独计数，但不能产生证据声明，后续只能通过独立治理 PR 将已存在的文件升级为 evidence suite。现有浏览器 shell 流程在拥有同等级机器 reporter 前保持 `NOT_IMPLEMENTED`，真实 Codex 与 Desktop UAT 不会由普通 PR CI 合成 PASS。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
 - `scripts/integration/`：CI 集成测试脚本。

@@ -1,0 +1,555 @@
+{
+  "protocol": "combo.test-suite-manifest/1",
+  "schemaVersion": 1,
+  "coverage": {
+    "mode": "PILOT_INVENTORY",
+    "baselineCommit": "a1f11aed98d465fa91044beba7ccbcb95629030f",
+    "baselineTestInventoryCount": 200,
+    "unclassifiedPolicy": "NO_EVIDENCE_CLAIMS"
+  },
+  "suites": [
+    {
+      "id": "TS-CONTRACT-011",
+      "name": "Current-conversation machine contracts",
+      "layer": "CONTRACT",
+      "implementation": "AVAILABLE",
+      "resultSource": "PR_SOURCE",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": ["J-011"],
+        "acceptanceIds": ["ACC-CONTRACT-011A"]
+      },
+      "selectors": {
+        "files": [
+          "apps/creator-worker/src/__tests__/creator-conversation-acceptance.test.ts",
+          "apps/creator-worker/src/__tests__/desktop-current-conversation-evidence.test.ts",
+          "packages/creator-agent-protocol/src/__tests__/desktop-current-conversation-receipt.test.ts",
+          "scripts/smoke-status.test.mjs",
+          "scripts/test-truth.test.mjs"
+        ]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "apps/creator-worker",
+            "argv": [
+              "src/__tests__/creator-conversation-acceptance.test.ts",
+              "src/__tests__/desktop-current-conversation-evidence.test.ts"
+            ],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "packages/creator-agent-protocol",
+            "argv": ["src/__tests__/desktop-current-conversation-receipt.test.ts"],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          },
+          {
+            "kind": "NODE_TEST",
+            "cwd": ".",
+            "argv": ["scripts/smoke-status.test.mjs", "scripts/test-truth.test.mjs"],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "RUN_REQUIRED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-J011-MACHINE-CONTRACT",
+          "statement": "The J-011 machine contract, evidence verifier, and current blocked status are internally consistent."
+        }
+      ],
+      "doesNotProve": [
+        "A visible Agent Package Draft was produced in Agent Studio.",
+        "J-011 or G-001 is accepted.",
+        "The current Codex Desktop task was used as the source."
+      ]
+    },
+    {
+      "id": "TS-CONTRACT-DB-001",
+      "name": "Pending-usage recovery migration contract",
+      "layer": "CONTRACT",
+      "implementation": "AVAILABLE",
+      "resultSource": "PR_SOURCE",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": [],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": ["db/__tests__/pending-usage-recovery-migration.test.ts"]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/pending-usage-recovery-migration.test.ts"],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "RUN_REQUIRED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-PENDING-USAGE-RECOVERY-MIGRATION-CONTRACT",
+          "statement": "The selected pending-usage recovery migration source invariants passed against the exact candidate tree."
+        }
+      ],
+      "doesNotProve": [
+        "The migration was applied to a real PostgreSQL database.",
+        "The pending-usage recovery user journey works."
+      ]
+    },
+    {
+      "id": "TS-UNIT-011",
+      "name": "Current-conversation draft unit behavior",
+      "layer": "UNIT_FAKE",
+      "implementation": "AVAILABLE",
+      "resultSource": "PR_SOURCE",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": ["J-011"],
+        "acceptanceIds": ["ACC-UNIT-011B"]
+      },
+      "selectors": {
+        "files": [
+          "apps/creator-worker/src/__tests__/agent-package-current-conversation-composition.test.ts",
+          "apps/creator-worker/src/__tests__/agent-package-current-conversation-draft.test.ts",
+          "apps/creator-worker/src/__tests__/current-conversation-draft-extractor.test.ts"
+        ]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "apps/creator-worker",
+            "argv": [
+              "src/__tests__/agent-package-current-conversation-composition.test.ts",
+              "src/__tests__/agent-package-current-conversation-draft.test.ts",
+              "src/__tests__/current-conversation-draft-extractor.test.ts"
+            ],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "RUN_REQUIRED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-J011-UNIT-FAKE",
+          "statement": "Draft extraction and composition behave as specified with controlled local inputs and fake Host boundaries."
+        }
+      ],
+      "doesNotProve": [
+        "ACC-UNIT-011B is complete; the product acceptance ledger remains authoritative.",
+        "The real Codex Host supplied the active current task.",
+        "The real Desktop UI rendered or revised the Draft."
+      ]
+    },
+    {
+      "id": "TS-ADAPTER-LOCAL-001",
+      "name": "Controlled local adapters",
+      "layer": "ADAPTER_LOCAL",
+      "implementation": "AVAILABLE",
+      "resultSource": "PR_SOURCE",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": [],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": [
+          "apps/creator-worker/src/__tests__/local-alpha.test.ts",
+          "packages/creator-worker-broker-client/src/__tests__/websocket-driver.integration.test.ts"
+        ]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "apps/creator-worker",
+            "argv": ["src/__tests__/local-alpha.test.ts"],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "packages/creator-worker-broker-client",
+            "argv": ["src/__tests__/websocket-driver.integration.test.ts"],
+            "requiredEnvNames": [],
+            "timeoutSeconds": 300
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "RUN_REQUIRED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-CONTROLLED-LOCAL-ADAPTERS",
+          "statement": "The selected SQLite, filesystem, and loopback WebSocket adapters satisfy their controlled local contracts."
+        }
+      ],
+      "doesNotProve": [
+        "A deployed service or browser journey works.",
+        "Real PostgreSQL or Redis behavior works.",
+        "The real Codex Desktop Host works."
+      ]
+    },
+    {
+      "id": "TS-INFRA-REAL-PR-001",
+      "name": "Pre-merge PostgreSQL invariants",
+      "layer": "INFRA_REAL",
+      "implementation": "AVAILABLE",
+      "resultSource": "PR_INFRA",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": [],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": [
+          "apps/authoring/src/__tests__/billing.pg.test.ts",
+          "apps/runtime/src/__tests__/billing.pg.test.ts",
+          "db/__tests__/agent-package-registry.pg.test.ts",
+          "db/__tests__/agent-session-receipts-roles.pg.test.ts",
+          "db/__tests__/agent-session-receipts-upgrade.pg.test.ts",
+          "db/__tests__/agent-session-receipts.pg.test.ts",
+          "db/__tests__/agent-session-response-message.pg.test.ts",
+          "db/__tests__/pending-usage-recovery-roles.pg.test.ts",
+          "db/__tests__/pending-usage-recovery-upgrade.pg.test.ts",
+          "db/__tests__/pending-usage-recovery.pg.test.ts"
+        ]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/agent-package-registry.pg.test.ts"],
+            "requiredEnvNames": ["AGENT_PACKAGE_REGISTRY_PG_TEST", "DATABASE_URL"],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": [
+              "__tests__/agent-session-receipts.pg.test.ts",
+              "__tests__/agent-session-response-message.pg.test.ts",
+              "__tests__/agent-session-receipts-roles.pg.test.ts"
+            ],
+            "requiredEnvNames": [
+              "AGENT_SESSION_RECEIPTS_PG_TEST",
+              "DATABASE_URL",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/agent-session-receipts-upgrade.pg.test.ts"],
+            "requiredEnvNames": [
+              "AGENT_SESSION_RECEIPTS_UPGRADE_PG_TEST",
+              "DATABASE_URL",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": [
+              "__tests__/pending-usage-recovery.pg.test.ts",
+              "__tests__/pending-usage-recovery-roles.pg.test.ts"
+            ],
+            "requiredEnvNames": [
+              "DATABASE_URL",
+              "PENDING_USAGE_RECOVERY_PG_TEST",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/pending-usage-recovery-upgrade.pg.test.ts"],
+            "requiredEnvNames": [
+              "DATABASE_URL",
+              "PENDING_USAGE_RECOVERY_UPGRADE_PG_TEST",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 600
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "apps/authoring",
+            "argv": ["src/__tests__/billing.pg.test.ts"],
+            "requiredEnvNames": [
+              "BILLING_AUTHORING_TEST_DATABASE_URL",
+              "BILLING_PG_TEST",
+              "BILLING_TEST_DATABASE_URL"
+            ],
+            "timeoutSeconds": 300
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "apps/runtime",
+            "argv": ["src/__tests__/billing.pg.test.ts"],
+            "requiredEnvNames": [
+              "BILLING_PG_TEST",
+              "BILLING_RUNTIME_TEST_DATABASE_URL",
+              "BILLING_TEST_DATABASE_URL"
+            ],
+            "timeoutSeconds": 600
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "RUN_REQUIRED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-PR-POSTGRES-INVARIANTS",
+          "statement": "The selected Registry, receipt, pending-usage recovery, role, upgrade, and billing invariants passed against ephemeral PostgreSQL 16."
+        }
+      ],
+      "doesNotProve": [
+        "A deployed user journey works.",
+        "A real payment provider was contacted.",
+        "The remaining authentication, application-role, terminal-fence, or Redis integration suites ran."
+      ]
+    },
+    {
+      "id": "TS-INFRA-REAL-MAIN-002",
+      "name": "Post-merge PostgreSQL and Redis integrations",
+      "layer": "INFRA_REAL",
+      "implementation": "AVAILABLE",
+      "resultSource": "MAIN_INTEGRATION",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": [],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": [
+          "apps/authoring/src/__tests__/account-auth.pg.test.ts",
+          "apps/runtime/src/__tests__/session-consistency.integration.test.ts",
+          "apps/runtime/src/__tests__/terminal-fence.integration.test.ts",
+          "db/__tests__/application-database-roles.pg.test.ts"
+        ]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "COMMAND",
+            "cwd": ".",
+            "argv": ["bash", "scripts/integration/db-migrate.sh"],
+            "requiredEnvNames": [
+              "DATABASE_URL",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 1200
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "db",
+            "argv": ["__tests__/application-database-roles.pg.test.ts"],
+            "requiredEnvNames": [
+              "APPLICATION_ROLE_PG_TEST",
+              "DATABASE_URL",
+              "POSTGRES_API_PASSWORD",
+              "POSTGRES_RUNTIME_PASSWORD",
+              "POSTGRES_WORKER_PASSWORD"
+            ],
+            "timeoutSeconds": 300
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "apps/authoring",
+            "argv": ["src/__tests__/account-auth.pg.test.ts"],
+            "requiredEnvNames": ["AUTH_PG_TEST", "DATABASE_URL"],
+            "timeoutSeconds": 300
+          },
+          {
+            "kind": "VITEST",
+            "cwd": "apps/runtime",
+            "argv": [
+              "src/__tests__/session-consistency.integration.test.ts",
+              "src/__tests__/terminal-fence.integration.test.ts"
+            ],
+            "requiredEnvNames": [
+              "RUNTIME_TERMINAL_FENCE_DATABASE_URL",
+              "RUNTIME_TERMINAL_FENCE_REDIS_URL"
+            ],
+            "timeoutSeconds": 600
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "NOT_SCHEDULED",
+        "main": "RUN_REQUIRED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-MAIN-INFRA-INTEGRATIONS",
+          "statement": "The remaining selected PostgreSQL and Redis integration contracts passed on the tested main candidate."
+        }
+      ],
+      "doesNotProve": [
+        "A browser Agent journey works.",
+        "The real Codex Desktop Host works.",
+        "These suites ran before merge."
+      ]
+    },
+    {
+      "id": "TS-HOST-REAL-001",
+      "name": "Bundled Codex local host",
+      "layer": "HOST_REAL",
+      "implementation": "AVAILABLE",
+      "resultSource": "MANUAL",
+      "acceptance": {
+        "relationship": "NON_ACCEPTANCE",
+        "journeyIds": ["J-011"],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": [
+          "apps/creator-worker/src/__tests__/agent-local-runner.real.test.ts",
+          "apps/creator-worker/src/__tests__/agent-package-authoring.real.test.ts",
+          "apps/creator-worker/src/__tests__/agent-package-creator-bridge.real.test.ts",
+          "apps/creator-worker/src/__tests__/agent-package-session.real.test.ts",
+          "apps/creator-worker/src/__tests__/codex-app-server-host.real.test.ts",
+          "apps/creator-worker/src/__tests__/local-alpha.real.test.ts",
+          "apps/creator-worker/src/__tests__/project-context-compiler.real.test.ts"
+        ]
+      },
+      "runner": {
+        "kind": "STEPS",
+        "steps": [
+          {
+            "kind": "VITEST",
+            "cwd": "apps/creator-worker",
+            "argv": [
+              "src/__tests__/agent-local-runner.real.test.ts",
+              "src/__tests__/agent-package-authoring.real.test.ts",
+              "src/__tests__/agent-package-creator-bridge.real.test.ts",
+              "src/__tests__/agent-package-session.real.test.ts",
+              "src/__tests__/codex-app-server-host.real.test.ts",
+              "src/__tests__/local-alpha.real.test.ts",
+              "src/__tests__/project-context-compiler.real.test.ts"
+            ],
+            "requiredEnvNames": ["COMBO_REAL_CODEX_E2E"],
+            "timeoutSeconds": 1800
+          }
+        ]
+      },
+      "defaults": {
+        "pr": "NOT_SCHEDULED",
+        "main": "NOT_SCHEDULED",
+        "manual": "AVAILABLE"
+      },
+      "proves": [
+        {
+          "id": "CLAIM-BUNDLED-CODEX-LOCAL-HOST",
+          "statement": "The selected isolated local runs completed through the bundled Codex executable on the tested machine."
+        }
+      ],
+      "doesNotProve": [
+        "ACC-HOST-011D or ACC-UAT-011E passed.",
+        "Codex Desktop supplied the user's active current task.",
+        "The Agent Studio UI rendered a Draft."
+      ]
+    },
+    {
+      "id": "TS-BROWSER-AUTH-001",
+      "name": "Browser authentication boundary",
+      "layer": "BROWSER",
+      "implementation": "NOT_IMPLEMENTED",
+      "resultSource": "NONE",
+      "acceptance": {
+        "relationship": "SUPPORTING",
+        "journeyIds": [],
+        "acceptanceIds": []
+      },
+      "selectors": {
+        "files": ["tests/e2e/resend-auth.spec.ts"]
+      },
+      "runner": null,
+      "defaults": {
+        "pr": "NOT_SCHEDULED",
+        "main": "NOT_SCHEDULED",
+        "manual": "NOT_AVAILABLE"
+      },
+      "proves": [],
+      "doesNotProve": [
+        "A cross-user Agent journey works.",
+        "An Agent was created, published, shared, installed, or used.",
+        "Codex Desktop works.",
+        "The existing Playwright shell flow has a test-truth machine reporter."
+      ]
+    },
+    {
+      "id": "TS-DESKTOP-UAT-011",
+      "name": "Ordinary-user Codex Desktop acceptance",
+      "layer": "DESKTOP_UAT",
+      "implementation": "NOT_IMPLEMENTED",
+      "resultSource": "NONE",
+      "acceptance": {
+        "relationship": "GATE",
+        "journeyIds": ["J-011"],
+        "acceptanceIds": ["ACC-HOST-011D", "ACC-UAT-011E"]
+      },
+      "selectors": {
+        "files": []
+      },
+      "runner": null,
+      "defaults": {
+        "pr": "NOT_SCHEDULED",
+        "main": "NOT_SCHEDULED",
+        "manual": "REQUIRED_FOR_ACCEPTANCE"
+      },
+      "proves": [],
+      "doesNotProve": ["Anything until a real Host-owned runner and signed Desktop evidence exist."]
+    }
+  ]
+}
