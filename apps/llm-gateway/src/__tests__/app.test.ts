@@ -81,6 +81,7 @@ describe('non-stream chat completions', () => {
     expect(billing.holds).toHaveLength(1);
     expect(billing.holds[0]).toMatchObject({ estimatedAmount: 3 }); // 1e6 × 2/1e6 + 1
     expect(provider.requests).toHaveLength(1);
+    expect(provider.requests[0]).toMatchObject({ max_tokens: 1_000_000 });
     expect(provider.requests[0]).not.toHaveProperty('x_combo');
     expect(billing.usageReports).toHaveLength(1);
     expect(billing.usageReports[0]![0]).toMatchObject({
@@ -104,12 +105,55 @@ describe('non-stream chat completions', () => {
     expect(provider.requests).toHaveLength(0);
   });
 
+  it('passes billing idempotency conflicts through without invoking the provider', async () => {
+    const { app: instance, billing, provider } = await makeApp();
+    billing.rejectNextHold = {
+      status: 409,
+      body: { error: { code: 'conflict' }, data: { reason: 'idempotency_mismatch' } },
+    };
+
+    const response = await call(instance, chatBody());
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ data: { reason: 'idempotency_mismatch' } });
+    expect(provider.requests).toHaveLength(0);
+    expect(billing.usageReports).toHaveLength(0);
+    expect(billing.settlements).toHaveLength(0);
+  });
+
+  it('fails closed when billing rejects an unknown user', async () => {
+    const { app: instance, billing, provider } = await makeApp();
+    billing.rejectNextHold = {
+      status: 404,
+      body: { error: { code: 'not_found' }, data: { reason: 'user_not_found' } },
+    };
+
+    const response = await call(instance, chatBody());
+    expect(response.statusCode).toBe(404);
+    expect(provider.requests).toHaveLength(0);
+    expect(billing.usageReports).toHaveLength(0);
+    expect(billing.settlements).toHaveLength(0);
+  });
+
+  it('fails closed on malformed billing success before invoking the provider', async () => {
+    const { app: instance, billing, provider } = await makeApp();
+    billing.protocolErrorNextHold = true;
+
+    const response = await call(instance, chatBody());
+    expect(response.statusCode).toBe(503);
+    expect(provider.requests).toHaveLength(0);
+    expect(billing.usageReports).toHaveLength(0);
+    expect(billing.settlements).toHaveLength(0);
+  });
+
   it('fails open when billing is unavailable: forwards, reports usage without hold, skips settle', async () => {
     const { app: instance, billing, provider } = await makeApp();
     billing.failNextHold = true;
     provider.jsonResponse = {
       status: 200,
-      json: { usage: { prompt_tokens: 10, completion_tokens: 20 } },
+      json: {
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 20 },
+      },
     };
 
     const response = await call(instance, chatBody());
@@ -130,7 +174,44 @@ describe('non-stream chat completions', () => {
     expect(billing.settlements).toEqual([{ holdId: 'hold-1', actualAmount: 0 }]);
     expect(billing.usageReports).toHaveLength(0);
   });
+
+  it.each([
+    null,
+    {},
+    { error: { message: 'failed' } },
+    { choices: [] },
+    { choices: [{ message: [] }] },
+    { choices: [{ message: {} }] },
+  ])(
+    'releases the hold without charging for invalid provider success payload %j',
+    async (payload) => {
+      const { app: instance, billing, provider } = await makeApp();
+      provider.jsonResponse = { status: 200, json: payload };
+
+      const response = await call(instance, chatBody());
+      expect(response.statusCode).toBe(502);
+      expect(response.json()).toMatchObject({ error: { code: 'provider_unavailable' } });
+      expect(billing.settlements).toEqual([{ holdId: 'hold-1', actualAmount: 0 }]);
+      expect(billing.usageReports).toHaveLength(0);
+    },
+  );
 });
+
+it.each([false, true])(
+  'rejects a replayed %s stream flag before any provider or accounting side effect',
+  async (stream) => {
+    const { app: instance, billing, provider } = await makeApp();
+    billing.replayNextHold = true;
+
+    const response = await call(instance, chatBody({ stream }));
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ data: { reason: 'turn_already_admitted' } });
+    expect(provider.requests).toHaveLength(0);
+    expect(billing.usageReports).toHaveLength(0);
+    expect(billing.settlements).toHaveLength(0);
+  },
+);
 
 describe('stream chat completions', () => {
   it('passes provider SSE bytes through verbatim and settles from the usage frame', async () => {
@@ -153,6 +234,7 @@ describe('stream chat completions', () => {
     // 转发体强制了 include_usage；x_combo 被剥离。
     expect(provider.requests[0]).toMatchObject({
       stream: true,
+      max_tokens: 4096,
       stream_options: { include_usage: true },
     });
     expect(provider.requests[0]).not.toHaveProperty('x_combo');

@@ -4,7 +4,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { BillingClient } from './billing.js';
 import { priceFor, type PricingTable, type TokenUsage } from './pricing.js';
-import type { ProviderClient } from './provider.js';
+import { isProviderJsonSuccessPayload, type ProviderClient } from './provider.js';
 import {
   checkAndHold,
   finalizeTurn,
@@ -165,7 +165,13 @@ async function handleJson(
     return reply.code(upstream.status).send(upstream.json);
   }
 
-  const usage = normalizeUsage((upstream.json as { usage?: unknown } | null)?.usage);
+  if (!isProviderJsonSuccessPayload(upstream.json)) {
+    await releaseHold(deps.billing, hold, log, logFields);
+    req.log.warn(logFields, 'provider returned an invalid success payload');
+    return sendError(req, reply, 502, 'provider_unavailable');
+  }
+
+  const usage = normalizeUsage((upstream.json as { usage?: unknown }).usage);
   await finalizeTurn(
     deps.billing,
     { hold, platform: parsed.platform, model: parsed.model, price, usage },

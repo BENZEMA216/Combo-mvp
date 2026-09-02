@@ -1,5 +1,5 @@
 // 启动配置：所有环境变量在这里解析与校验，进程其余部分只读结构化结果。
-import { parsePricingTable, type PricingTable } from './pricing.js';
+import { estimateHoldAmount, parsePricingTable, type PricingTable } from './pricing.js';
 
 export interface GatewayEnv {
   NODE_ENV: string;
@@ -61,6 +61,15 @@ function parseNonNegativeInt(name: string, fallback: number): number {
 }
 
 export function loadEnv(): GatewayEnv {
+  const pricing = parsePricingTable(required('LLM_GATEWAY_PRICING_JSON'));
+  const fixedCostCents = parseNonNegativeInt('LLM_GATEWAY_HOLD_FIXED_COST_CENTS', 1);
+  for (const price of Object.values(pricing)) {
+    try {
+      estimateHoldAmount({ price, maxTokens: 1_000_000, fixedCostCents });
+    } catch {
+      throw new Error('LLM gateway pricing exceeds the safe accounting range');
+    }
+  }
   return {
     NODE_ENV: process.env.NODE_ENV ?? 'development',
     PORT: parsePort(process.env.PORT),
@@ -71,8 +80,8 @@ export function loadEnv(): GatewayEnv {
     BILLING_TIMEOUT_MS: parsePositiveInt('BILLING_TIMEOUT_MS', 2_000),
     PROVIDER_BASE_URL: required('PROVIDER_BASE_URL'),
     PROVIDER_API_KEY: required('PROVIDER_API_KEY'),
-    PRICING: parsePricingTable(required('LLM_GATEWAY_PRICING_JSON')),
-    HOLD_FIXED_COST_CENTS: parseNonNegativeInt('LLM_GATEWAY_HOLD_FIXED_COST_CENTS', 1),
+    PRICING: pricing,
+    HOLD_FIXED_COST_CENTS: fixedCostCents,
     DEFAULT_MAX_TOKENS: parsePositiveInt('LLM_GATEWAY_DEFAULT_MAX_TOKENS', 4_096),
   };
 }

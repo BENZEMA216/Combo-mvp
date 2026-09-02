@@ -46,8 +46,23 @@ export function priceFor(pricing: PricingTable, model: string): ModelPrice {
   return pricing[model] ?? pricing.default;
 }
 
-function ceilDiv(numerator: number, denominator: number): number {
-  return Math.ceil(numerator / denominator);
+const MILLION = 1_000_000n;
+const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+
+function asSafeNonNegativeInteger(value: number, label: string): bigint {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${label} must be a non-negative safe integer`);
+  }
+  return BigInt(value);
+}
+
+function safeCents(value: bigint): number {
+  if (value > MAX_SAFE_INTEGER) throw new RangeError('billing amount exceeds safe integer range');
+  return Number(value);
+}
+
+function ceilDiv(numerator: bigint, denominator: bigint): bigint {
+  return (numerator + denominator - 1n) / denominator;
 }
 
 /** 预授权估算（分）：max_tokens × 输出单价 + 固定成本。 */
@@ -56,8 +71,10 @@ export function estimateHoldAmount(options: {
   maxTokens: number;
   fixedCostCents: number;
 }): number {
-  const tokenCost = ceilDiv(options.maxTokens * options.price.output, 1_000_000);
-  return tokenCost + options.fixedCostCents;
+  const maxTokens = asSafeNonNegativeInteger(options.maxTokens, 'maxTokens');
+  const outputPrice = asSafeNonNegativeInteger(options.price.output, 'output price');
+  const fixedCost = asSafeNonNegativeInteger(options.fixedCostCents, 'fixed cost');
+  return safeCents(ceilDiv(maxTokens * outputPrice, MILLION) + fixedCost);
 }
 
 export interface TokenUsage {
@@ -67,6 +84,9 @@ export interface TokenUsage {
 
 /** 按真实用量折算（分）：输入输出分别计价后合并进位。 */
 export function amountFromUsage(usage: TokenUsage, price: ModelPrice): number {
-  const numerator = usage.promptTokens * price.input + usage.completionTokens * price.output;
-  return ceilDiv(numerator, 1_000_000);
+  const promptTokens = asSafeNonNegativeInteger(usage.promptTokens, 'prompt tokens');
+  const completionTokens = asSafeNonNegativeInteger(usage.completionTokens, 'completion tokens');
+  const inputPrice = asSafeNonNegativeInteger(price.input, 'input price');
+  const outputPrice = asSafeNonNegativeInteger(price.output, 'output price');
+  return safeCents(ceilDiv(promptTokens * inputPrice + completionTokens * outputPrice, MILLION));
 }

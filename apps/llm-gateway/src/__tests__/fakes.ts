@@ -1,6 +1,7 @@
 // 内存版 BillingClient / ProviderClient：记录调用参数、可控失败，
 // 供不依赖 billing 进程与 provider 的单元与路由测试注入。
 import {
+  BillingProtocolError,
   BillingUnavailableError,
   type BillingClient,
   type CreateHoldResult,
@@ -22,6 +23,8 @@ export function createFakeBillingClient() {
     rejectNextHold: null as { status: number; body: unknown } | null,
     /** 设定后 createHold 抛 BillingUnavailableError（超时 / 5xx 等价物）。 */
     failNextHold: false,
+    protocolErrorNextHold: false,
+    replayNextHold: false,
     failNextSettle: false,
     failNextUsageReport: false,
     nextHoldId: 0,
@@ -33,6 +36,10 @@ export function createFakeBillingClient() {
         state.failNextHold = false;
         throw new BillingUnavailableError('billing timeout', 503);
       }
+      if (state.protocolErrorNextHold) {
+        state.protocolErrorNextHold = false;
+        throw new BillingProtocolError('invalid hold response');
+      }
       if (state.rejectNextHold) {
         const rejection = state.rejectNextHold;
         state.rejectNextHold = null;
@@ -40,7 +47,9 @@ export function createFakeBillingClient() {
       }
       state.holds.push(input);
       state.nextHoldId += 1;
-      return { kind: 'held', holdId: `hold-${state.nextHoldId}` };
+      const replayed = state.replayNextHold;
+      state.replayNextHold = false;
+      return { kind: 'held', holdId: `hold-${state.nextHoldId}`, replayed };
     },
     async settle(input) {
       if (state.failNextSettle) {

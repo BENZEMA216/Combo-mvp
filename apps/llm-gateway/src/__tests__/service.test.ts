@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { usageToMeteringEvents } from '../billing.js';
+import { meteringIdempotencyKey, usageToMeteringEvents } from '../billing.js';
 import { amountFromUsage, estimateHoldAmount, parsePricingTable, priceFor } from '../pricing.js';
 import { checkAndHold, finalizeTurn, parseChatRequest, releaseHold } from '../service.js';
 import { createUsageExtractor } from '../usage.js';
@@ -29,6 +29,7 @@ describe('parseChatRequest', () => {
     expect(parsed!.forwardBody).toEqual({
       model: 'deepseek-chat',
       messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 4096,
       temperature: 0.7,
       stream: true,
       stream_options: { include_usage: true },
@@ -39,6 +40,7 @@ describe('parseChatRequest', () => {
   it('keeps caller max_tokens and rejects malformed bodies', () => {
     const withMax = parseChatRequest(validBody({ max_tokens: 512 }), 4096);
     expect(withMax!.maxTokens).toBe(512);
+    expect(withMax!.forwardBody.max_tokens).toBe(512);
 
     for (const bad of [
       {},
@@ -47,6 +49,13 @@ describe('parseChatRequest', () => {
       validBody({ x_combo: { user_id: USER, agent_id: 'UPPER', turn_id: 't' } }),
       { ...validBody(), messages: [] },
       validBody({ max_tokens: -1 }),
+      validBody({
+        x_combo: { user_id: USER, agent_id: 'agent-a', turn_id: 'turn\n2' },
+      }),
+      validBody({
+        x_combo: { user_id: USER, agent_id: 'agent-a', turn_id: 'turn\ud800' },
+      }),
+      validBody({ model: 'model\u0000name' }),
     ]) {
       expect(parseChatRequest(bad, 4096), JSON.stringify(bad)).toBeNull();
     }
@@ -72,6 +81,19 @@ describe('pricing', () => {
     // 1_000_000 in × 1 + 500_000 out × 2 = 2 分。
     expect(amountFromUsage({ promptTokens: 1_000_000, completionTokens: 500_000 }, PRICE)).toBe(2);
     expect(amountFromUsage({ promptTokens: 1, completionTokens: 0 }, PRICE)).toBe(1);
+    expect(() =>
+      estimateHoldAmount({
+        price: { input: 0, output: Number.MAX_SAFE_INTEGER },
+        maxTokens: 1_000_000,
+        fixedCostCents: 1,
+      }),
+    ).toThrow(/safe integer range/);
+    expect(() =>
+      amountFromUsage(
+        { promptTokens: Number.MAX_SAFE_INTEGER, completionTokens: 0 },
+        { input: Number.MAX_SAFE_INTEGER, output: 0 },
+      ),
+    ).toThrow(/safe integer range/);
   });
 });
 
@@ -121,6 +143,82 @@ describe('checkAndHold', () => {
     expect(records.warnings).toHaveLength(1);
     expect(records.warnings[0]).toMatchObject({ agent_id: 'agent-a', turn_id: 'turn-1' });
   });
+
+  it('fails closed for hold replays and malformed billing success responses', async () => {
+    const replay = createFakeBillingClient();
+    replay.state.replayNextHold = true;
+    const replayLog = createRecordingLog();
+    await expect(
+      checkAndHold(
+        replay.client,
+        { platform: PLATFORM, price: PRICE, maxTokens: 100, fixedCostCents: 1 },
+        replayLog.log,
+      ),
+    ).resolves.toEqual({
+      kind: 'rejected',
+      status: 409,
+      body: { error: { code: 'conflict' }, data: { reason: 'turn_already_admitted' } },
+    });
+
+    const malformed = createFakeBillingClient();
+    malformed.state.protocolErrorNextHold = true;
+    const malformedLog = createRecordingLog();
+    await expect(
+      checkAndHold(
+        malformed.client,
+        { platform: PLATFORM, price: PRICE, maxTokens: 100, fixedCostCents: 1 },
+        malformedLog.log,
+      ),
+    ).resolves.toEqual({
+      kind: 'rejected',
+      status: 503,
+      body: { error: { code: 'billing_unavailable' } },
+    });
+    expect(malformedLog.records.errors).toHaveLength(1);
+    expect(malformedLog.records.warnings).toHaveLength(0);
+  });
+
+  it('fails closed for unexpected billing client errors', async () => {
+    const { client } = createFakeBillingClient();
+    client.createHold = async () => {
+      throw new Error('unexpected billing client bug');
+    };
+    const { log, records } = createRecordingLog();
+
+    await expect(
+      checkAndHold(
+        client,
+        { platform: PLATFORM, price: PRICE, maxTokens: 100, fixedCostCents: 1 },
+        log,
+      ),
+    ).resolves.toEqual({
+      kind: 'rejected',
+      status: 503,
+      body: { error: { code: 'billing_unavailable' } },
+    });
+    expect(records.errors).toHaveLength(1);
+    expect(records.warnings).toHaveLength(0);
+  });
+
+  it('fails closed before billing or provider admission when hold arithmetic overflows', async () => {
+    const { client, state } = createFakeBillingClient();
+    const { log, records } = createRecordingLog();
+
+    await expect(
+      checkAndHold(
+        client,
+        {
+          platform: PLATFORM,
+          price: { input: 0, output: Number.MAX_SAFE_INTEGER },
+          maxTokens: 1_000_000,
+          fixedCostCents: 1,
+        },
+        log,
+      ),
+    ).resolves.toMatchObject({ kind: 'rejected', status: 503 });
+    expect(state.holds).toHaveLength(0);
+    expect(records.errors).toHaveLength(1);
+  });
 });
 
 describe('finalizeTurn', () => {
@@ -150,6 +248,7 @@ describe('finalizeTurn', () => {
       unitCost: 1,
       source: 'gateway',
     });
+    expect(state.usageReports[0]![0]!.idempotencyKey).toMatch(/^meter:v1:[0-9a-f]{64}$/);
     expect(state.usageReports[0]![1]).toMatchObject({
       dimension: 'llm_token_out',
       quantity: 500_000,
@@ -191,15 +290,14 @@ describe('finalizeTurn', () => {
     expect(state.settlements).toHaveLength(0);
   });
 
-  it('still settles when the usage report fails, and survives settle failures', async () => {
-    const { client, state } = createFakeBillingClient();
-    const { log, records } = createRecordingLog();
-    state.failNextUsageReport = true;
-    state.failNextSettle = true;
+  it('keeps the hold active when usage is partial, and survives later settle failures', async () => {
+    const partial = createFakeBillingClient();
+    const partialLog = createRecordingLog();
+    partial.state.failNextUsageReport = true;
 
     await expect(
       finalizeTurn(
-        client,
+        partial.client,
         {
           hold: held,
           platform: PLATFORM,
@@ -207,10 +305,50 @@ describe('finalizeTurn', () => {
           price: PRICE,
           usage: { promptTokens: 10, completionTokens: 20 },
         },
-        log,
+        partialLog.log,
       ),
     ).resolves.toBeUndefined();
-    expect(records.errors).toHaveLength(2);
+    expect(partial.state.settlements).toHaveLength(0);
+    expect(partialLog.records.errors).toHaveLength(1);
+
+    const settleFailure = createFakeBillingClient();
+    const settleLog = createRecordingLog();
+    settleFailure.state.failNextSettle = true;
+    await expect(
+      finalizeTurn(
+        settleFailure.client,
+        {
+          hold: held,
+          platform: PLATFORM,
+          model: 'deepseek-chat',
+          price: PRICE,
+          usage: { promptTokens: 10, completionTokens: 20 },
+        },
+        settleLog.log,
+      ),
+    ).resolves.toBeUndefined();
+    expect(settleFailure.state.usageReports).toHaveLength(1);
+    expect(settleLog.records.errors).toHaveLength(1);
+  });
+
+  it('does not report or settle an unsafe provider usage amount', async () => {
+    const { client, state } = createFakeBillingClient();
+    const { log, records } = createRecordingLog();
+
+    await finalizeTurn(
+      client,
+      {
+        hold: held,
+        platform: PLATFORM,
+        model: 'deepseek-chat',
+        price: { input: Number.MAX_SAFE_INTEGER, output: 0 },
+        usage: { promptTokens: Number.MAX_SAFE_INTEGER, completionTokens: 0 },
+      },
+      log,
+    );
+    expect(state.usageReports).toHaveLength(0);
+    expect(state.settlements).toHaveLength(0);
+    expect(records.errors).toHaveLength(1);
   });
 });
 
@@ -238,6 +376,28 @@ describe('usageToMeteringEvents', () => {
     });
     expect(events).toHaveLength(2);
     for (const event of events) expect(event).not.toHaveProperty('holdId');
+  });
+
+  it('uses stable identity keys, separates dimensions, and omits zero-quantity rows', () => {
+    const base = {
+      source: 'gateway' as const,
+      holdId: 'hold-1',
+      userId: USER,
+      agentId: 'agent-a',
+      turnId: 'turn-1',
+    };
+    const first = meteringIdempotencyKey({ ...base, dimension: 'llm_token_in' });
+    expect(meteringIdempotencyKey({ ...base, dimension: 'llm_token_in' })).toBe(first);
+    expect(meteringIdempotencyKey({ ...base, dimension: 'llm_token_out' })).not.toBe(first);
+
+    const events = usageToMeteringEvents({
+      usage: { promptTokens: 0, completionTokens: 2 },
+      price: PRICE,
+      model: 'm',
+      ...PLATFORM,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.dimension).toBe('llm_token_out');
   });
 });
 

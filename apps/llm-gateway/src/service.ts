@@ -1,7 +1,12 @@
 // 编排核心：请求解析、check-and-hold、usage 折算与 metering/settle 收尾。
 // 与 HTTP 层分离：app.ts 只负责 provider 字节搬运，编排全部在这里，可注桩单测。
 import { z } from 'zod';
-import { usageToMeteringEvents, type BillingClient, type CreateHoldResult } from './billing.js';
+import {
+  BillingUnavailableError,
+  usageToMeteringEvents,
+  type BillingClient,
+  type CreateHoldResult,
+} from './billing.js';
 import {
   amountFromUsage,
   estimateHoldAmount,
@@ -11,19 +16,20 @@ import {
 
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTROL_FREE_PATTERN = /^[^\p{Cc}\p{Cs}]+$/u;
 
 /** 平台扩展字段：Agent 经 SDK 携带，转发给 provider 前剥离。 */
 const PlatformSchema = z
   .object({
     user_id: z.string().regex(UUID_PATTERN),
     agent_id: z.string().regex(AGENT_ID_PATTERN),
-    turn_id: z.string().min(1).max(128),
+    turn_id: z.string().min(1).max(128).regex(CONTROL_FREE_PATTERN),
   })
   .strict();
 
 const ChatBodySchema = z
   .object({
-    model: z.string().min(1).max(128),
+    model: z.string().min(1).max(128).regex(CONTROL_FREE_PATTERN),
     messages: z.array(z.unknown()).min(1),
     stream: z.boolean().optional(),
     max_tokens: z.number().int().positive().max(1_000_000).optional(),
@@ -62,10 +68,12 @@ export function parseChatRequest(
     ...rest
   } = parsed.data;
   const isStream = stream === true;
+  const resolvedMaxTokens = maxTokens ?? defaultMaxTokens;
   const forwardBody: Record<string, unknown> = {
     ...rest,
     model: parsed.data.model,
     messages: parsed.data.messages,
+    max_tokens: resolvedMaxTokens,
   };
   if (stream !== undefined) forwardBody.stream = stream;
   if (isStream) {
@@ -82,7 +90,7 @@ export function parseChatRequest(
     },
     model: parsed.data.model,
     stream: isStream,
-    maxTokens: maxTokens ?? defaultMaxTokens,
+    maxTokens: resolvedMaxTokens,
     forwardBody,
   };
 }
@@ -111,11 +119,29 @@ export async function checkAndHold(
   },
   log: GatewayLogger,
 ): Promise<HoldOutcome> {
-  const estimatedAmount = estimateHoldAmount({
-    price: input.price,
-    maxTokens: input.maxTokens,
-    fixedCostCents: input.fixedCostCents,
-  });
+  let estimatedAmount: number;
+  try {
+    estimatedAmount = estimateHoldAmount({
+      price: input.price,
+      maxTokens: input.maxTokens,
+      fixedCostCents: input.fixedCostCents,
+    });
+  } catch (error) {
+    log.error(
+      {
+        agent_id: input.platform.agentId,
+        turn_id: input.platform.turnId,
+        err: error,
+        fail_open: false,
+      },
+      'billing hold amount exceeds the safe accounting range; failing closed',
+    );
+    return {
+      kind: 'rejected',
+      status: 503,
+      body: { error: { code: 'billing_unavailable' } },
+    };
+  }
 
   let result: CreateHoldResult;
   try {
@@ -126,6 +152,22 @@ export async function checkAndHold(
       estimatedAmount,
     });
   } catch (error) {
+    if (!(error instanceof BillingUnavailableError)) {
+      log.error(
+        {
+          agent_id: input.platform.agentId,
+          turn_id: input.platform.turnId,
+          err: error,
+          fail_open: false,
+        },
+        'billing hold failed outside the availability boundary; failing closed',
+      );
+      return {
+        kind: 'rejected',
+        status: 503,
+        body: { error: { code: 'billing_unavailable' } },
+      };
+    }
     log.warn(
       {
         agent_id: input.platform.agentId,
@@ -140,13 +182,21 @@ export async function checkAndHold(
   if (result.kind === 'rejected') {
     return { kind: 'rejected', status: result.status, body: result.body };
   }
+  if (result.replayed) {
+    return {
+      kind: 'rejected',
+      status: 409,
+      body: { error: { code: 'conflict' }, data: { reason: 'turn_already_admitted' } },
+    };
+  }
   return { kind: 'held', holdId: result.holdId, estimatedAmount };
 }
 
 /**
  * 收尾：有真实 usage 先推两条计量事件（带 hold_id）再按实 settle；
  * usage 缺失按估算 settle（billing 自动补 estimated 计量行）；fail-open 只推计量不 settle。
- * 任何收尾失败只记 error 日志，留给清扫任务过期解冻，绝不影响已发出的响应。
+ * 真实 usage 必须完整推账成功才允许 settle；部分失败保留 active hold 供幂等重试，最终
+ * 由清扫任务解冻。任何收尾失败只记 error，绝不影响已发出的 provider 响应。
  */
 export async function finalizeTurn(
   billing: BillingClient,
@@ -167,6 +217,21 @@ export async function finalizeTurn(
   };
   const logFields = { agent_id: base.agentId, turn_id: base.turnId };
 
+  let actualAmount: number | undefined;
+  if (input.hold.kind === 'held') {
+    try {
+      actualAmount = input.usage
+        ? amountFromUsage(input.usage, input.price)
+        : input.hold.estimatedAmount;
+    } catch (error) {
+      log.error(
+        { ...logFields, err: error, hold_id: input.hold.holdId },
+        'billing usage amount exceeds the safe accounting range; hold left active',
+      );
+      return;
+    }
+  }
+
   if (input.usage) {
     try {
       await billing.reportUsage(
@@ -179,14 +244,12 @@ export async function finalizeTurn(
       );
     } catch (error) {
       log.error({ ...logFields, err: error }, 'usage report failed');
+      if (input.hold.kind === 'held') return;
     }
   }
 
   if (input.hold.kind !== 'held') return;
-
-  const actualAmount = input.usage
-    ? amountFromUsage(input.usage, input.price)
-    : input.hold.estimatedAmount;
+  if (actualAmount === undefined) return;
   try {
     await billing.settle({ holdId: input.hold.holdId, actualAmount });
   } catch (error) {
