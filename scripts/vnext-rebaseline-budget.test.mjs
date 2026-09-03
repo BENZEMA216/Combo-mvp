@@ -21,8 +21,11 @@ import {
   maintenanceModeBootstrap,
   parseContract,
   parseNumstat,
+  paymentPlatformScope,
   platformV2BootstrapLock,
   policyPaths,
+  previousBudgetLock,
+  previousBudgetPath,
   previousContractPath,
   previousTrancheLock,
   productBaselineBootstrap,
@@ -194,6 +197,7 @@ function approvedNextProjectSource(current = readFileSync(committedProjectPath, 
 
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
   assert.equal(contract.baseSha, platformV2BootstrapLock.candidateSha);
+  assert.deepEqual(contract.previousBudget, previousBudgetLock);
   assert.deepEqual(contract.previousTranche, previousTrancheLock);
   assert.deepEqual(contract.supersededAdmission, supersededAdmissionLock);
   assert.deepEqual(contract.platformV2Bootstrap, platformV2BootstrapLock);
@@ -207,8 +211,14 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
     preservePostgresMigrationHistory: true,
     preserveWorkerSqliteSchemaHistory: true,
   });
-  assert.equal(contract.scopeId, 'vnext-r1-r3-with-v2-bootstrap-v4');
-  assert.equal(contract.trancheId, 'v2-platform-validation-bootstrap-repair');
+  assert.equal(contract.scopeId, 'vnext-with-platform-payment-v5');
+  assert.equal(contract.trancheId, 'issue-308-payment-platform-contract');
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(join(repo, previousBudgetPath)))
+      .digest('hex'),
+    previousBudgetLock.contractSha256,
+  );
   assert.equal(
     createHash('sha256')
       .update(readFileSync(join(repo, previousContractPath)))
@@ -233,25 +243,33 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(maintenanceModeBootstrap.paths.includes(previousContractPath), false);
   assert.equal(productBaselineBootstrap.paths.includes(supersededContractPath), false);
   assert.equal(maintenanceModeBootstrap.paths.includes(supersededContractPath), false);
+  assert.equal(productBaselineBootstrap.paths.includes(previousBudgetPath), false);
+  assert.equal(maintenanceModeBootstrap.paths.includes(previousBudgetPath), false);
   assert.equal(productBaselineBootstrap.paths.includes(contractPath), false);
   assert.equal(maintenanceModeBootstrap.paths.includes(contractPath), false);
   assert.equal(policyPaths.includes(legacyContractPath), true);
   assert.equal(policyPaths.includes(previousContractPath), true);
   assert.equal(policyPaths.includes(supersededContractPath), true);
+  assert.equal(policyPaths.includes(previousBudgetPath), true);
   assert.equal(policyPaths.includes(contractPath), true);
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
   assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
-  const supersededContract = JSON.parse(readFileSync(join(repo, supersededContractPath), 'utf8'));
-  for (const field of [
-    'compatibility',
-    'allowedFiles',
-    'allowedPathPrefixes',
-    'maintenanceFile',
-    'limits',
-  ]) {
-    assert.deepEqual(contract[field], supersededContract[field], field);
+  const previousBudget = JSON.parse(readFileSync(join(repo, previousBudgetPath), 'utf8'));
+  for (const field of ['compatibility', 'maintenanceFile', 'limits']) {
+    assert.deepEqual(contract[field], previousBudget[field], field);
   }
+  assert.deepEqual(contract.previousTranche, previousBudget.previousTranche);
+  assert.deepEqual(contract.supersededAdmission, previousBudget.supersededAdmission);
+  assert.deepEqual(contract.platformV2Bootstrap, previousBudget.platformV2Bootstrap);
+  assert.deepEqual(
+    contract.allowedFiles,
+    [...previousBudget.allowedFiles, ...paymentPlatformScope.allowedFiles].sort(),
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes,
+    [...previousBudget.allowedPathPrefixes, ...paymentPlatformScope.allowedPathPrefixes].sort(),
+  );
   assert.deepEqual(productGoalLock.approvedProjectSha256s, [
     '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
     'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
@@ -306,8 +324,8 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   );
 
   const duplicate = source.replace(
-    '"schemaVersion": 4,',
-    '"schemaVersion": 4,\n  "schemaVersion": 4,',
+    '"schemaVersion": 5,',
+    '"schemaVersion": 5,\n  "schemaVersion": 5,',
   );
   assert.throws(() => parseContract(duplicate), /canonical JSON/);
 
@@ -330,6 +348,13 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
   assert.throws(
     () => parseContract(`${JSON.stringify(rewrittenHistory, null, 2)}\n`),
     /previousTranche changed/,
+  );
+
+  const rewrittenPreviousBudget = structuredClone(contract);
+  rewrittenPreviousBudget.previousBudget.changedLines -= 1;
+  assert.throws(
+    () => parseContract(`${JSON.stringify(rewrittenPreviousBudget, null, 2)}\n`),
+    /previousBudget changed/,
   );
 
   const detachedTranche = structuredClone(contract);
@@ -669,10 +694,27 @@ test('the V2 bootstrap state and merge shape consume the bypass exactly once', (
   assert.equal(isAuthorizedPlatformV2AdmissionContext({ githubActions: undefined }), true);
 });
 
-test('V2 paths remain closed after the exact bootstrap is consumed', () => {
+test('only the payment-serving V2 apps reopen after the bootstrap is consumed', () => {
   assert.equal(platformV2BootstrapPaths.length, 72);
   assert.deepEqual(platformV2BootstrapPaths, [...platformV2BootstrapPaths].sort());
-  for (const path of platformV2BootstrapPaths) {
+  const reopenedPaymentPaths = platformV2BootstrapPaths.filter(
+    (path) => path.startsWith('apps/billing/') || path.startsWith('apps/llm-gateway/'),
+  );
+  const closedBootstrapPaths = platformV2BootstrapPaths.filter(
+    (path) => !reopenedPaymentPaths.includes(path),
+  );
+  assert.ok(reopenedPaymentPaths.length > 0);
+  assert.ok(closedBootstrapPaths.length > 0);
+  for (const path of reopenedPaymentPaths) {
+    assert.equal(contract.allowedFiles.includes(path), false, path);
+    assert.equal(
+      paymentPlatformScope.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
+      true,
+      path,
+    );
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
+  for (const path of closedBootstrapPaths) {
     assert.equal(contract.allowedFiles.includes(path), false, path);
     assert.equal(
       contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
@@ -688,8 +730,6 @@ test('V2 paths remain closed after the exact bootstrap is consumed', () => {
 
   for (const path of [
     'apps/authz/src/new-route.ts',
-    'apps/billing/src/reconcile.ts',
-    'apps/llm-gateway/src/providers/new-provider.ts',
     'infra/Dockerfile.v2-debug',
     'infra/host/combo-v2-preview.conf',
     'infra/host/release/combo-v2-billing-forward.service',
@@ -704,6 +744,76 @@ test('V2 paths remain closed after the exact bootstrap is consumed', () => {
       path,
     );
   }
+});
+
+test('Issue 308 opens only the platform payment contract and handoff surface', () => {
+  assert.deepEqual(paymentPlatformScope, {
+    allowedFiles: [
+      'docs/payment-sdk-handoff-acceptance.md',
+      'docs/payment-sdk-integration.md',
+      'docs/research-development-issues-audit.md',
+    ],
+    allowedPathPrefixes: [
+      'apps/billing/',
+      'apps/llm-gateway/',
+      'packages/payment-protocol/',
+      'tests/payment-sdk-handoff/',
+    ],
+  });
+  for (const path of paymentPlatformScope.allowedFiles) {
+    assert.equal(contract.allowedFiles.filter((candidate) => candidate === path).length, 1, path);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
+      false,
+      path,
+    );
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
+  for (const prefix of paymentPlatformScope.allowedPathPrefixes) {
+    assert.equal(
+      contract.allowedPathPrefixes.filter((candidate) => candidate === prefix).length,
+      1,
+      prefix,
+    );
+    assert.equal(assessPullRequest(contract, [entry(`${prefix}contract.test.ts`)]).mode, 'PRODUCT');
+  }
+
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter(
+      (prefix) =>
+        prefix.startsWith('apps/authz') ||
+        prefix.startsWith('infra') ||
+        prefix.includes('deploy') ||
+        prefix.includes('agent-sdk'),
+    ),
+    [],
+  );
+  for (const path of [
+    '.github/workflows/deploy.yml',
+    'apps/authz/src/payment-assertion.ts',
+    'apps/payment-sdk/src/index.ts',
+    'docs/payment-sdk-integration-v2.md',
+    'infra/k8s/v2/payment-checkout.yaml',
+    'packages/combo-agent-sdk/src/payments.ts',
+    'packages/payment-sdk/src/index.ts',
+    'scripts/deploy-payment-platform.sh',
+    'tests/payment-sdk-handoff-other/contract.test.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+  }
+
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry(contractPath),
+        entry('packages/payment-protocol/src/index.ts'),
+      ]),
+    /governance-only/,
+  );
 });
 
 test('product edits must stay inside the declared rebuild surface', () => {
@@ -729,13 +839,17 @@ test('product edits must stay inside the declared rebuild surface', () => {
 });
 
 test('the knowledge Agent Test scope opens only its named surface and exact files', () => {
-  const allowedControlFiles = [
+  const allowedKnowledgeControlFiles = [
     '.github/workflows/ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
     'docs/leshouying-test-acceptance.md',
     'scripts/check-production-artifacts.sh',
   ];
+  const allowedControlFiles = [
+    ...allowedKnowledgeControlFiles,
+    ...paymentPlatformScope.allowedFiles,
+  ].sort();
   const allowedKnowledgeAuthoringFiles = [
     'apps/authoring/src/__tests__/README.md',
     'apps/authoring/src/__tests__/agent-package-object-store.test.ts',
@@ -777,7 +891,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
     ...allowedKnowledgeAuthoringFiles,
     ...allowedKnowledgeInfraFiles,
-    ...allowedControlFiles,
+    ...allowedKnowledgeControlFiles,
   ].map((path) => entry(path));
 
   assert.equal(policyPaths.includes('.github/workflows/pr-ci.yml'), true);

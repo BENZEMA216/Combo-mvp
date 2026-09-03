@@ -8,7 +8,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const legacyContractPath = 'scripts/vnext-rebaseline-budget.v1.json';
 export const previousContractPath = 'scripts/vnext-rebaseline-budget.v2.json';
 export const supersededContractPath = 'scripts/vnext-rebaseline-budget.v3.json';
-export const contractPath = 'scripts/vnext-rebaseline-budget.v4.json';
+export const previousBudgetPath = 'scripts/vnext-rebaseline-budget.v4.json';
+export const contractPath = 'scripts/vnext-rebaseline-budget.v5.json';
 export const policyPaths = Object.freeze([
   '.agents/skills/github-collaboration/SKILL.md',
   '.agents/skills/github-collaboration/references/governance-and-contributions.md',
@@ -20,18 +21,33 @@ export const policyPaths = Object.freeze([
   'package.json',
   previousContractPath,
   supersededContractPath,
+  previousBudgetPath,
   contractPath,
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
 ]);
 
-const protocol = 'combo.vnext-rebaseline-budget/4';
+const protocol = 'combo.vnext-rebaseline-budget/5';
 const shaPattern = /^[0-9a-f]{40}$/;
 const hardCeilings = Object.freeze({
   maxChangedFilesPerPullRequest: 30,
   maxChangedLinesPerFile: 1200,
   maxChangedLinesPerPullRequest: 5000,
   maxChangedLinesFromBase: 15000,
+});
+
+export const paymentPlatformScope = Object.freeze({
+  allowedFiles: Object.freeze([
+    'docs/payment-sdk-handoff-acceptance.md',
+    'docs/payment-sdk-integration.md',
+    'docs/research-development-issues-audit.md',
+  ]),
+  allowedPathPrefixes: Object.freeze([
+    'apps/billing/',
+    'apps/llm-gateway/',
+    'packages/payment-protocol/',
+    'tests/payment-sdk-handoff/',
+  ]),
 });
 
 export const initialTrancheLock = Object.freeze({
@@ -97,6 +113,18 @@ export const platformV2BootstrapLock = Object.freeze({
   changedLines: 11810,
   maxChangedLinesPerFile: 563,
   mergeShape: 'TWO_LAYER_MERGE_COMMIT',
+});
+
+export const previousBudgetLock = Object.freeze({
+  protocol: 'combo.vnext-rebaseline-budget/4',
+  contractPath: previousBudgetPath,
+  contractSha256: 'e13f3392cdc2c03531ccee2489e256c6f06a85725adfcdada18d76d9b9666718',
+  governanceBaseSha: '9997aedceeba5ff68cf50b6bc52a85e952121f15',
+  governanceHeadSha: 'fda4f756b58b8514f9d3f5116b9c8f9709b4f2a5',
+  rawDiffSha256: '1ec11fbd8c71d54f0123afe5daebb7908e3038a5943865336884bc2fed6009fc',
+  changedFiles: 3,
+  changedLines: 440,
+  maxChangedLinesPerFile: 214,
 });
 
 export const productGoalLock = Object.freeze({
@@ -218,6 +246,7 @@ export function parseContract(source) {
       'scopeId',
       'trancheId',
       'baseSha',
+      'previousBudget',
       'previousTranche',
       'supersededAdmission',
       'platformV2Bootstrap',
@@ -230,13 +259,29 @@ export function parseContract(source) {
     'budget contract',
   );
   invariant(value.protocol === protocol, 'budget protocol changed');
-  invariant(value.schemaVersion === 4, 'budget schemaVersion must be 4');
-  invariant(value.scopeId === 'vnext-r1-r3-with-v2-bootstrap-v4', 'budget scopeId changed');
-  invariant(
-    value.trancheId === 'v2-platform-validation-bootstrap-repair',
-    'budget trancheId changed',
-  );
+  invariant(value.schemaVersion === 5, 'budget schemaVersion must be 5');
+  invariant(value.scopeId === 'vnext-with-platform-payment-v5', 'budget scopeId changed');
+  invariant(value.trancheId === 'issue-308-payment-platform-contract', 'budget trancheId changed');
   invariant(shaPattern.test(value.baseSha), 'baseSha must be a full lowercase commit SHA');
+  exactKeys(
+    value.previousBudget,
+    [
+      'protocol',
+      'contractPath',
+      'contractSha256',
+      'governanceBaseSha',
+      'governanceHeadSha',
+      'rawDiffSha256',
+      'changedFiles',
+      'changedLines',
+      'maxChangedLinesPerFile',
+    ],
+    'previousBudget',
+  );
+  invariant(
+    JSON.stringify(value.previousBudget) === JSON.stringify(previousBudgetLock),
+    'previousBudget changed',
+  );
   exactKeys(
     value.previousTranche,
     [
@@ -303,6 +348,10 @@ export function parseContract(source) {
   invariant(
     JSON.stringify(value.platformV2Bootstrap) === JSON.stringify(platformV2BootstrapLock),
     'platformV2Bootstrap changed',
+  );
+  invariant(
+    value.previousBudget.governanceBaseSha === value.baseSha,
+    'baseSha must retain the cumulative baseline from the previous budget',
   );
   invariant(
     value.supersededAdmission.supersededByProtocol === value.platformV2Bootstrap.protocol &&
@@ -668,6 +717,7 @@ function verifySupersededAdmission(contract) {
       JSON.stringify(supersededPlatformV2BootstrapLock),
     'superseded V2 bootstrap receipt changed',
   );
+  const successorBudget = JSON.parse(readFileSync(join(repoRoot, previousBudgetPath), 'utf8'));
   for (const field of [
     'compatibility',
     'allowedFiles',
@@ -676,7 +726,7 @@ function verifySupersededAdmission(contract) {
     'limits',
   ]) {
     invariant(
-      JSON.stringify(contract[field]) === JSON.stringify(previousContract[field]),
+      JSON.stringify(successorBudget[field]) === JSON.stringify(previousContract[field]),
       `v4 must preserve the v3 ${field}`,
     );
   }
@@ -703,6 +753,91 @@ function verifySupersededAdmission(contract) {
     stateAtSupersession: receipt.stateAtSupersession,
     disposition: receipt.disposition,
   };
+}
+
+function verifyPreviousBudget(contract) {
+  const receipt = contract.previousBudget;
+  invariant(commitExists(receipt.governanceBaseSha), 'previous budget base is unavailable');
+  invariant(commitExists(receipt.governanceHeadSha), 'previous budget head is unavailable');
+  invariant(
+    isAncestor(receipt.governanceBaseSha, receipt.governanceHeadSha),
+    'previous budget base must be an ancestor of its head',
+  );
+  invariant(
+    isAncestor(receipt.governanceHeadSha, 'HEAD'),
+    'active budget must descend from the previous budget head',
+  );
+
+  const previousSource = readFileSync(join(repoRoot, previousBudgetPath), 'utf8');
+  invariant(
+    previousSource === `${JSON.stringify(JSON.parse(previousSource), null, 2)}\n`,
+    'previous budget contract must remain canonical JSON',
+  );
+  invariant(
+    createHash('sha256').update(previousSource).digest('hex') === receipt.contractSha256,
+    'previous budget contract receipt changed',
+  );
+  invariant(
+    git(['show', `${receipt.governanceHeadSha}:${previousBudgetPath}`]) === previousSource,
+    'previous budget contract must match its committed governance head',
+  );
+  const previousBudget = JSON.parse(previousSource);
+  invariant(
+    previousBudget.protocol === receipt.protocol && previousBudget.schemaVersion === 4,
+    'previous budget protocol changed',
+  );
+  for (const field of [
+    'baseSha',
+    'previousTranche',
+    'supersededAdmission',
+    'platformV2Bootstrap',
+    'compatibility',
+    'maintenanceFile',
+    'limits',
+  ]) {
+    invariant(
+      JSON.stringify(contract[field]) === JSON.stringify(previousBudget[field]),
+      `v5 must preserve the v4 ${field}`,
+    );
+  }
+
+  const expectedAllowedFiles = [
+    ...previousBudget.allowedFiles,
+    ...paymentPlatformScope.allowedFiles,
+  ].sort();
+  const expectedAllowedPathPrefixes = [
+    ...previousBudget.allowedPathPrefixes,
+    ...paymentPlatformScope.allowedPathPrefixes,
+  ].sort();
+  invariant(
+    new Set(expectedAllowedFiles).size === expectedAllowedFiles.length &&
+      JSON.stringify(contract.allowedFiles) === JSON.stringify(expectedAllowedFiles),
+    'v5 allowedFiles must add only the payment platform handoff files',
+  );
+  invariant(
+    new Set(expectedAllowedPathPrefixes).size === expectedAllowedPathPrefixes.length &&
+      JSON.stringify(contract.allowedPathPrefixes) === JSON.stringify(expectedAllowedPathPrefixes),
+    'v5 allowedPathPrefixes must add only the payment platform implementation paths',
+  );
+
+  const entries = collectCommittedDiff(receipt.governanceBaseSha, receipt.governanceHeadSha);
+  invariant(
+    entries.every(({ path }) => policyPaths.includes(path)),
+    'previous budget governance bridge must contain policy files only',
+  );
+  const summary = summarize(entries);
+  invariant(
+    summary.changedFiles === receipt.changedFiles &&
+      summary.changedLines === receipt.changedLines &&
+      maxChangedLines(entries) === receipt.maxChangedLinesPerFile,
+    'previous budget governance bridge totals changed',
+  );
+  invariant(
+    collectCommittedRawDiffSha256(receipt.governanceBaseSha, receipt.governanceHeadSha) ===
+      receipt.rawDiffSha256,
+    'previous budget governance raw diff receipt changed',
+  );
+  return { verified: true, governanceHeadSha: receipt.governanceHeadSha };
 }
 
 function verifyPlatformV2Bootstrap(contract) {
@@ -960,6 +1095,7 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     spawnSync('git', ['diff', '--quiet'], { cwd: repoRoot }).status === 0,
     'budget check requires all tracked changes to be staged',
   );
+  const previousBudget = verifyPreviousBudget(contract);
   const previousTranche = verifyPreviousTranche(contract);
   const supersededAdmission = verifySupersededAdmission(contract);
   const platformV2Receipt = verifyPlatformV2Bootstrap(contract);
@@ -1047,6 +1183,7 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
   return {
     pullRequest,
     productBaseline,
+    previousBudget,
     previousTranche,
     supersededAdmission,
     platformV2Bootstrap,
