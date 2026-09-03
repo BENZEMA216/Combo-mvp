@@ -1,0 +1,546 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Combo Payment API",
+    "version": "0.1.0",
+    "description": "余额不足后由 Combo Host 使用当前用户会话进入托管支付的第一版合同。"
+  },
+  "paths": {
+    "/v1/payments": {
+      "post": {
+        "operationId": "createPayment",
+        "summary": "使用 Combo 支付凭证创建或重放支付",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同一防重复编号的原支付",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSuccessResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "支付已创建",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "409": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/PaymentApiError"
+          }
+        }
+      }
+    },
+    "/v1/payments/by-request-key/{requestKey}": {
+      "get": {
+        "operationId": "getPaymentByRequestKey",
+        "summary": "在创建结果不确定时用原防重复编号找回支付",
+        "parameters": [
+          {
+            "name": "requestKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaymentRequestKey"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "支付当前状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/PaymentApiError"
+          }
+        }
+      }
+    },
+    "/v1/payments/{paymentRequestId}": {
+      "get": {
+        "operationId": "getPayment",
+        "summary": "读取一个支付请求的权威状态",
+        "parameters": [
+          {
+            "name": "paymentRequestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaymentIdentifier"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "支付当前状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "404": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "503": {
+            "$ref": "#/components/responses/PaymentApiError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "PaymentApiError": {
+        "description": "支付接口错误",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PaymentApiErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "PaymentIdentifier": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$"
+      },
+      "PaymentRequestKey": {
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$"
+      },
+      "PaymentToken": {
+        "type": "string",
+        "minLength": 16,
+        "maxLength": 8192,
+        "pattern": "^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$"
+      },
+      "PaymentTimestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "必须是以 Z 结尾且日历日期真实存在的 UTC RFC 3339 时间。"
+      },
+      "PaymentMoney": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["currency", "amountCents"],
+        "properties": {
+          "currency": {
+            "const": "CNY"
+          },
+          "amountCents": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[1-9]\\d*$"
+          }
+        }
+      },
+      "PaymentRequirement": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "paymentToken", "amount", "expiresAt"],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/PaymentIdentifier"
+          },
+          "paymentToken": {
+            "$ref": "#/components/schemas/PaymentToken"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/PaymentMoney"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          }
+        }
+      },
+      "PaymentMeta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["traceId"],
+        "properties": {
+          "traceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[!-~]+$"
+          }
+        }
+      },
+      "PaymentRequiredResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error", "data", "meta"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code"],
+            "properties": {
+              "code": {
+                "const": "payment_required"
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["paymentRequirement"],
+            "properties": {
+              "paymentRequirement": {
+                "$ref": "#/components/schemas/PaymentRequirement"
+              }
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PaymentMeta"
+          }
+        }
+      },
+      "PaymentHostMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "type", "paymentToken"],
+        "properties": {
+          "version": {
+            "const": 1
+          },
+          "type": {
+            "const": "combo.payment_required"
+          },
+          "paymentToken": {
+            "$ref": "#/components/schemas/PaymentToken"
+          }
+        }
+      },
+      "CreatePaymentBody": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paymentToken", "requestKey"],
+        "properties": {
+          "paymentToken": {
+            "$ref": "#/components/schemas/PaymentToken"
+          },
+          "requestKey": {
+            "$ref": "#/components/schemas/PaymentRequestKey"
+          }
+        }
+      },
+      "PaymentAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "url", "expiresAt"],
+        "properties": {
+          "kind": {
+            "const": "open_url"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "必须是 Combo 支付接口返回的 HTTP 或 HTTPS 地址。"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          }
+        }
+      },
+      "PaymentView": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/WaitingPayment"
+          },
+          {
+            "$ref": "#/components/schemas/ProcessingPayment"
+          },
+          {
+            "$ref": "#/components/schemas/CompletedPayment"
+          },
+          {
+            "$ref": "#/components/schemas/ClosedPayment"
+          }
+        ]
+      },
+      "WaitingPayment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "paymentRequestId",
+          "requestKey",
+          "status",
+          "amount",
+          "expiresAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "paymentRequestId": {
+            "$ref": "#/components/schemas/PaymentIdentifier"
+          },
+          "requestKey": {
+            "$ref": "#/components/schemas/PaymentRequestKey"
+          },
+          "status": {
+            "const": "waiting"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/PaymentMoney"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "action": {
+            "$ref": "#/components/schemas/PaymentAction"
+          }
+        }
+      },
+      "ProcessingPayment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "paymentRequestId",
+          "requestKey",
+          "status",
+          "amount",
+          "expiresAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "paymentRequestId": {
+            "$ref": "#/components/schemas/PaymentIdentifier"
+          },
+          "requestKey": {
+            "$ref": "#/components/schemas/PaymentRequestKey"
+          },
+          "status": {
+            "const": "processing"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/PaymentMoney"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          }
+        }
+      },
+      "CompletedPayment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "paymentRequestId",
+          "requestKey",
+          "status",
+          "amount",
+          "expiresAt",
+          "createdAt",
+          "updatedAt",
+          "completedAt"
+        ],
+        "properties": {
+          "paymentRequestId": {
+            "$ref": "#/components/schemas/PaymentIdentifier"
+          },
+          "requestKey": {
+            "$ref": "#/components/schemas/PaymentRequestKey"
+          },
+          "status": {
+            "const": "completed"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/PaymentMoney"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "completedAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          }
+        }
+      },
+      "ClosedPayment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "paymentRequestId",
+          "requestKey",
+          "status",
+          "amount",
+          "expiresAt",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "paymentRequestId": {
+            "$ref": "#/components/schemas/PaymentIdentifier"
+          },
+          "requestKey": {
+            "$ref": "#/components/schemas/PaymentRequestKey"
+          },
+          "status": {
+            "const": "closed"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/PaymentMoney"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/PaymentTimestamp"
+          }
+        }
+      },
+      "PaymentSuccessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PaymentView"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PaymentMeta"
+          }
+        }
+      },
+      "PaymentApiErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error", "meta"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code"],
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_request",
+                  "unauthorized",
+                  "forbidden",
+                  "not_found",
+                  "conflict",
+                  "rate_limited",
+                  "service_unavailable"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["retryAfterMs"],
+            "properties": {
+              "retryAfterMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 900000
+              }
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PaymentMeta"
+          }
+        }
+      }
+    }
+  }
+}

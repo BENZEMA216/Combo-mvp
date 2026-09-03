@@ -1,0 +1,36 @@
+{
+  "name": "@cb/payment-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Combo 支付中台与 Agent SDK 共用的严格支付协议",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./openapi": "./openapi/payment-v1.openapi.json"
+  },
+  "files": [
+    "dist",
+    "openapi/payment-v1.openapi.json"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
