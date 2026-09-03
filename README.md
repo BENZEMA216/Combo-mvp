@@ -26,7 +26,7 @@ Combo 让用户把已经完成的对话、Project 或工作旅程制作成可分
 > - [横切方案](https://enbmphajlu.feishu.cn/wiki/Di6awjArji4oXKkAxetc4Y1enLc)：能力包契约、登录与账号体系、后端仓库结构规范
 > - [运维与环境](https://enbmphajlu.feishu.cn/wiki/QHEQwaEd9iki3vkSITlcXfcMn6f)、[归档](https://enbmphajlu.feishu.cn/wiki/Jd00wpfavi2ToPkGUD7cTTg3n1c)（归档内为已被取代的旧方案，勿作依据）
 >
-> 具体文档与产品基线冲突时必须停止并说明，不能自行选择旧口径继续开发。HTTP 与应用共享契约以 `packages/shared` 源码为准，Agent Package 与 Creator Host 协议以 `packages/creator-agent-protocol` 源码为准，数据库结构以 `db/migrations/` 为准，部署拓扑以 [`docs/deployment-topology.md`](docs/deployment-topology.md) 为准。
+> 具体文档与产品基线冲突时必须停止并说明，不能自行选择旧口径继续开发。通用 HTTP 与应用共享契约以 `packages/shared` 源码为准，支付 HTTP 合同以 `packages/payment-protocol` 源码为准且必须复用 shared 的统一错误信封，Agent Package 与 Creator Host 协议以 `packages/creator-agent-protocol` 源码为准，数据库结构以 `db/migrations/` 为准，部署拓扑以 [`docs/deployment-topology.md`](docs/deployment-topology.md) 为准。
 
 ---
 

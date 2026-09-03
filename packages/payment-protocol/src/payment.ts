@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ErrorBodySchema } from '@cb/shared';
 
 export const PAYMENT_PROTOCOL_VERSION = 1 as const;
 export const PAYMENT_HOST_MESSAGE_TYPE = 'combo.payment_required' as const;
@@ -76,7 +77,12 @@ export const PaymentTraceIdSchema = z.string().min(1).max(256).regex(VISIBLE_ASC
 export const PaymentMoneySchema = z
   .object({
     currency: z.literal('CNY'),
-    amountCents: z.string().min(1).max(32).regex(POSITIVE_INTEGER_PATTERN),
+    amountCents: z
+      .string()
+      .min(1)
+      .max(16)
+      .regex(POSITIVE_INTEGER_PATTERN)
+      .refine((value) => BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER), 'exceeds safe range'),
   })
   .strict();
 export type PaymentMoney = z.infer<typeof PaymentMoneySchema>;
@@ -94,16 +100,22 @@ export type PaymentRequirement = z.infer<typeof PaymentRequirementSchema>;
 export const PaymentMetaSchema = z.object({ traceId: PaymentTraceIdSchema }).strict();
 export type PaymentMeta = z.infer<typeof PaymentMetaSchema>;
 
+const PaymentErrorBaseSchema = ErrorBodySchema.pick({
+  userMessage: true,
+  retriable: true,
+  action: true,
+  traceId: true,
+});
+
 export const PaymentRequiredResponseSchema = z
   .object({
-    error: z
-      .object({
-        code: z.literal('payment_required'),
-        message: PaymentSafeMessageSchema.optional(),
-      })
-      .strict(),
-    data: z.object({ paymentRequirement: PaymentRequirementSchema }).strict(),
-    meta: PaymentMetaSchema,
+    error: PaymentErrorBaseSchema.extend({
+      userMessage: PaymentSafeMessageSchema,
+      retriable: z.literal(false),
+      action: z.literal('wait'),
+      traceId: PaymentTraceIdSchema,
+      payment: PaymentRequirementSchema,
+    }).strict(),
   })
   .strict();
 export type PaymentRequiredResponse = z.infer<typeof PaymentRequiredResponseSchema>;
@@ -135,6 +147,7 @@ export const PaymentActionSchema = z
       .string()
       .min(1)
       .max(4_096)
+      .regex(VISIBLE_ASCII_PATTERN, 'must contain visible ASCII only')
       .url()
       .refine((value) => {
         const protocol = new URL(value).protocol;
@@ -148,7 +161,6 @@ export type PaymentAction = z.infer<typeof PaymentActionSchema>;
 export const PaymentViewSchema = z
   .object({
     paymentRequestId: PaymentIdentifierSchema,
-    requestKey: PaymentRequestKeySchema,
     status: PaymentStatusSchema,
     amount: PaymentMoneySchema,
     expiresAt: PaymentTimestampSchema,
@@ -159,6 +171,23 @@ export const PaymentViewSchema = z
   })
   .strict()
   .superRefine((payment, context) => {
+    const createdAt = Date.parse(payment.createdAt);
+    const updatedAt = Date.parse(payment.updatedAt);
+    const expiresAt = Date.parse(payment.expiresAt);
+    if (updatedAt < createdAt) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['updatedAt'],
+        message: 'updatedAt cannot precede createdAt',
+      });
+    }
+    if (expiresAt <= createdAt) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expiresAt'],
+        message: 'expiresAt must follow createdAt',
+      });
+    }
     if (payment.status === 'completed' && payment.completedAt === undefined) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -173,11 +202,39 @@ export const PaymentViewSchema = z
         message: 'completedAt is only valid when status is completed',
       });
     }
+    if (
+      payment.completedAt !== undefined &&
+      (Date.parse(payment.completedAt) < createdAt || Date.parse(payment.completedAt) > updatedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completedAt'],
+        message: 'completedAt must fall between createdAt and updatedAt',
+      });
+    }
+    if (payment.status === 'waiting' && payment.action === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['action'],
+        message: 'action is required while status is waiting',
+      });
+    }
     if (payment.status !== 'waiting' && payment.action !== undefined) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['action'],
         message: 'action is only valid while status is waiting',
+      });
+    }
+    if (
+      payment.action !== undefined &&
+      (Date.parse(payment.action.expiresAt) <= createdAt ||
+        Date.parse(payment.action.expiresAt) > expiresAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['action', 'expiresAt'],
+        message: 'action expiry must follow creation and not exceed payment expiry',
       });
     }
   });
@@ -188,30 +245,12 @@ export const PaymentSuccessResponseSchema = z
   .strict();
 export type PaymentSuccessResponse = z.infer<typeof PaymentSuccessResponseSchema>;
 
-export const PaymentApiErrorCodeSchema = z.enum([
-  'invalid_request',
-  'unauthorized',
-  'forbidden',
-  'not_found',
-  'conflict',
-  'rate_limited',
-  'service_unavailable',
-]);
-export type PaymentApiErrorCode = z.infer<typeof PaymentApiErrorCodeSchema>;
-
 export const PaymentApiErrorResponseSchema = z
   .object({
-    error: z
-      .object({
-        code: PaymentApiErrorCodeSchema,
-        message: PaymentSafeMessageSchema.optional(),
-      })
-      .strict(),
-    data: z
-      .object({ retryAfterMs: z.number().int().positive().max(900_000) })
-      .strict()
-      .optional(),
-    meta: PaymentMetaSchema,
+    error: PaymentErrorBaseSchema.extend({
+      userMessage: PaymentSafeMessageSchema,
+      traceId: PaymentTraceIdSchema,
+    }).strict(),
   })
   .strict();
 export type PaymentApiErrorResponse = z.infer<typeof PaymentApiErrorResponseSchema>;

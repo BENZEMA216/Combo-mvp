@@ -60,6 +60,27 @@ Combo 确认渠道结果、入账，并完成支付侧资金处理
 
 ```json
 {
+  "error": {
+    "userMessage": "余额不足，请完成支付后继续。",
+    "retriable": false,
+    "action": "wait",
+    "traceId": "trace_...",
+    "payment": {
+      "id": "payreq_...",
+      "paymentToken": "Combo 签发的短期不透明凭证",
+      "amount": { "currency": "CNY", "amountCents": "600" },
+      "expiresAt": "2026-09-03T10:05:00Z"
+    }
+  }
+}
+```
+
+HTTP 402 本身表示需要支付，正文继续使用仓库统一的人话错误信封，不增加可公开展示的错误码。SDK 只在状态和全部支付字段都严格通过时生成类型化支付错误。
+
+Agent 随后生成给 Host 的消息：
+
+```json
+{
   "version": 1,
   "type": "combo.payment_required",
   "paymentToken": "Combo 签发的短期不透明凭证"
@@ -86,6 +107,8 @@ Host 不能直接使用 Agent 返回的金额、支付方式、二维码或网�
 ## 防重复与网络中断
 
 所有写操作都必须先生成并保存防重复编号。同一编号和同一内容返回原对象；同一编号换内容固定冲突。
+
+同一个 `paymentToken` 在支付中台只能对应一个支付记录。两个标签页即使并发使用不同 `requestKey`，也只能得到同一个 `paymentRequestId`，不能创建第二个渠道订单或重复入账；每个已接受的 `requestKey` 都只能找回这个既有支付，不能再绑定其他支付凭证。
 
 创建支付时超时、连接中断、5xx、空响应或畸形成功响应都属于“结果不确定”。调用方只能：
 

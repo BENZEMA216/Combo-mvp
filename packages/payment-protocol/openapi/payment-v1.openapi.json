@@ -5,6 +5,14 @@
     "version": "0.1.0",
     "description": "余额不足后由 Combo Host 使用当前用户会话进入托管支付的第一版合同。"
   },
+  "security": [
+    {
+      "cookieAuth": []
+    },
+    {
+      "scopedBearer": []
+    }
+  ],
   "paths": {
     "/v1/payments": {
       "post": {
@@ -22,24 +30,10 @@
         },
         "responses": {
           "200": {
-            "description": "同一防重复编号的原支付",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentSuccessResponse"
-                }
-              }
-            }
+            "$ref": "#/components/responses/PaymentSuccess"
           },
           "201": {
-            "description": "支付已创建",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentSuccessResponse"
-                }
-              }
-            }
+            "$ref": "#/components/responses/PaymentSuccess"
           },
           "400": {
             "$ref": "#/components/responses/PaymentApiError"
@@ -50,13 +44,28 @@
           "403": {
             "$ref": "#/components/responses/PaymentApiError"
           },
+          "408": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
           "409": {
             "$ref": "#/components/responses/PaymentApiError"
           },
           "429": {
             "$ref": "#/components/responses/PaymentApiError"
           },
+          "500": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
           "503": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "504": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "default": {
             "$ref": "#/components/responses/PaymentApiError"
           }
         }
@@ -78,14 +87,10 @@
         ],
         "responses": {
           "200": {
-            "description": "支付当前状态",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentSuccessResponse"
-                }
-              }
-            }
+            "$ref": "#/components/responses/PaymentSuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/PaymentApiError"
           },
           "401": {
             "$ref": "#/components/responses/PaymentApiError"
@@ -96,10 +101,25 @@
           "404": {
             "$ref": "#/components/responses/PaymentApiError"
           },
+          "408": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
           "429": {
             "$ref": "#/components/responses/PaymentApiError"
           },
+          "500": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
           "503": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "504": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "default": {
             "$ref": "#/components/responses/PaymentApiError"
           }
         }
@@ -121,14 +141,10 @@
         ],
         "responses": {
           "200": {
-            "description": "支付当前状态",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentSuccessResponse"
-                }
-              }
-            }
+            "$ref": "#/components/responses/PaymentSuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/PaymentApiError"
           },
           "401": {
             "$ref": "#/components/responses/PaymentApiError"
@@ -139,10 +155,25 @@
           "404": {
             "$ref": "#/components/responses/PaymentApiError"
           },
+          "408": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
           "429": {
             "$ref": "#/components/responses/PaymentApiError"
           },
+          "500": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
           "503": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "504": {
+            "$ref": "#/components/responses/PaymentApiError"
+          },
+          "default": {
             "$ref": "#/components/responses/PaymentApiError"
           }
         }
@@ -150,9 +181,41 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-cb_session",
+        "description": "Combo Host 当前登录用户的安全浏览器会话。"
+      },
+      "scopedBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "平台签发的短期、限权服务端身份；当前尚未实现。"
+      }
+    },
     "responses": {
+      "PaymentSuccess": {
+        "description": "支付当前状态",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PaymentSuccessResponse"
+            }
+          }
+        }
+      },
       "PaymentApiError": {
-        "description": "支付接口错误",
+        "description": "支付接口的人话错误信封；错误类别只由 HTTP 状态表达。",
+        "headers": {
+          "Retry-After": {
+            "description": "服务端建议等待的秒数或 HTTP 日期。",
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
@@ -187,6 +250,19 @@
         "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z$",
         "description": "必须是以 Z 结尾且日历日期真实存在的 UTC RFC 3339 时间。"
       },
+      "PaymentSafeMessage": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+        "x-forbidden-unicode-categories": ["Cc", "Cs", "Cf"]
+      },
+      "PaymentTraceId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[!-~]+$"
+      },
       "PaymentMoney": {
         "type": "object",
         "additionalProperties": false,
@@ -198,8 +274,9 @@
           "amountCents": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 32,
-            "pattern": "^[1-9]\\d*$"
+            "maxLength": 16,
+            "pattern": "^[1-9]\\d*$",
+            "x-maximum-integer": "9007199254740991"
           }
         }
       },
@@ -222,51 +299,35 @@
           }
         }
       },
-      "PaymentMeta": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["traceId"],
-        "properties": {
-          "traceId": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "^[!-~]+$"
-          }
-        }
+      "PaymentErrorAction": {
+        "enum": ["retry", "change_input", "escalate", "wait", "none"]
       },
       "PaymentRequiredResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["error", "data", "meta"],
+        "required": ["error"],
         "properties": {
           "error": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["code"],
+            "required": ["userMessage", "retriable", "action", "traceId", "payment"],
             "properties": {
-              "code": {
-                "const": "payment_required"
+              "userMessage": {
+                "$ref": "#/components/schemas/PaymentSafeMessage"
               },
-              "message": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 512
-              }
-            }
-          },
-          "data": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["paymentRequirement"],
-            "properties": {
-              "paymentRequirement": {
+              "retriable": {
+                "const": false
+              },
+              "action": {
+                "const": "wait"
+              },
+              "traceId": {
+                "$ref": "#/components/schemas/PaymentTraceId"
+              },
+              "payment": {
                 "$ref": "#/components/schemas/PaymentRequirement"
               }
             }
-          },
-          "meta": {
-            "$ref": "#/components/schemas/PaymentMeta"
           }
         }
       },
@@ -310,7 +371,10 @@
           "url": {
             "type": "string",
             "format": "uri",
-            "description": "必须是 Combo 支付接口返回的 HTTP 或 HTTPS 地址。"
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^https?://[!-~]+$",
+            "description": "必须是 Combo 支付接口返回的可见 ASCII HTTP 或 HTTPS 地址。"
           },
           "expiresAt": {
             "$ref": "#/components/schemas/PaymentTimestamp"
@@ -331,26 +395,24 @@
           {
             "$ref": "#/components/schemas/ClosedPayment"
           }
-        ]
+        ],
+        "description": "updatedAt 不早于 createdAt；expiresAt 晚于 createdAt；completedAt 位于创建与更新时间之间；支付动作有效期不超过支付请求。"
       },
       "WaitingPayment": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "paymentRequestId",
-          "requestKey",
           "status",
           "amount",
           "expiresAt",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "action"
         ],
         "properties": {
           "paymentRequestId": {
             "$ref": "#/components/schemas/PaymentIdentifier"
-          },
-          "requestKey": {
-            "$ref": "#/components/schemas/PaymentRequestKey"
           },
           "status": {
             "const": "waiting"
@@ -375,21 +437,10 @@
       "ProcessingPayment": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "paymentRequestId",
-          "requestKey",
-          "status",
-          "amount",
-          "expiresAt",
-          "createdAt",
-          "updatedAt"
-        ],
+        "required": ["paymentRequestId", "status", "amount", "expiresAt", "createdAt", "updatedAt"],
         "properties": {
           "paymentRequestId": {
             "$ref": "#/components/schemas/PaymentIdentifier"
-          },
-          "requestKey": {
-            "$ref": "#/components/schemas/PaymentRequestKey"
           },
           "status": {
             "const": "processing"
@@ -413,7 +464,6 @@
         "additionalProperties": false,
         "required": [
           "paymentRequestId",
-          "requestKey",
           "status",
           "amount",
           "expiresAt",
@@ -424,9 +474,6 @@
         "properties": {
           "paymentRequestId": {
             "$ref": "#/components/schemas/PaymentIdentifier"
-          },
-          "requestKey": {
-            "$ref": "#/components/schemas/PaymentRequestKey"
           },
           "status": {
             "const": "completed"
@@ -451,21 +498,10 @@
       "ClosedPayment": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "paymentRequestId",
-          "requestKey",
-          "status",
-          "amount",
-          "expiresAt",
-          "createdAt",
-          "updatedAt"
-        ],
+        "required": ["paymentRequestId", "status", "amount", "expiresAt", "createdAt", "updatedAt"],
         "properties": {
           "paymentRequestId": {
             "$ref": "#/components/schemas/PaymentIdentifier"
-          },
-          "requestKey": {
-            "$ref": "#/components/schemas/PaymentRequestKey"
           },
           "status": {
             "const": "closed"
@@ -493,52 +529,40 @@
             "$ref": "#/components/schemas/PaymentView"
           },
           "meta": {
-            "$ref": "#/components/schemas/PaymentMeta"
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["traceId"],
+            "properties": {
+              "traceId": {
+                "$ref": "#/components/schemas/PaymentTraceId"
+              }
+            }
           }
         }
       },
       "PaymentApiErrorResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["error", "meta"],
+        "required": ["error"],
         "properties": {
           "error": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["code"],
+            "required": ["userMessage", "retriable", "action", "traceId"],
             "properties": {
-              "code": {
-                "enum": [
-                  "invalid_request",
-                  "unauthorized",
-                  "forbidden",
-                  "not_found",
-                  "conflict",
-                  "rate_limited",
-                  "service_unavailable"
-                ]
+              "userMessage": {
+                "$ref": "#/components/schemas/PaymentSafeMessage"
               },
-              "message": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 512
+              "retriable": {
+                "type": "boolean"
+              },
+              "action": {
+                "$ref": "#/components/schemas/PaymentErrorAction"
+              },
+              "traceId": {
+                "$ref": "#/components/schemas/PaymentTraceId"
               }
             }
-          },
-          "data": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["retryAfterMs"],
-            "properties": {
-              "retryAfterMs": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 900000
-              }
-            }
-          },
-          "meta": {
-            "$ref": "#/components/schemas/PaymentMeta"
           }
         }
       }

@@ -27,6 +27,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@cb/shared": "workspace:*",
     "zod": "^3.24.1"
   },
   "devDependencies": {

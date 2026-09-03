@@ -6,6 +6,7 @@ import {
   PaymentApiErrorResponseSchema,
   PaymentHostMessageSchema,
   PaymentIdentifierSchema,
+  PaymentMoneySchema,
   PaymentRequiredResponseSchema,
   PaymentSuccessResponseSchema,
   PaymentTimestampSchema,
@@ -30,7 +31,6 @@ function requirement() {
 function payment(status: 'waiting' | 'processing' | 'completed' | 'closed' = 'waiting') {
   return {
     paymentRequestId: 'payreq-1',
-    requestKey: 'request-key-1',
     status,
     amount: { currency: 'CNY', amountCents: '600' },
     expiresAt: LATER,
@@ -47,11 +47,15 @@ describe('payment protocol', () => {
   it('parses the standard payment-required response', () => {
     expect(
       PaymentRequiredResponseSchema.parse({
-        error: { code: 'payment_required', message: '余额不足' },
-        data: { paymentRequirement: requirement() },
-        meta: { traceId: 'trace-1' },
+        error: {
+          userMessage: '余额不足，请完成支付后继续。',
+          retriable: false,
+          action: 'wait',
+          traceId: 'trace-1',
+          payment: requirement(),
+        },
       }),
-    ).toMatchObject({ data: { paymentRequirement: { id: 'payreq-1' } } });
+    ).toMatchObject({ error: { payment: { id: 'payreq-1' } } });
   });
 
   it('keeps the Agent-to-Host message to exactly three safe fields', () => {
@@ -91,6 +95,23 @@ describe('payment protocol', () => {
     ).toBe(false);
   });
 
+  it('requires a usable checkout action while waiting', () => {
+    const waiting = payment('waiting');
+    expect(PaymentViewSchema.safeParse({ ...waiting, action: undefined }).success).toBe(false);
+    expect(
+      PaymentViewSchema.safeParse({
+        ...waiting,
+        action: { ...waiting.action, url: 'https://支付.example/path' },
+      }).success,
+    ).toBe(false);
+    expect(
+      PaymentViewSchema.safeParse({
+        ...waiting,
+        action: { ...waiting.action, url: 'https://pay.combo.test/path\nnext' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('allows checkout actions only while waiting', () => {
     const action = payment('waiting').action;
     expect(PaymentViewSchema.safeParse({ ...payment('processing'), action }).success).toBe(false);
@@ -98,9 +119,13 @@ describe('payment protocol', () => {
 
   it('rejects unknown response fields at every public boundary', () => {
     const required = {
-      error: { code: 'payment_required' },
-      data: { paymentRequirement: requirement() },
-      meta: { traceId: 'trace-1' },
+      error: {
+        userMessage: '余额不足，请完成支付后继续。',
+        retriable: false,
+        action: 'wait',
+        traceId: 'trace-1',
+        payment: requirement(),
+      },
     };
     const success = { data: payment(), meta: { traceId: 'trace-1' } };
     expect(
@@ -109,7 +134,7 @@ describe('payment protocol', () => {
     expect(
       PaymentRequiredResponseSchema.safeParse({
         ...required,
-        data: { paymentRequirement: { ...requirement(), wallet: {} } },
+        error: { ...required.error, payment: { ...requirement(), wallet: {} } },
       }).success,
     ).toBe(false);
     expect(PaymentSuccessResponseSchema.safeParse({ ...success, provider: {} }).success).toBe(
@@ -141,12 +166,43 @@ describe('payment protocol', () => {
     for (const message of ['bad\u0085message', 'bad\u202Emessage', 'bad\ud800message']) {
       expect(
         PaymentRequiredResponseSchema.safeParse({
-          error: { code: 'payment_required', message },
-          data: { paymentRequirement: requirement() },
-          meta: { traceId: 'trace-1' },
+          error: {
+            userMessage: message,
+            retriable: false,
+            action: 'wait',
+            traceId: 'trace-1',
+            payment: requirement(),
+          },
         }).success,
       ).toBe(false);
     }
+  });
+
+  it('keeps payment amounts within the accounting safe range', () => {
+    expect(
+      PaymentMoneySchema.safeParse({
+        currency: 'CNY',
+        amountCents: Number.MAX_SAFE_INTEGER.toString(),
+      }).success,
+    ).toBe(true);
+    expect(
+      PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: '9007199254740992' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects impossible payment timestamp ordering', () => {
+    expect(
+      PaymentViewSchema.safeParse({
+        ...payment('processing'),
+        updatedAt: '2026-09-03T09:59:59Z',
+      }).success,
+    ).toBe(false);
+    expect(
+      PaymentViewSchema.safeParse({
+        ...payment('completed'),
+        completedAt: '2026-09-03T10:05:01Z',
+      }).success,
+    ).toBe(false);
   });
 
   it('parses strict success and API error envelopes', () => {
@@ -156,16 +212,23 @@ describe('payment protocol', () => {
     ).toBe(true);
     expect(
       PaymentApiErrorResponseSchema.safeParse({
-        error: { code: 'rate_limited' },
-        data: { retryAfterMs: 1_000 },
-        meta: { traceId: 'trace-1' },
+        error: {
+          userMessage: '操作太频繁了，稍后再试。',
+          retriable: true,
+          action: 'wait',
+          traceId: 'trace-1',
+        },
       }).success,
     ).toBe(true);
     expect(
       PaymentApiErrorResponseSchema.safeParse({
-        error: { code: 'rate_limited' },
-        data: { retryAfterMs: 1_000, internal: true },
-        meta: { traceId: 'trace-1' },
+        error: {
+          userMessage: '操作太频繁了，稍后再试。',
+          retriable: true,
+          action: 'wait',
+          traceId: 'trace-1',
+          internal: true,
+        },
       }).success,
     ).toBe(false);
   });
