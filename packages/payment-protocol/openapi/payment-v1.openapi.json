@@ -185,8 +185,8 @@
       "cookieAuth": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "__Host-cb_session",
-        "description": "Combo Host 当前登录用户的安全浏览器会话。"
+        "name": "cb_v2_session",
+        "description": "Combo Host 当前登录用户的 V2 浏览器会话。"
       },
       "scopedBearer": {
         "type": "http",
@@ -254,8 +254,8 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 512,
-        "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-        "x-forbidden-unicode-categories": ["Cc", "Cs", "Cf"]
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u00AD\\u0600-\\u0605\\u061C\\u06DD\\u070F\\u0890-\\u0891\\u08E2\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uD800-\\uDFFF\\uFEFF\\uFFF9-\\uFFFB]+$",
+        "description": "不接受控制字符、隐藏格式字符、代理码位或 Unicode 行分隔符。"
       },
       "PaymentTraceId": {
         "type": "string",
@@ -274,9 +274,9 @@
           "amountCents": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 16,
+            "maxLength": 15,
             "pattern": "^[1-9]\\d*$",
-            "x-maximum-integer": "9007199254740991"
+            "description": "人民币整数分，范围 1 至 999999999999999。"
           }
         }
       },
@@ -373,8 +373,8 @@
             "format": "uri",
             "minLength": 1,
             "maxLength": 4096,
-            "pattern": "^https?://[!-~]+$",
-            "description": "必须是 Combo 支付接口返回的可见 ASCII HTTP 或 HTTPS 地址。"
+            "pattern": "^https?://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?(?::(?:[1-9]\\d{0,3}|[1-5]\\d{4}|6[0-4]\\d{3}|65[0-4]\\d{2}|655[0-2]\\d|6553[0-5]))?(?:/(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})*)*(?:\\?(?:[A-Za-z0-9._~!$&'()*+,;=:@/?-]|%[0-9A-Fa-f]{2})*)?$",
+            "description": "Combo 返回的规范 HTTP(S) 收银台地址：小写 scheme 与 ASCII host，不含用户信息或 fragment。"
           },
           "expiresAt": {
             "$ref": "#/components/schemas/PaymentTimestamp"
@@ -396,7 +396,7 @@
             "$ref": "#/components/schemas/ClosedPayment"
           }
         ],
-        "description": "updatedAt 不早于 createdAt；expiresAt 晚于 createdAt；completedAt 位于创建与更新时间之间；支付动作有效期不超过支付请求。"
+        "description": "updatedAt 不早于 createdAt；expiresAt 晚于 createdAt；waiting 的 expiresAt 晚于 updatedAt；completedAt 位于创建与更新时间之间；支付动作晚于 updatedAt 且有效期不超过支付请求。"
       },
       "WaitingPayment": {
         "type": "object",

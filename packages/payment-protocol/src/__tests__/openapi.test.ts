@@ -7,9 +7,16 @@ import {
   PAYMENT_BY_ID_PATH,
   PAYMENT_BY_REQUEST_KEY_PATH,
   PAYMENT_COLLECTION_PATH,
+  PAYMENT_ACTION_URL_PATTERN_SOURCE,
+  PAYMENT_AMOUNT_CENTS_MAX_DIGITS,
+  PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE,
+  PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE,
+  PaymentActionSchema,
   PaymentApiErrorResponseSchema,
   PaymentHostMessageSchema,
+  PaymentMoneySchema,
   PaymentRequiredResponseSchema,
+  PaymentSafeMessageSchema,
   PaymentViewSchema,
 } from '../index.js';
 
@@ -88,6 +95,11 @@ describe('payment OpenAPI', () => {
       'scopedBearer',
     ]);
     expect(document.security).toEqual([{ cookieAuth: [] }, { scopedBearer: [] }]);
+    expect(document.components.securitySchemes.cookieAuth).toMatchObject({
+      type: 'apiKey',
+      in: 'cookie',
+      name: 'cb_v2_session',
+    });
   });
 
   it('locks public states, safe Host fields, amount range and checkout action', () => {
@@ -102,13 +114,15 @@ describe('payment OpenAPI', () => {
     expect(schemas.WaitingPayment?.required).toContain('action');
     expect(schemas.PaymentHostMessage?.properties?.version?.const).toBe(1);
     expect(schemas.PaymentHostMessage?.properties?.type?.const).toBe('combo.payment_required');
-    expect(schemas.PaymentMoney?.properties?.amountCents?.maxLength).toBe(16);
-    expect(schemas.PaymentMoney?.properties?.amountCents?.['x-maximum-integer']).toBe(
-      '9007199254740991',
+    expect(schemas.PaymentMoney?.properties?.amountCents?.maxLength).toBe(
+      PAYMENT_AMOUNT_CENTS_MAX_DIGITS,
+    );
+    expect(schemas.PaymentMoney?.properties?.amountCents?.pattern).toBe(
+      PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE,
     );
     expect(schemas.PaymentAction?.properties?.url).toMatchObject({
       maxLength: 4_096,
-      pattern: '^https?://[!-~]+$',
+      pattern: PAYMENT_ACTION_URL_PATTERN_SOURCE,
     });
   });
 
@@ -135,8 +149,75 @@ describe('payment OpenAPI', () => {
   it('describes the same safe message boundary as runtime parsing', () => {
     const schema = document.components.schemas.PaymentSafeMessage;
     expect(schema?.maxLength).toBe(512);
-    expect(schema?.pattern).toContain('\\u2028');
-    expect(schema?.['x-forbidden-unicode-categories']).toEqual(['Cc', 'Cs', 'Cf']);
+    expect(schema?.pattern).toBe(PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE);
+    const openApiPattern = new RegExp(schema?.pattern ?? '');
+    for (const value of ['余额不足，请完成支付后继续。', 'Payment required.']) {
+      expect(openApiPattern.test(value), value).toBe(true);
+      expect(PaymentSafeMessageSchema.safeParse(value).success, value).toBe(true);
+    }
+    for (const value of [
+      'bad\u0000message',
+      'bad\u0085message',
+      'bad\u00admessage',
+      'bad\u061cmessage',
+      'bad\u2028message',
+      'bad\u202emessage',
+      'bad\ud800message',
+      'bad😀message',
+    ]) {
+      expect(openApiPattern.test(value), value).toBe(false);
+      expect(PaymentSafeMessageSchema.safeParse(value).success, value).toBe(false);
+    }
+  });
+
+  it('makes amount and checkout constraints executable in OpenAPI and runtime', () => {
+    const amountPattern = new RegExp(
+      document.components.schemas.PaymentMoney?.properties?.amountCents?.pattern ?? '',
+    );
+    for (const value of ['1', '999999999999999']) {
+      expect(amountPattern.test(value), value).toBe(true);
+      expect(value.length).toBeLessThanOrEqual(PAYMENT_AMOUNT_CENTS_MAX_DIGITS);
+      expect(PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: value }).success).toBe(
+        true,
+      );
+    }
+    for (const value of ['0', 'abc', '1e3', '1000000000000000']) {
+      const acceptedByOpenApi =
+        value.length <= PAYMENT_AMOUNT_CENTS_MAX_DIGITS && amountPattern.test(value);
+      expect(acceptedByOpenApi, value).toBe(false);
+      expect(PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: value }).success).toBe(
+        false,
+      );
+    }
+
+    const actionPattern = new RegExp(
+      document.components.schemas.PaymentAction?.properties?.url?.pattern ?? '',
+    );
+    const action = (url: string) => ({
+      kind: 'open_url',
+      url,
+      expiresAt: '2026-09-03T10:05:00Z',
+    });
+    for (const url of [
+      'https://pay.combo.test/p/payreq-1',
+      'http://localhost:3000/pay?token=abc%2Fdef',
+    ]) {
+      expect(actionPattern.test(url), url).toBe(true);
+      expect(PaymentActionSchema.safeParse(action(url)).success, url).toBe(true);
+    }
+    for (const url of [
+      'not-a-url',
+      'http:example.com',
+      'HTTPS://pay.combo.test/path',
+      'https://user@pay.combo.test/path',
+      'https://pay.combo.test/path#fragment',
+      'https://pay.combo.test:65536/path',
+      'https://pay.combo.test/path?token=%zz',
+      'https://支付.example/path',
+    ]) {
+      expect(actionPattern.test(url), url).toBe(false);
+      expect(PaymentActionSchema.safeParse(action(url)).success, url).toBe(false);
+    }
   });
 
   it('keeps executable fixtures valid under the runtime schemas', () => {

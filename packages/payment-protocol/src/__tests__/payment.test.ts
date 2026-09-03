@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CreatePaymentBodySchema,
   PAYMENT_HOST_MESSAGE_TYPE,
+  PaymentActionSchema,
   PaymentApiErrorResponseSchema,
   PaymentHostMessageSchema,
   PaymentIdentifierSchema,
@@ -99,17 +100,25 @@ describe('payment protocol', () => {
     const waiting = payment('waiting');
     expect(PaymentViewSchema.safeParse({ ...waiting, action: undefined }).success).toBe(false);
     expect(
-      PaymentViewSchema.safeParse({
-        ...waiting,
-        action: { ...waiting.action, url: 'https://支付.example/path' },
+      PaymentActionSchema.safeParse({
+        ...waiting.action,
+        url: 'https://pay.combo.test:443/path/to/pay?token=abc%2Fdef',
       }).success,
-    ).toBe(false);
-    expect(
-      PaymentViewSchema.safeParse({
-        ...waiting,
-        action: { ...waiting.action, url: 'https://pay.combo.test/path\nnext' },
-      }).success,
-    ).toBe(false);
+    ).toBe(true);
+    for (const url of [
+      'not-a-url',
+      'http:example.com',
+      'HTTPS://pay.combo.test/path',
+      'https://user@pay.combo.test/path',
+      'https://pay.combo.test/path#fragment',
+      'https://pay.combo.test:65536/path',
+      'https://pay.combo.test/path?token=%zz',
+      'https://支付.example/path',
+      'https://pay.combo.test/path\nnext',
+    ]) {
+      expect(() => PaymentActionSchema.safeParse({ ...waiting.action, url })).not.toThrow();
+      expect(PaymentActionSchema.safeParse({ ...waiting.action, url }).success, url).toBe(false);
+    }
   });
 
   it('allows checkout actions only while waiting', () => {
@@ -178,16 +187,23 @@ describe('payment protocol', () => {
     }
   });
 
-  it('keeps payment amounts within the accounting safe range', () => {
+  it('keeps payment amounts within the public 15-digit accounting range without throwing', () => {
     expect(
       PaymentMoneySchema.safeParse({
         currency: 'CNY',
-        amountCents: Number.MAX_SAFE_INTEGER.toString(),
+        amountCents: '999999999999999',
       }).success,
     ).toBe(true);
     expect(
-      PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: '9007199254740992' }).success,
+      PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: '1000000000000000' }).success,
     ).toBe(false);
+    for (const amountCents of ['abc', '1e3', '0', '-1']) {
+      expect(() => PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents })).not.toThrow();
+      expect(
+        PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents }).success,
+        amountCents,
+      ).toBe(false);
+    }
   });
 
   it('rejects impossible payment timestamp ordering', () => {
@@ -201,6 +217,40 @@ describe('payment protocol', () => {
       PaymentViewSchema.safeParse({
         ...payment('completed'),
         completedAt: '2026-09-03T10:05:01Z',
+      }).success,
+    ).toBe(false);
+    expect(
+      PaymentViewSchema.safeParse({
+        ...payment('processing'),
+        createdAt: '2026-09-03T10:00:00.000000001Z',
+        updatedAt: '2026-09-03T10:00:00.000000000Z',
+      }).success,
+    ).toBe(false);
+    expect(
+      PaymentViewSchema.safeParse({
+        ...payment('completed'),
+        createdAt: '2026-09-03T10:00:00.000000000Z',
+        updatedAt: '2026-09-03T10:00:00.000000001Z',
+        completedAt: '2026-09-03T10:00:00.000000002Z',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires a waiting action and payment to remain usable after the latest update', () => {
+    expect(
+      PaymentViewSchema.safeParse({
+        ...payment('waiting'),
+        updatedAt: '2026-09-03T10:00:00.000000001Z',
+        action: {
+          ...payment('waiting').action,
+          expiresAt: '2026-09-03T10:00:00.000000001Z',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      PaymentViewSchema.safeParse({
+        ...payment('waiting'),
+        updatedAt: LATER,
       }).success,
     ).toBe(false);
   });
