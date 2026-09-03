@@ -55,11 +55,12 @@ Agent Package Release
 | `J-040` · 通过链接使用        | 使用者打开链接并将 Agent 加载到自己的 Codex                                              | Installed Agent                    | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                 | `MOD-SHARE` · 分享服务、`MOD-RECEIVER` · Agent 能力接收、`MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                       | `ACC-HOST-040` · 分享链接接收：允许一次简要复制操作，最终在真实 Codex 中加载 exact Package                                     |
 | `J-045` · 用一段话获取能力    | 使用者把能力获取指令交给自己的 Agent，该 Agent 获取并加载对应能力                        | Installed Agent                    | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                 | `MOD-SHARE` · 分享服务、`MOD-RECEIVER` · Agent 能力接收、`MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                       | `ACC-HOST-045` · 自然语言能力获取：用户自己的 Agent 从指令解析 exact Release，完成校验和加载                                   |
 | `J-050` · 持续使用            | 使用者在同一个 Agent 对话中持续使用已获取能力完成工作                                    | Agent Session                      | `CAP-070` · Package 推理运行                                                                     | `MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                                                                                | `ACC-E2E-050` · 同线程两轮推理：同一 Package 与同一 Codex 线程连续完成两轮真实任务                                             |
+| `J-055` · 余额不足后继续使用  | 使用者在收费调用被余额拦住后，通过 Combo 托管支付完成入账，并继续原业务请求              | Agent Session                      | `CAP-075` · 平台托管支付                                                                         | `MOD-PAYMENTS` · 支付中台、`MOD-CODEX-HOST` · 原生 Codex Agent 运行、`MOD-SHARED` · 共享基础设施                                                                      | `ACC-CONTRACT-055A`、`ACC-SEC-055B`、`ACC-RECOVERY-055C`、`ACC-HOST-055D`、`ACC-UAT-055E` · 支付接入五层验收                   |
 
 当前 Creator Golden Path 只以 `J-011` 作为独立最小里程碑。`J-010` 中显式 Project 与工作旅程来源继续保留，但状态为
 `DEFERRED`，不能阻塞 `J-011`，也不能用其测试结果替代 `J-011`。
 
-`CAP-080` · 安装与会话恢复属于 `P5` · 平台化与可靠性，用于强化长期使用，不是最小产品闭环成立的前置条件。
+`CAP-075` · 平台托管支付与 `CAP-080` · 安装与会话恢复都属于 `P5` · 平台化与可靠性，用于强化长期使用，不是最小产品闭环成立的前置条件。
 
 模块完成不等于用户旅程完成。只有对应验收在规定环境中产生可复现证据，Journey 才能标记为 `PASS` · 验收通过。
 
@@ -120,6 +121,7 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 | `MOD-RECEIVER` · Agent 能力接收          | 接收链接或能力获取指令，校验并加载对应 Agent Package                                                                                 | 需要新增 Combo Plugin Receiver 或等价 Agent handoff                                                                                                            | `CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                                                                      |
 | `MOD-WEB-PREVIEW` · Web 试跑预览         | 在网页中展示试跑过程、对话和产物                                                                                                     | `apps/runtime/`、`apps/runtime-web/`                                                                                                                           | `CAP-030` · Studio 审阅试跑                                                                                                   |
 | `MOD-CODEX-HOST` · 原生 Codex Agent 运行 | 正式加载 Package、挂载 Skill 并维持 Codex 线程；未来顶层 Desktop Host 还需提供不可伪造的当前 active task 来源边界和显式 Project 权限 | 当前 `apps/creator-worker/` 只承载 Agent Package Session、Project Creator 授权语义与自建 Bundled Codex Host；Desktop current-task handoff 为 `NOT_IMPLEMENTED` | `CAP-010` · 创作来源绑定、`CAP-011` · Desktop 当前对话绑定、`CAP-070` · Package 推理运行、`CAP-080` · 安装与会话恢复          |
+| `MOD-PAYMENTS` · 支付中台                | 保存权威支付请求、订单、到账、资金预留和流水；向 Host 提供托管收银台；不保存或恢复业务请求                                           | 目标位置为 `apps/billing/` 与 `packages/payment-protocol/`；当前只有 V2 记账验证栈，真实支付 API 与正式身份边界尚未实现                                        | `CAP-075` · 平台托管支付                                                                                                      |
 | `MOD-SHARED` · 共享基础设施              | 跨服务合同、认证、存储、事件和错误模型                                                                                               | `packages/shared/`、`db/`、`infra/`                                                                                                                            | `CAP-010` · 创作来源绑定至 `CAP-080` · 安装与会话恢复的跨模块基础设施                                                         |
 
 当前 `Capability`、旧 `AgentVersion` 或 Catalog 数据可以作为迁移来源、管理投影或历史兼容层，但不能与 Agent Package 并列成为新的交付真相。
@@ -255,6 +257,7 @@ Draft。显式 Project、工作旅程、Package 编译、正式重载和真实�
 - 安装、缓存、列表、更新、移除和版本选择。
 - Session 持久化、恢复、撤销和跨设备交付。
 - 发布治理、访问控制、计费、使用收据和运营能力。
+- 余额不足时由支付中台生成权威支付请求，Agent 只把平台支付凭证交给 Host；到账后由业务使用自己保存的请求继续执行。
 
 完成标准：创建、发布、安装和运行在中断与重试后仍保持一致。
 
@@ -317,6 +320,23 @@ Draft UI；因此 Unit、Security 与 Host 层继续为 `NOT_IMPLEMENTED`。不�
 `DRAFT_TERMINAL_RESULT`，只统计该窗口内新增的 Creator Project scan/read/write、用户 Terminal 动作和 Creator
 CLI / Bridge child process。`PROJECT_FIRST_CREATOR`、`PLUGIN_HOOK_OR_BRIDGE`、`CREATOR_CLI`、
 `FAKE_HOST_OR_PORT`、`ISOLATED_BUNDLED_CODEX_THREAD` 全部是机器枚举的非产品证据，不能提升上述状态。
+
+### `J-055` · 余额不足后继续使用
+
+这条旅程只接受平台托管支付。Payment SDK 是无状态客户端：业务保存原请求、`operationId`、`callId`、状态和结果；
+支付中台保存价格快照、支付请求、订单、回调、入账、资金预留和流水；Host 只解析 Combo 签发的短期支付凭证并打开
+Combo 收银台。Agent 提供的网址、二维码、金额、用户或 Agent 标识都不是权威数据。
+
+| Acceptance                             | 证明内容                                                                                                | 当前状态          |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------- |
+| `ACC-CONTRACT-055A` · 支付公共合同     | 标准 402、三字段 Host 消息、支付状态和 OpenAPI 使用同一严格协议，未知字段与非法值失败关闭               | `NOT_RUN`         |
+| `ACC-SEC-055B` · 支付身份与凭证隔离    | 每个 Agent 使用短期、限权身份；平台重新验证当前用户；Agent 不能改价、伪造 Host 地址或跨用户查询支付     | `NOT_IMPLEMENTED` |
+| `ACC-RECOVERY-055C` · 到账与原调用恢复 | 到账只入账一次并为原收费调用留出资金；业务用原 `operationId` 与 `callId` 继续，重复恢复不重复调用或扣费 | `NOT_IMPLEMENTED` |
+| `ACC-HOST-055D` · Combo 托管收银台     | Host 只接收短期支付凭证，使用当前登录用户向 Combo 解析并展示平台收银台                                  | `NOT_IMPLEMENTED` |
+| `ACC-UAT-055E` · 支付 SDK 盲交接       | Fresh 开发者和编码 Agent 仅凭锁定 SDK、规范文档与受限 Test 配置完成 402、支付、继续和重复恢复验收       | `NOT_RUN`         |
+
+公共协议、SDK 单元测试、Fake Payment 或本地 Reference Agent 不能单独把这条旅程标记为通过。正式 `PASS` 必须绑定同一候选提交、
+SDK 工件校验值、真实 Host 身份、Test 支付中台和端到端收据。退款、订阅、分账、税务、多币种与主动充值不属于第一版。
 
 ### 总目标完成条件
 

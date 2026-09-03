@@ -552,6 +552,28 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.13.3)(jsdom@25.0.1)
 
+  packages/payment-protocol:
+    dependencies:
+      '@cb/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.20.0)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@24.13.3)(jsdom@25.0.1)
+
   packages/shared:
     dependencies:
       zod:

@@ -26,7 +26,7 @@ Combo 让用户把已经完成的对话、Project 或工作旅程制作成可分
 > - [横切方案](https://enbmphajlu.feishu.cn/wiki/Di6awjArji4oXKkAxetc4Y1enLc)：能力包契约、登录与账号体系、后端仓库结构规范
 > - [运维与环境](https://enbmphajlu.feishu.cn/wiki/QHEQwaEd9iki3vkSITlcXfcMn6f)、[归档](https://enbmphajlu.feishu.cn/wiki/Jd00wpfavi2ToPkGUD7cTTg3n1c)（归档内为已被取代的旧方案，勿作依据）
 >
-> 具体文档与产品基线冲突时必须停止并说明，不能自行选择旧口径继续开发。HTTP 与应用共享契约以 `packages/shared` 源码为准，Agent Package 与 Creator Host 协议以 `packages/creator-agent-protocol` 源码为准，数据库结构以 `db/migrations/` 为准，部署拓扑以 [`docs/deployment-topology.md`](docs/deployment-topology.md) 为准。
+> 具体文档与产品基线冲突时必须停止并说明，不能自行选择旧口径继续开发。通用 HTTP 与应用共享契约以 `packages/shared` 源码为准，支付 HTTP 合同以 `packages/payment-protocol` 源码为准且必须复用 shared 的统一错误信封，Agent Package 与 Creator Host 协议以 `packages/creator-agent-protocol` 源码为准，数据库结构以 `db/migrations/` 为准，部署拓扑以 [`docs/deployment-topology.md`](docs/deployment-topology.md) 为准。
 
 ---
 
@@ -36,9 +36,9 @@ Combo 让用户把已经完成的对话、Project 或工作旅程制作成可分
 pnpm install
 ```
 
-工作区包含 `packages/shared`、Creator Agent 相关协议与持久化包、`apps/creator-worker`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
+工作区包含 `packages/shared`、`packages/payment-protocol`、Creator Agent 相关协议与持久化包、`apps/creator-worker`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
 
-Agent 开发 SDK（`@cb/agent-sdk`）与 Next.js 模板已迁至独立仓库 [dangdang-tech/combo-agent-sdk](https://github.com/dangdang-tech/combo-agent-sdk)，不在本工作区维护。
+Agent 开发 SDK（`combo-agent-sdk`）与 Next.js 模板已迁至独立仓库 [dangdang-tech/combo-agent-sdk](https://github.com/dangdang-tech/combo-agent-sdk)，不在本工作区维护。
 
 ---
 
@@ -59,7 +59,7 @@ pnpm format:check     # prettier 全量校验
 
 ```bash
 pnpm -F @cb/shared build        # 构建脊柱（apps 依赖其 dist + .d.ts，先构建它）
-pnpm -F @cb/shared openapi:gen  # 生成 OpenAPI 3.1（写 dist/openapi.json）
+pnpm -F @cb/payment-protocol build # 构建支付严格协议；OpenAPI 真源在包内 openapi/ 目录
 pnpm -F @cb/authoring build     # 构建创作 API 与 Worker
 pnpm -F @cb/runtime build       # 构建 Runtime API
 pnpm -F @cb/web dev             # Vite 开发服务器（前端）
