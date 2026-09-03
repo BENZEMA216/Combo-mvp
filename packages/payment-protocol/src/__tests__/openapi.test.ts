@@ -13,6 +13,7 @@ import {
   PAYMENT_ACTION_URL_PATTERN_SOURCE,
   PAYMENT_AMOUNT_CENTS_MAX_DIGITS,
   PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE,
+  PAYMENT_SAFE_MESSAGE_MAX_CODE_POINTS,
   PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE,
   PAYMENT_TIMESTAMP_PATTERN_SOURCE,
   PaymentActionSchema,
@@ -157,7 +158,7 @@ describe('payment OpenAPI', () => {
   it('describes the same safe message boundary as runtime parsing', () => {
     const schema = document.components.schemas.PaymentSafeMessage;
     expect(schema).toBeDefined();
-    expect(schema?.maxLength).toBe(512);
+    expect(schema?.maxLength).toBe(PAYMENT_SAFE_MESSAGE_MAX_CODE_POINTS);
     expect(schema?.pattern).toBe(PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE);
     const validateOpenApiMessage = ajv.compile(schema!);
     for (const value of [
@@ -181,6 +182,18 @@ describe('payment OpenAPI', () => {
       expect(validateOpenApiMessage(value), value).toBe(false);
       expect(PaymentSafeMessageSchema.safeParse(value).success, value).toBe(false);
     }
+    for (const count of [257, PAYMENT_SAFE_MESSAGE_MAX_CODE_POINTS]) {
+      const value = '😀'.repeat(count);
+      expect(validateOpenApiMessage(value), `${count} astral code points`).toBe(true);
+      expect(PaymentSafeMessageSchema.safeParse(value).success, `${count} astral code points`).toBe(
+        true,
+      );
+    }
+    const tooLong = '😀'.repeat(PAYMENT_SAFE_MESSAGE_MAX_CODE_POINTS + 1);
+    expect(validateOpenApiMessage(tooLong), '513 astral code points').toBe(false);
+    expect(PaymentSafeMessageSchema.safeParse(tooLong).success, '513 astral code points').toBe(
+      false,
+    );
   });
 
   it('validates the same real UTC timestamp boundary with a standard OpenAPI validator', () => {

@@ -13,6 +13,7 @@ const VISIBLE_ASCII_PATTERN = /^[\x21-\x7e]+$/;
 
 export const PAYMENT_AMOUNT_CENTS_MAX_DIGITS = 15 as const;
 export const PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE = String.raw`^[1-9]\d*$`;
+export const PAYMENT_SAFE_MESSAGE_MAX_CODE_POINTS = 512 as const;
 export const PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE = String.raw`^[^\p{Cc}\p{Cs}\p{Cf}\u2028\u2029]+$`;
 export const PAYMENT_TIMESTAMP_PATTERN_SOURCE = String.raw`^((?!0000)\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.(\d{1,9}))?Z$`;
 export const PAYMENT_ACTION_URL_PATTERN_SOURCE = String.raw`^https?://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:/(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})*)*(?:\?(?:[A-Za-z0-9._~!$&'()*+,;=:@/?-]|%[0-9A-Fa-f]{2})*)?$`;
@@ -80,6 +81,16 @@ function isCanonicalPaymentActionUrl(value: string): boolean {
   }
 }
 
+function isSafePaymentMessage(value: string): boolean {
+  if (!PAYMENT_SAFE_MESSAGE_PATTERN.test(value)) return false;
+  let codePoints = 0;
+  for (const _character of value) {
+    codePoints += 1;
+    if (codePoints > PAYMENT_SAFE_MESSAGE_MAX_CODE_POINTS) return false;
+  }
+  return true;
+}
+
 export const PaymentIdentifierSchema = z
   .string()
   .min(1)
@@ -110,8 +121,7 @@ export type PaymentTimestamp = z.infer<typeof PaymentTimestampSchema>;
 export const PaymentSafeMessageSchema = z
   .string()
   .min(1)
-  .max(512)
-  .regex(PAYMENT_SAFE_MESSAGE_PATTERN, 'contains unsafe characters');
+  .refine(isSafePaymentMessage, 'contains unsafe characters or exceeds 512 Unicode characters');
 
 export const PaymentTraceIdSchema = z.string().min(1).max(256).regex(VISIBLE_ASCII_PATTERN);
 

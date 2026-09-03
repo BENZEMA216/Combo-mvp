@@ -255,7 +255,7 @@
         "minLength": 1,
         "maxLength": 512,
         "pattern": "^[^\\p{Cc}\\p{Cs}\\p{Cf}\\u2028\\u2029]+$",
-        "description": "不接受控制字符、隐藏格式字符、孤立代理码位或 Unicode 行分隔符。"
+        "description": "最多 512 个 Unicode 字符；不接受控制字符、隐藏格式字符、孤立代理码位或 Unicode 行分隔符。"
       },
       "PaymentTraceId": {
         "type": "string",
