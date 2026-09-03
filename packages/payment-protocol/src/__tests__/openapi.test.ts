@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import * as addFormatsModule from 'ajv-formats';
+import type { FormatsPlugin } from 'ajv-formats';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,12 +14,14 @@ import {
   PAYMENT_AMOUNT_CENTS_MAX_DIGITS,
   PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE,
   PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE,
+  PAYMENT_TIMESTAMP_PATTERN_SOURCE,
   PaymentActionSchema,
   PaymentApiErrorResponseSchema,
   PaymentHostMessageSchema,
   PaymentMoneySchema,
   PaymentRequiredResponseSchema,
   PaymentSafeMessageSchema,
+  PaymentTimestampSchema,
   PaymentViewSchema,
 } from '../index.js';
 
@@ -54,6 +59,9 @@ const document = JSON.parse(
 ) as PaymentOpenApiDocument;
 
 const paymentToken = `opaque_${'payment'.repeat(2)}`;
+const ajv = new Ajv2020({ strict: false, unicodeRegExp: true });
+const addFormats = addFormatsModule.default as unknown as FormatsPlugin;
+addFormats(ajv);
 
 describe('payment OpenAPI', () => {
   it('publishes only the three first-version payment endpoints', () => {
@@ -148,11 +156,16 @@ describe('payment OpenAPI', () => {
 
   it('describes the same safe message boundary as runtime parsing', () => {
     const schema = document.components.schemas.PaymentSafeMessage;
+    expect(schema).toBeDefined();
     expect(schema?.maxLength).toBe(512);
     expect(schema?.pattern).toBe(PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE);
-    const openApiPattern = new RegExp(schema?.pattern ?? '');
-    for (const value of ['余额不足，请完成支付后继续。', 'Payment required.']) {
-      expect(openApiPattern.test(value), value).toBe(true);
+    const validateOpenApiMessage = ajv.compile(schema!);
+    for (const value of [
+      '余额不足，请完成支付后继续。',
+      'Payment required.',
+      '合法 emoji 😀 与扩展汉字 𠀀',
+    ]) {
+      expect(validateOpenApiMessage(value), value).toBe(true);
       expect(PaymentSafeMessageSchema.safeParse(value).success, value).toBe(true);
     }
     for (const value of [
@@ -163,36 +176,55 @@ describe('payment OpenAPI', () => {
       'bad\u2028message',
       'bad\u202emessage',
       'bad\ud800message',
-      'bad😀message',
+      'bad\u{e0001}message',
     ]) {
-      expect(openApiPattern.test(value), value).toBe(false);
+      expect(validateOpenApiMessage(value), value).toBe(false);
       expect(PaymentSafeMessageSchema.safeParse(value).success, value).toBe(false);
     }
   });
 
+  it('validates the same real UTC timestamp boundary with a standard OpenAPI validator', () => {
+    const schema = document.components.schemas.PaymentTimestamp;
+    expect(schema).toBeDefined();
+    expect(schema?.pattern).toBe(PAYMENT_TIMESTAMP_PATTERN_SOURCE);
+    const validateOpenApiTimestamp = ajv.compile(schema!);
+    for (const value of ['2024-02-29T23:59:59Z', '2026-09-03T10:00:00.000000001Z']) {
+      expect(validateOpenApiTimestamp(value), value).toBe(true);
+      expect(PaymentTimestampSchema.safeParse(value).success, value).toBe(true);
+    }
+    for (const value of [
+      '0000-01-01T00:00:00Z',
+      '2024-02-29T23:59:60Z',
+      '2026-02-30T10:00:00Z',
+      '2026-13-01T10:00:00Z',
+      '2026-01-01T24:00:00Z',
+      '2026-01-01T10:00:00+08:00',
+    ]) {
+      expect(validateOpenApiTimestamp(value), value).toBe(false);
+      expect(PaymentTimestampSchema.safeParse(value).success, value).toBe(false);
+    }
+  });
+
   it('makes amount and checkout constraints executable in OpenAPI and runtime', () => {
-    const amountPattern = new RegExp(
-      document.components.schemas.PaymentMoney?.properties?.amountCents?.pattern ?? '',
-    );
+    const moneySchema = document.components.schemas.PaymentMoney;
+    expect(moneySchema).toBeDefined();
+    const validateOpenApiMoney = ajv.compile(moneySchema!);
     for (const value of ['1', '999999999999999']) {
-      expect(amountPattern.test(value), value).toBe(true);
-      expect(value.length).toBeLessThanOrEqual(PAYMENT_AMOUNT_CENTS_MAX_DIGITS);
+      expect(validateOpenApiMoney({ currency: 'CNY', amountCents: value }), value).toBe(true);
       expect(PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: value }).success).toBe(
         true,
       );
     }
     for (const value of ['0', 'abc', '1e3', '1000000000000000']) {
-      const acceptedByOpenApi =
-        value.length <= PAYMENT_AMOUNT_CENTS_MAX_DIGITS && amountPattern.test(value);
-      expect(acceptedByOpenApi, value).toBe(false);
+      expect(validateOpenApiMoney({ currency: 'CNY', amountCents: value }), value).toBe(false);
       expect(PaymentMoneySchema.safeParse({ currency: 'CNY', amountCents: value }).success).toBe(
         false,
       );
     }
 
-    const actionPattern = new RegExp(
-      document.components.schemas.PaymentAction?.properties?.url?.pattern ?? '',
-    );
+    const actionUrlSchema = document.components.schemas.PaymentAction?.properties?.url;
+    expect(actionUrlSchema).toBeDefined();
+    const validateOpenApiActionUrl = ajv.compile(actionUrlSchema!);
     const action = (url: string) => ({
       kind: 'open_url',
       url,
@@ -202,7 +234,7 @@ describe('payment OpenAPI', () => {
       'https://pay.combo.test/p/payreq-1',
       'http://localhost:3000/pay?token=abc%2Fdef',
     ]) {
-      expect(actionPattern.test(url), url).toBe(true);
+      expect(validateOpenApiActionUrl(url), url).toBe(true);
       expect(PaymentActionSchema.safeParse(action(url)).success, url).toBe(true);
     }
     for (const url of [
@@ -215,7 +247,7 @@ describe('payment OpenAPI', () => {
       'https://pay.combo.test/path?token=%zz',
       'https://支付.example/path',
     ]) {
-      expect(actionPattern.test(url), url).toBe(false);
+      expect(validateOpenApiActionUrl(url), url).toBe(false);
       expect(PaymentActionSchema.safeParse(action(url)).success, url).toBe(false);
     }
   });

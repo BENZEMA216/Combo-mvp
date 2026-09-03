@@ -10,21 +10,22 @@ export const PAYMENT_BY_ID_PATH = '/v1/payments/:paymentRequestId' as const;
 const ASCII_IDENTIFIER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$/;
 const PAYMENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const VISIBLE_ASCII_PATTERN = /^[\x21-\x7e]+$/;
-const RFC3339_UTC_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/;
 
 export const PAYMENT_AMOUNT_CENTS_MAX_DIGITS = 15 as const;
 export const PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE = String.raw`^[1-9]\d*$`;
-export const PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE = String.raw`^[^\u0000-\u001F\u007F-\u009F\u00AD\u0600-\u0605\u061C\u06DD\u070F\u0890-\u0891\u08E2\u180E\u200B-\u200F\u2028-\u202E\u2060-\u2064\u2066-\u206F\uD800-\uDFFF\uFEFF\uFFF9-\uFFFB]+$`;
+export const PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE = String.raw`^[^\p{Cc}\p{Cs}\p{Cf}\u2028\u2029]+$`;
+export const PAYMENT_TIMESTAMP_PATTERN_SOURCE = String.raw`^((?!0000)\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.(\d{1,9}))?Z$`;
 export const PAYMENT_ACTION_URL_PATTERN_SOURCE = String.raw`^https?://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?(?::(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5]))?(?:/(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})*)*(?:\?(?:[A-Za-z0-9._~!$&'()*+,;=:@/?-]|%[0-9A-Fa-f]{2})*)?$`;
 
 const PAYMENT_AMOUNT_CENTS_PATTERN = new RegExp(PAYMENT_AMOUNT_CENTS_PATTERN_SOURCE);
-const PAYMENT_SAFE_MESSAGE_PATTERN = new RegExp(PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE);
+const PAYMENT_SAFE_MESSAGE_PATTERN = new RegExp(PAYMENT_SAFE_MESSAGE_PATTERN_SOURCE, 'u');
+const PAYMENT_TIMESTAMP_PATTERN = new RegExp(PAYMENT_TIMESTAMP_PATTERN_SOURCE);
 const PAYMENT_ACTION_URL_PATTERN = new RegExp(PAYMENT_ACTION_URL_PATTERN_SOURCE);
 
 type PaymentTimestampParts = readonly [number, number, number, number, number, number, number];
 
 function parseUtcTimestamp(value: string): PaymentTimestampParts | null {
-  const match = RFC3339_UTC_PATTERN.exec(value);
+  const match = PAYMENT_TIMESTAMP_PATTERN.exec(value);
   if (!match) return null;
   const year = Number(match[1]);
   const month = Number(match[2]);
