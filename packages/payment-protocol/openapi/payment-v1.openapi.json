@@ -184,6 +184,7 @@
       "PaymentTimestamp": {
         "type": "string",
         "format": "date-time",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z$",
         "description": "必须是以 Z 结尾且日历日期真实存在的 UTC RFC 3339 时间。"
       },
       "PaymentMoney": {

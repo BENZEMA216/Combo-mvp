@@ -13,9 +13,20 @@ import {
 } from '../index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+interface OpenApiSchema {
+  additionalProperties?: boolean;
+  oneOf?: unknown[];
+  properties?: Record<string, { const?: unknown }>;
+}
+
+interface PaymentOpenApiDocument {
+  paths: Record<string, unknown>;
+  components: { schemas: Record<string, OpenApiSchema> };
+}
+
 const document = JSON.parse(
   readFileSync(resolve(here, '../../openapi/payment-v1.openapi.json'), 'utf8'),
-) as Record<string, any>;
+) as PaymentOpenApiDocument;
 
 describe('payment OpenAPI', () => {
   it('publishes only the three first-version payment endpoints', () => {
@@ -30,15 +41,15 @@ describe('payment OpenAPI', () => {
 
   it('locks the public status and Host message constants', () => {
     const schemas = document.components.schemas;
-    expect(schemas.PaymentView.oneOf).toHaveLength(4);
+    expect(schemas.PaymentView?.oneOf).toHaveLength(4);
     expect([
-      schemas.WaitingPayment.properties.status.const,
-      schemas.ProcessingPayment.properties.status.const,
-      schemas.CompletedPayment.properties.status.const,
-      schemas.ClosedPayment.properties.status.const,
+      schemas.WaitingPayment?.properties?.status?.const,
+      schemas.ProcessingPayment?.properties?.status?.const,
+      schemas.CompletedPayment?.properties?.status?.const,
+      schemas.ClosedPayment?.properties?.status?.const,
     ]).toEqual(['waiting', 'processing', 'completed', 'closed']);
-    expect(schemas.PaymentHostMessage.properties.version.const).toBe(1);
-    expect(schemas.PaymentHostMessage.properties.type.const).toBe('combo.payment_required');
+    expect(schemas.PaymentHostMessage?.properties?.version?.const).toBe(1);
+    expect(schemas.PaymentHostMessage?.properties?.type?.const).toBe('combo.payment_required');
   });
 
   it('marks every object schema in the public graph as closed', () => {
