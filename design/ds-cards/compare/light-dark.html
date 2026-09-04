@@ -1,0 +1,420 @@
+<!-- @dsCard group="07 · 对比 Compare" name="Light vs Dark" subtitle="同一组 cb-* 真实组件左右双主题并排，验证 dark 提案观感" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combo DS · Light vs Dark</title>
+<style>
+/* 生成物勿手改。
+ * 本文件由 packages/ds-tokens/build.mjs 从 tokens/primitives.json、tokens/semantic.json、
+ * tokens/motion.json 构建生成；修改 token 请改源 JSON 后重新执行 pnpm -F @cb/ds-tokens build。 */
+
+:root {
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-rail: #f7f7f7;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-skeleton: #eeeae3;
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+  --cb-danger-line: color-mix(in srgb, var(--cb-danger) 28%, transparent);
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-dialog-w: 440px;
+  --cb-thread-w-md: 36rem;
+  --cb-thread-w-lg: 46rem;
+  --cb-focus-ring-w: 2px;
+  --cb-indicator-w: 2px;
+  --cb-bar-w: 3px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-rail: #1f1e1b;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-skeleton: #2e2b28;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+/* —— 以下组件样式逐字取自 @cb/ds dist/styles.css（badge / button / card / input / text 相关块） —— */
+
+.cb-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: calc(var(--cb-space-1) / 2) var(--cb-space-2);
+  border-radius: var(--cb-radius-pill);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cb-badge--neutral {
+  background: var(--cb-muted-bg);
+  color: var(--cb-muted);
+}
+
+.cb-badge--ok {
+  background: var(--cb-ok-soft);
+  color: var(--cb-ok);
+}
+
+.cb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cb-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--cb-radius-control);
+  font-family: var(--cb-font-sans);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--cb-duration-fast) var(--cb-ease-standard),
+    border-color var(--cb-duration-fast) var(--cb-ease-standard),
+    color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 calc(var(--cb-space-1) / 2) var(--cb-surface),
+    0 0 0 var(--cb-space-1) var(--cb-focus-ring);
+}
+
+.cb-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.cb-btn--md {
+  padding: var(--cb-space-2) var(--cb-space-4);
+  font-size: var(--cb-text-sm);
+}
+
+.cb-btn--primary {
+  background: var(--cb-accent);
+  border-color: var(--cb-accent);
+  color: var(--cb-accent-contrast);
+}
+
+.cb-btn--primary:hover:not(:disabled) {
+  background: var(--cb-accent-strong);
+  border-color: var(--cb-accent-strong);
+}
+
+.cb-btn--primary:active:not(:disabled) {
+  background: var(--cb-accent-pressed);
+  border-color: var(--cb-accent-pressed);
+}
+
+.cb-btn--secondary {
+  background: var(--cb-surface);
+  border-color: var(--cb-line-1);
+  color: var(--cb-fg);
+}
+
+.cb-btn--secondary:hover:not(:disabled) {
+  background: var(--cb-muted-bg);
+}
+
+.cb-btn--secondary:active:not(:disabled) {
+  background: var(--cb-line-2);
+}
+
+.cb-card {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.cb-card--surface {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+}
+
+.cb-card--pad-md {
+  padding: var(--cb-space-4);
+}
+
+.cb-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-1);
+  font-family: var(--cb-font-sans);
+}
+
+.cb-input-label {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+
+.cb-input-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.cb-input-control {
+  width: 100%;
+  padding: var(--cb-space-2) var(--cb-space-3);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  color: var(--cb-fg);
+  background: var(--cb-surface-raised);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-control);
+  outline: none;
+  transition:
+    border-color var(--cb-duration-fast) var(--cb-ease-standard),
+    box-shadow var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-input-control::placeholder {
+  color: var(--cb-muted);
+}
+
+.cb-input-control:focus {
+  border-color: var(--cb-focus-ring);
+  box-shadow: 0 0 0 var(--cb-focus-ring-w) color-mix(in srgb, var(--cb-focus-ring) 32%, transparent);
+}
+
+.cb-text {
+  margin: 0;
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.6;
+  color: var(--cb-fg);
+}
+
+.cb-text--muted {
+  color: var(--cb-muted);
+}
+
+.cb-heading {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cb-fg);
+}
+
+.cb-heading--4 {
+  font-size: var(--cb-text-lg);
+}
+
+/* —— 页面自身排版 —— */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  padding: var(--cb-space-6);
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; }
+
+.page-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.page-sub {
+  margin: var(--cb-space-1) 0 0;
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+.themes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--cb-space-5);
+  margin-top: var(--cb-space-5);
+}
+
+@media (max-width: 860px) {
+  .themes { grid-template-columns: 1fr; }
+}
+
+.theme-panel {
+  background: var(--cb-paper);
+  color: var(--cb-fg);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: var(--cb-space-5);
+}
+
+.theme-label {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cb-muted);
+  padding-bottom: var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-3);
+  margin-bottom: var(--cb-space-4);
+}
+
+.demo-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cb-space-3);
+}
+
+.demo-block { margin-top: var(--cb-space-4); }
+
+.mt-2 { margin-top: var(--cb-space-2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">Light vs Dark</h1>
+  <p class="page-sub">同一份 cb-* 组件标记 · 右列仅加 data-cb-theme="dark"，无任何组件级改动</p>
+
+  <div class="themes">
+
+    <section class="theme-panel">
+      <div class="theme-label">Light</div>
+
+      <div class="demo-row">
+        <button class="cb-btn cb-btn--primary cb-btn--md" type="button"><span class="cb-btn-label">创建能力</span></button>
+        <button class="cb-btn cb-btn--secondary cb-btn--md" type="button"><span class="cb-btn-label">查看会话</span></button>
+        <span class="cb-badge cb-badge--ok">已发布</span>
+      </div>
+
+      <div class="demo-block">
+        <div class="cb-card cb-card--surface cb-card--pad-md">
+          <h3 class="cb-heading cb-heading--4">女装主推款 CTR 判断</h3>
+          <p class="cb-text cb-text--muted mt-2">从 37 轮投放复盘会话中沉淀的判断能力：输入候选款素材与人群包，输出主推款排序与理由。</p>
+        </div>
+      </div>
+
+      <div class="demo-block">
+        <div class="cb-input">
+          <label class="cb-input-label" for="kw-light">能力名称</label>
+          <div class="cb-input-box">
+            <input id="kw-light" class="cb-input-control" type="text" placeholder="搜索或输入名称…">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="theme-panel" data-cb-theme="dark" style="background: var(--cb-paper); color: var(--cb-fg);">
+      <div class="theme-label">Dark</div>
+
+      <div class="demo-row">
+        <button class="cb-btn cb-btn--primary cb-btn--md" type="button"><span class="cb-btn-label">创建能力</span></button>
+        <button class="cb-btn cb-btn--secondary cb-btn--md" type="button"><span class="cb-btn-label">查看会话</span></button>
+        <span class="cb-badge cb-badge--ok">已发布</span>
+      </div>
+
+      <div class="demo-block">
+        <div class="cb-card cb-card--surface cb-card--pad-md">
+          <h3 class="cb-heading cb-heading--4">女装主推款 CTR 判断</h3>
+          <p class="cb-text cb-text--muted mt-2">从 37 轮投放复盘会话中沉淀的判断能力：输入候选款素材与人群包，输出主推款排序与理由。</p>
+        </div>
+      </div>
+
+      <div class="demo-block">
+        <div class="cb-input">
+          <label class="cb-input-label" for="kw-dark">能力名称</label>
+          <div class="cb-input-box">
+            <input id="kw-dark" class="cb-input-control" type="text" placeholder="搜索或输入名称…">
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

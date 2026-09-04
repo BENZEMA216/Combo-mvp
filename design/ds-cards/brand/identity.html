@@ -1,0 +1,594 @@
+<!-- @dsCard group="02 · 品牌 Brand" name="Combo 品牌标识" subtitle="双色字标定稿 · 墨+砖红+纸 · Fraunces Black" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combo DS · 品牌标识</title>
+<style>
+/* 生成物勿手改。
+ * 本文件由 packages/ds-tokens/build.mjs 从 tokens/primitives.json、tokens/semantic.json、
+ * tokens/motion.json 构建生成；修改 token 请改源 JSON 后重新执行 pnpm -F @cb/ds-tokens build。 */
+
+:root {
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f4f6f4;
+  --cb-surface: #fafbf8;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eef2ef;
+  --cb-rail: #f7f7f7;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #d8ded8;
+  --cb-line-2: #e3e7e2;
+  --cb-line-3: #ebefea;
+  --cb-border: var(--cb-line-1);
+  --cb-skeleton: #eef2ef;
+  --cb-grid: rgba(216, 222, 216, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+  --cb-danger-line: color-mix(in srgb, var(--cb-danger) 28%, transparent);
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-dialog-w: 440px;
+  --cb-thread-w-md: 36rem;
+  --cb-thread-w-lg: 46rem;
+  --cb-focus-ring-w: 2px;
+  --cb-indicator-w: 2px;
+  --cb-bar-w: 3px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* —— 以下组件样式逐字取自 @cb/ds dist/styles.css（badge / button / card / text 相关块），
+ *    用于「品牌注入点」小节的真实组件示例 —— */
+
+.cb-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: calc(var(--cb-space-1) / 2) var(--cb-space-2);
+  border-radius: var(--cb-radius-pill);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cb-badge--accent {
+  background: var(--cb-accent-soft);
+  color: var(--cb-accent);
+}
+
+.cb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cb-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--cb-radius-control);
+  font-family: var(--cb-font-sans);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--cb-duration-fast) var(--cb-ease-standard),
+    border-color var(--cb-duration-fast) var(--cb-ease-standard),
+    color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 calc(var(--cb-space-1) / 2) var(--cb-surface),
+    0 0 0 var(--cb-space-1) var(--cb-focus-ring);
+}
+
+.cb-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.cb-btn--md {
+  padding: var(--cb-space-2) var(--cb-space-4);
+  font-size: var(--cb-text-sm);
+}
+
+.cb-btn--primary {
+  background: var(--cb-accent);
+  border-color: var(--cb-accent);
+  color: var(--cb-accent-contrast);
+}
+
+.cb-btn--primary:hover:not(:disabled) {
+  background: var(--cb-accent-strong);
+  border-color: var(--cb-accent-strong);
+}
+
+.cb-btn--primary:active:not(:disabled) {
+  background: var(--cb-accent-pressed);
+  border-color: var(--cb-accent-pressed);
+}
+
+.cb-card {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.cb-card--surface {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+}
+
+.cb-card--pad-md {
+  padding: var(--cb-space-4);
+}
+
+.cb-text {
+  margin: 0;
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.6;
+  color: var(--cb-fg);
+}
+
+.cb-text--muted {
+  color: var(--cb-muted);
+}
+
+.cb-heading {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cb-fg);
+}
+
+.cb-heading--4 {
+  font-size: var(--cb-text-lg);
+}
+
+/* —— 页面自身排版（只用 --cb-* 变量；下文出现的裸 hex 均为品牌常量，
+ *    标识用色是品牌资产，独立于 UI token，UI 换肤不改标识） —— */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  padding: var(--cb-space-6);
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; }
+
+.page-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.page-sub {
+  margin: var(--cb-space-1) 0 0;
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+.panel {
+  background: var(--cb-paper);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: var(--cb-space-5);
+  margin-top: var(--cb-space-5);
+}
+
+.panel-label {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cb-muted);
+  padding-bottom: var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-3);
+  margin-bottom: var(--cb-space-4);
+}
+
+/* —— 01 标识展示 —— */
+
+.mark { margin: 0; }
+
+.mark-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--cb-space-5);
+  border-radius: var(--cb-radius-card);
+}
+
+/* 品牌常量：纸 #FBFAF6 / 墨 #1C1B19（标识展示底，不走 token） */
+.mark-area--paper { background: #fbfaf6; border: 1px solid var(--cb-line-2); }
+.mark-area--ink { background: #1c1b19; }
+
+.mark-area img { display: block; max-width: 100%; height: auto; }
+.mark-hero img { width: 620px; }
+.mark-row img { width: 340px; }
+
+.mark-cap {
+  margin-top: var(--cb-space-2);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+
+.mark-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--cb-space-4);
+  margin-top: var(--cb-space-4);
+}
+
+/* —— 02 品牌三色板 —— */
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--cb-space-4);
+}
+
+.swatch {
+  background: var(--cb-surface-raised);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  overflow: hidden;
+}
+
+.swatch-chip { height: calc(var(--cb-space-8) * 2); }
+.swatch-chip--paper { border-bottom: 1px solid var(--cb-line-2); }
+
+.swatch-meta { padding: var(--cb-space-3) var(--cb-space-4); }
+.swatch-name { font-weight: 600; font-size: var(--cb-text-md); }
+.swatch-hex {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  margin-top: var(--cb-space-1);
+}
+.swatch-role {
+  font-size: var(--cb-text-sm);
+  color: var(--cb-muted);
+  margin-top: var(--cb-space-1);
+}
+
+.brand-note {
+  margin: var(--cb-space-4) 0 0;
+  padding: var(--cb-space-2) 0 var(--cb-space-2) var(--cb-space-3);
+  border-left: var(--cb-bar-w) solid var(--cb-accent);
+  color: var(--cb-fg);
+  font-size: var(--cb-text-sm);
+  line-height: 1.6;
+}
+
+/* —— 03 字体 —— */
+
+.type-row { padding: var(--cb-space-4) 0; }
+.type-row + .type-row { border-top: 1px solid var(--cb-line-3); }
+
+.type-meta {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  margin-bottom: var(--cb-space-2);
+}
+
+.spec-brand {
+  font-family: var(--cb-font-brand);
+  font-weight: 900;
+  font-size: var(--cb-text-3xl);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+/* 品牌常量：字标双色 墨 #1C1B19 +「bo.」砖红 #A73718 */
+.spec-brand .ink { color: #1c1b19; }
+.spec-brand .brick { color: #a73718; }
+
+.spec-sans { font-size: var(--cb-text-xl); line-height: 1.5; }
+
+.type-note {
+  margin: var(--cb-space-2) 0 0;
+  font-size: var(--cb-text-sm);
+  color: var(--cb-muted);
+}
+
+/* —— 04 用法禁令 —— */
+
+.rules {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--cb-space-5);
+}
+
+.rule-title {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  letter-spacing: 0.08em;
+  color: var(--cb-muted);
+  margin-bottom: var(--cb-space-2);
+}
+
+.rule-list { list-style: none; margin: 0; padding: 0; }
+
+.rule-list li {
+  position: relative;
+  padding: var(--cb-space-2) 0 var(--cb-space-2) var(--cb-space-5);
+  border-top: 1px solid var(--cb-line-3);
+  font-size: var(--cb-text-sm);
+  line-height: 1.6;
+}
+
+.rule-list li::before {
+  position: absolute;
+  left: 0;
+  top: var(--cb-space-2);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-sm);
+}
+
+.rule-list--do li::before { content: '✓'; color: var(--cb-ok); }
+.rule-list--dont li::before { content: '✕'; color: var(--cb-danger); }
+
+/* —— 05 品牌注入点 —— */
+
+.inject-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--cb-space-4);
+}
+
+.inject-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-3);
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  padding: var(--cb-space-4);
+}
+
+.inject-demo {
+  display: flex;
+  align-items: center;
+  min-height: var(--cb-space-8);
+  flex: 1;
+}
+
+.inject-demo .cb-card { width: 100%; }
+
+.inject-cap {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+
+.inject-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-space-2);
+}
+
+/* C. 图标 24px：从 icon-c 资产（420×250，图标方块位于 x148 y63 尺寸 124×124）裁切缩放，
+ * background-size/position 为结构性裁切常量（24/124 比例换算）。 */
+.brand-mark-24 {
+  flex: none;
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--cb-radius-control);
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mt-2 { margin-top: var(--cb-space-2); }
+
+@media (max-width: 860px) {
+  .mark-row, .swatches, .rules, .inject-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">Combo 品牌标识</h1>
+  <p class="page-sub">双色字标定稿 · 墨 + 砖红 + 纸 · Fraunces Black · 标识标识用色固定，独立于 UI 强调色</p>
+
+  <section class="panel">
+    <div class="panel-label">01 · 标识 Identity</div>
+
+    <div class="mark-hero">
+      <figure class="mark">
+        <div class="mark-area mark-area--paper">
+          <svg style="display:block;width:100%;max-width:360px;height:auto;margin:0 auto" viewBox="282 94 335 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Combo">
+<path d="M347.153 170.776C346.929 174.072 346.097 177.16 344.657 180.04C343.217 182.888 341.265 185.4 338.801 187.576C336.369 189.752 333.505 191.448 330.209 192.664C326.913 193.88 323.329 194.488 319.457 194.488C312.769 194.488 307.009 193.08 302.177 190.264C297.377 187.416 293.665 183.448 291.041 178.36C288.449 173.272 287.153 167.32 287.153 160.504C287.153 155.192 287.953 150.344 289.553 145.96C291.185 141.544 293.489 137.736 296.465 134.536C299.441 131.336 302.993 128.872 307.121 127.144C311.281 125.384 315.873 124.504 320.897 124.504C323.745 124.504 326.161 124.792 328.145 125.368C330.161 125.944 331.761 126.536 332.945 127.144C334.129 127.72 334.897 128.008 335.249 128.008C335.761 128.008 336.513 127.72 337.505 127.144C338.497 126.568 339.457 125.992 340.385 125.416C341.313 124.84 341.937 124.552 342.257 124.552C342.449 124.552 342.625 124.648 342.785 124.84C342.945 125 343.057 125.288 343.121 125.704L347.345 146.488C347.441 146.84 347.441 147.128 347.345 147.352C347.281 147.576 347.089 147.72 346.769 147.784C346.513 147.848 346.289 147.816 346.097 147.688C345.905 147.528 345.713 147.24 345.521 146.824C343.633 141.8 341.569 137.832 339.329 134.92C337.089 132.008 334.801 129.944 332.465 128.728C330.129 127.48 327.857 126.856 325.649 126.856C323.377 126.856 321.265 127.448 319.313 128.632C317.393 129.784 315.681 131.528 314.177 133.864C312.673 136.168 311.505 139.016 310.673 142.408C309.841 145.8 309.425 149.72 309.425 154.168C309.425 161.528 310.257 167.576 311.921 172.312C313.617 177.016 315.953 180.504 318.929 182.776C321.937 185.016 325.377 186.136 329.249 186.136C333.249 186.136 336.785 184.856 339.857 182.296C342.929 179.736 344.961 175.848 345.953 170.632C346.049 170.344 346.145 170.136 346.241 170.008C346.337 169.88 346.465 169.816 346.625 169.816C346.849 169.848 346.993 169.96 347.057 170.152C347.153 170.312 347.185 170.52 347.153 170.776ZM374.81 148.792C379.45 148.792 383.53 149.768 387.05 151.72C390.602 153.64 393.37 156.312 395.354 159.736C397.37 163.16 398.378 167.112 398.378 171.592C398.378 175.944 397.338 179.8 395.258 183.16C393.178 186.52 390.314 189.176 386.666 191.128C383.018 193.048 378.81 194.008 374.042 194.008C369.434 194.008 365.354 193.064 361.802 191.176C358.25 189.256 355.466 186.616 353.45 183.256C351.466 179.864 350.474 175.96 350.474 171.544C350.474 167.192 351.53 163.304 353.642 159.88C355.754 156.456 358.65 153.752 362.33 151.768C366.01 149.784 370.17 148.792 374.81 148.792ZM377.594 192.616C378.778 192.456 379.642 191.576 380.186 189.976C380.762 188.344 381.034 185.928 381.002 182.728C380.97 179.528 380.586 175.512 379.85 170.68C379.146 165.848 378.362 161.896 377.498 158.824C376.634 155.72 375.69 153.48 374.666 152.104C373.674 150.696 372.586 150.088 371.402 150.28C370.282 150.472 369.434 151.384 368.858 153.016C368.314 154.616 368.074 157 368.138 160.168C368.202 163.336 368.57 167.352 369.242 172.216C369.946 177.048 370.714 181 371.546 184.072C372.41 187.144 373.338 189.384 374.33 190.792C375.354 192.2 376.442 192.808 377.594 192.616ZM422.404 149.608V189.592C422.404 190.04 422.516 190.456 422.74 190.84C422.964 191.192 423.268 191.416 423.652 191.512L425.428 191.896C425.812 191.992 426.004 192.168 426.004 192.424C426.004 192.808 425.732 193 425.188 193H402.004C401.748 193 401.556 192.952 401.428 192.856C401.3 192.728 401.236 192.6 401.236 192.472C401.236 192.344 401.3 192.216 401.428 192.088C401.588 191.96 401.78 191.864 402.004 191.8L403.684 191.416C404.132 191.32 404.436 191.128 404.596 190.84C404.756 190.552 404.836 190.184 404.836 189.736V156.232C404.836 155.88 404.772 155.608 404.644 155.416C404.548 155.224 404.34 155.128 404.02 155.128H401.956C401.796 155.096 401.668 155.032 401.572 154.936C401.476 154.84 401.428 154.728 401.428 154.6C401.428 154.44 401.476 154.312 401.572 154.216C401.7 154.088 401.892 153.992 402.148 153.928L419.908 148.888C420.26 148.76 420.548 148.68 420.772 148.648C421.028 148.616 421.268 148.6 421.492 148.6C421.844 148.6 422.084 148.712 422.212 148.936C422.34 149.128 422.404 149.352 422.404 149.608ZM421.06 160.504L420.244 159.784L422.02 158.056C425.54 154.728 428.836 152.36 431.908 150.952C434.98 149.512 437.7 148.792 440.068 148.792C443.108 148.792 445.556 149.72 447.412 151.576C449.3 153.432 450.244 156.392 450.244 160.456V190.12C450.244 190.568 450.308 190.904 450.436 191.128C450.596 191.32 450.82 191.448 451.108 191.512L452.26 191.848C452.676 191.976 452.884 192.168 452.884 192.424C452.884 192.808 452.564 193 451.924 193H430.324C429.908 193 429.7 192.808 429.7 192.424C429.7 192.168 429.892 191.992 430.276 191.896L431.476 191.608C432.052 191.448 432.436 191.16 432.628 190.744C432.82 190.296 432.916 189.752 432.916 189.112V162.472C432.916 160.744 432.484 159.352 431.62 158.296C430.756 157.208 429.652 156.664 428.308 156.664C427.156 156.664 426.132 156.856 425.236 157.24C424.372 157.592 423.556 158.136 422.788 158.872L421.06 160.504ZM448.948 160.504L448.132 159.784L449.668 157.816C451.972 154.84 454.42 152.6 457.012 151.096C459.604 149.56 462.26 148.792 464.98 148.792C467.924 148.792 470.436 149.72 472.516 151.576C474.596 153.432 475.844 156.424 476.26 160.552L479.476 189.928C479.54 190.472 479.652 190.872 479.812 191.128C480.004 191.352 480.244 191.512 480.532 191.608L481.588 191.896C481.78 191.96 481.924 192.04 482.02 192.136C482.116 192.232 482.164 192.344 482.164 192.472C482.164 192.632 482.1 192.76 481.972 192.856C481.876 192.952 481.716 193 481.492 193H458.74C458.324 193 458.116 192.808 458.116 192.424C458.116 192.168 458.308 191.992 458.692 191.896L459.892 191.608C460.468 191.448 460.868 191.144 461.092 190.696C461.316 190.248 461.396 189.656 461.332 188.92L458.98 162.472C458.852 160.744 458.372 159.352 457.54 158.296C456.708 157.208 455.588 156.664 454.18 156.664C453.38 156.664 452.66 156.84 452.02 157.192C451.412 157.544 450.868 158.024 450.388 158.632L448.948 160.504Z" fill="#1C1B19"/>
+<path d="M503.85 121.432V190.552L488.778 193.576C488.426 193.672 488.106 193.752 487.818 193.816C487.562 193.88 487.338 193.912 487.146 193.912C486.89 193.912 486.682 193.832 486.522 193.672C486.362 193.544 486.282 193.368 486.282 193.144V127.96C486.282 127.64 486.202 127.416 486.042 127.288C485.914 127.128 485.69 127.048 485.37 127.048L483.594 127C483.338 127 483.162 126.952 483.066 126.856C482.97 126.76 482.922 126.632 482.922 126.472C482.922 126.28 482.97 126.152 483.066 126.088C483.194 125.992 483.354 125.912 483.546 125.848L501.258 120.856C501.738 120.728 502.074 120.648 502.266 120.616C502.458 120.552 502.666 120.52 502.89 120.52C503.21 120.52 503.45 120.616 503.61 120.808C503.77 120.968 503.85 121.176 503.85 121.432ZM502.602 157.672L501.69 156.616C503.546 153.992 505.562 152.04 507.738 150.76C509.946 149.448 512.506 148.792 515.418 148.792C519.13 148.792 522.362 149.624 525.114 151.288C527.866 152.952 529.994 155.352 531.498 158.488C533.002 161.624 533.754 165.432 533.754 169.912C533.754 174.712 532.858 178.936 531.066 182.584C529.274 186.2 526.794 189.016 523.626 191.032C520.458 193.016 516.81 194.008 512.682 194.008C509.674 194.008 507.306 193.544 505.578 192.616C503.85 191.656 502.426 190.168 501.306 188.152L502.842 187.384C503.418 188.76 504.138 189.784 505.002 190.456C505.866 191.096 506.938 191.416 508.218 191.416C509.754 191.416 511.098 190.872 512.25 189.784C513.402 188.664 514.298 186.648 514.938 183.736C515.578 180.824 515.898 176.696 515.898 171.352C515.898 166.648 515.626 162.936 515.082 160.216C514.57 157.464 513.834 155.512 512.874 154.36C511.946 153.176 510.842 152.584 509.562 152.584C508.25 152.584 507.002 153 505.818 153.832C504.634 154.664 503.562 155.944 502.602 157.672ZM561.278 148.792C565.918 148.792 569.998 149.768 573.518 151.72C577.07 153.64 579.838 156.312 581.822 159.736C583.838 163.16 584.846 167.112 584.846 171.592C584.846 175.944 583.806 179.8 581.726 183.16C579.646 186.52 576.782 189.176 573.134 191.128C569.486 193.048 565.278 194.008 560.51 194.008C555.902 194.008 551.822 193.064 548.27 191.176C544.718 189.256 541.934 186.616 539.918 183.256C537.934 179.864 536.942 175.96 536.942 171.544C536.942 167.192 537.998 163.304 540.11 159.88C542.222 156.456 545.118 153.752 548.798 151.768C552.478 149.784 556.638 148.792 561.278 148.792ZM564.062 192.616C565.246 192.456 566.11 191.576 566.654 189.976C567.23 188.344 567.502 185.928 567.47 182.728C567.438 179.528 567.054 175.512 566.318 170.68C565.614 165.848 564.83 161.896 563.966 158.824C563.102 155.72 562.158 153.48 561.134 152.104C560.142 150.696 559.054 150.088 557.87 150.28C556.75 150.472 555.902 151.384 555.326 153.016C554.782 154.616 554.542 157 554.606 160.168C554.67 163.336 555.038 167.352 555.71 172.216C556.414 177.048 557.182 181 558.014 184.072C558.878 187.144 559.806 189.384 560.798 190.792C561.822 192.2 562.91 192.808 564.062 192.616Z" fill="#A73718"/>
+<circle id="Ellipse" cx="601.846" cy="183.488" r="11" fill="#A73718"/>
+</svg>
+        </div>
+        <figcaption class="mark-cap">主字标 wordmark-primary · 900×300 · 墨「Com」+ 砖红「bo.」· 纸做底</figcaption>
+      </figure>
+    </div>
+
+    <div class="mark-row">
+      <figure class="mark">
+        <div class="mark-area mark-area--ink">
+          <svg style="display:block;width:100%;max-width:220px;height:auto;margin:0 auto" viewBox="282 94 335 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Combo">
+<path d="M347.153 170.776C346.929 174.072 346.097 177.16 344.657 180.04C343.217 182.888 341.265 185.4 338.801 187.576C336.369 189.752 333.505 191.448 330.209 192.664C326.913 193.88 323.329 194.488 319.457 194.488C312.769 194.488 307.009 193.08 302.177 190.264C297.377 187.416 293.665 183.448 291.041 178.36C288.449 173.272 287.153 167.32 287.153 160.504C287.153 155.192 287.953 150.344 289.553 145.96C291.185 141.544 293.489 137.736 296.465 134.536C299.441 131.336 302.993 128.872 307.121 127.144C311.281 125.384 315.873 124.504 320.897 124.504C323.745 124.504 326.161 124.792 328.145 125.368C330.161 125.944 331.761 126.536 332.945 127.144C334.129 127.72 334.897 128.008 335.249 128.008C335.761 128.008 336.513 127.72 337.505 127.144C338.497 126.568 339.457 125.992 340.385 125.416C341.313 124.84 341.937 124.552 342.257 124.552C342.449 124.552 342.625 124.648 342.785 124.84C342.945 125 343.057 125.288 343.121 125.704L347.345 146.488C347.441 146.84 347.441 147.128 347.345 147.352C347.281 147.576 347.089 147.72 346.769 147.784C346.513 147.848 346.289 147.816 346.097 147.688C345.905 147.528 345.713 147.24 345.521 146.824C343.633 141.8 341.569 137.832 339.329 134.92C337.089 132.008 334.801 129.944 332.465 128.728C330.129 127.48 327.857 126.856 325.649 126.856C323.377 126.856 321.265 127.448 319.313 128.632C317.393 129.784 315.681 131.528 314.177 133.864C312.673 136.168 311.505 139.016 310.673 142.408C309.841 145.8 309.425 149.72 309.425 154.168C309.425 161.528 310.257 167.576 311.921 172.312C313.617 177.016 315.953 180.504 318.929 182.776C321.937 185.016 325.377 186.136 329.249 186.136C333.249 186.136 336.785 184.856 339.857 182.296C342.929 179.736 344.961 175.848 345.953 170.632C346.049 170.344 346.145 170.136 346.241 170.008C346.337 169.88 346.465 169.816 346.625 169.816C346.849 169.848 346.993 169.96 347.057 170.152C347.153 170.312 347.185 170.52 347.153 170.776ZM374.81 148.792C379.45 148.792 383.53 149.768 387.05 151.72C390.602 153.64 393.37 156.312 395.354 159.736C397.37 163.16 398.378 167.112 398.378 171.592C398.378 175.944 397.338 179.8 395.258 183.16C393.178 186.52 390.314 189.176 386.666 191.128C383.018 193.048 378.81 194.008 374.042 194.008C369.434 194.008 365.354 193.064 361.802 191.176C358.25 189.256 355.466 186.616 353.45 183.256C351.466 179.864 350.474 175.96 350.474 171.544C350.474 167.192 351.53 163.304 353.642 159.88C355.754 156.456 358.65 153.752 362.33 151.768C366.01 149.784 370.17 148.792 374.81 148.792ZM377.594 192.616C378.778 192.456 379.642 191.576 380.186 189.976C380.762 188.344 381.034 185.928 381.002 182.728C380.97 179.528 380.586 175.512 379.85 170.68C379.146 165.848 378.362 161.896 377.498 158.824C376.634 155.72 375.69 153.48 374.666 152.104C373.674 150.696 372.586 150.088 371.402 150.28C370.282 150.472 369.434 151.384 368.858 153.016C368.314 154.616 368.074 157 368.138 160.168C368.202 163.336 368.57 167.352 369.242 172.216C369.946 177.048 370.714 181 371.546 184.072C372.41 187.144 373.338 189.384 374.33 190.792C375.354 192.2 376.442 192.808 377.594 192.616ZM422.404 149.608V189.592C422.404 190.04 422.516 190.456 422.74 190.84C422.964 191.192 423.268 191.416 423.652 191.512L425.428 191.896C425.812 191.992 426.004 192.168 426.004 192.424C426.004 192.808 425.732 193 425.188 193H402.004C401.748 193 401.556 192.952 401.428 192.856C401.3 192.728 401.236 192.6 401.236 192.472C401.236 192.344 401.3 192.216 401.428 192.088C401.588 191.96 401.78 191.864 402.004 191.8L403.684 191.416C404.132 191.32 404.436 191.128 404.596 190.84C404.756 190.552 404.836 190.184 404.836 189.736V156.232C404.836 155.88 404.772 155.608 404.644 155.416C404.548 155.224 404.34 155.128 404.02 155.128H401.956C401.796 155.096 401.668 155.032 401.572 154.936C401.476 154.84 401.428 154.728 401.428 154.6C401.428 154.44 401.476 154.312 401.572 154.216C401.7 154.088 401.892 153.992 402.148 153.928L419.908 148.888C420.26 148.76 420.548 148.68 420.772 148.648C421.028 148.616 421.268 148.6 421.492 148.6C421.844 148.6 422.084 148.712 422.212 148.936C422.34 149.128 422.404 149.352 422.404 149.608ZM421.06 160.504L420.244 159.784L422.02 158.056C425.54 154.728 428.836 152.36 431.908 150.952C434.98 149.512 437.7 148.792 440.068 148.792C443.108 148.792 445.556 149.72 447.412 151.576C449.3 153.432 450.244 156.392 450.244 160.456V190.12C450.244 190.568 450.308 190.904 450.436 191.128C450.596 191.32 450.82 191.448 451.108 191.512L452.26 191.848C452.676 191.976 452.884 192.168 452.884 192.424C452.884 192.808 452.564 193 451.924 193H430.324C429.908 193 429.7 192.808 429.7 192.424C429.7 192.168 429.892 191.992 430.276 191.896L431.476 191.608C432.052 191.448 432.436 191.16 432.628 190.744C432.82 190.296 432.916 189.752 432.916 189.112V162.472C432.916 160.744 432.484 159.352 431.62 158.296C430.756 157.208 429.652 156.664 428.308 156.664C427.156 156.664 426.132 156.856 425.236 157.24C424.372 157.592 423.556 158.136 422.788 158.872L421.06 160.504ZM448.948 160.504L448.132 159.784L449.668 157.816C451.972 154.84 454.42 152.6 457.012 151.096C459.604 149.56 462.26 148.792 464.98 148.792C467.924 148.792 470.436 149.72 472.516 151.576C474.596 153.432 475.844 156.424 476.26 160.552L479.476 189.928C479.54 190.472 479.652 190.872 479.812 191.128C480.004 191.352 480.244 191.512 480.532 191.608L481.588 191.896C481.78 191.96 481.924 192.04 482.02 192.136C482.116 192.232 482.164 192.344 482.164 192.472C482.164 192.632 482.1 192.76 481.972 192.856C481.876 192.952 481.716 193 481.492 193H458.74C458.324 193 458.116 192.808 458.116 192.424C458.116 192.168 458.308 191.992 458.692 191.896L459.892 191.608C460.468 191.448 460.868 191.144 461.092 190.696C461.316 190.248 461.396 189.656 461.332 188.92L458.98 162.472C458.852 160.744 458.372 159.352 457.54 158.296C456.708 157.208 455.588 156.664 454.18 156.664C453.38 156.664 452.66 156.84 452.02 157.192C451.412 157.544 450.868 158.024 450.388 158.632L448.948 160.504Z" fill="#FBFAF6"/>
+<path d="M503.85 121.432V190.552L488.778 193.576C488.426 193.672 488.106 193.752 487.818 193.816C487.562 193.88 487.338 193.912 487.146 193.912C486.89 193.912 486.682 193.832 486.522 193.672C486.362 193.544 486.282 193.368 486.282 193.144V127.96C486.282 127.64 486.202 127.416 486.042 127.288C485.914 127.128 485.69 127.048 485.37 127.048L483.594 127C483.338 127 483.162 126.952 483.066 126.856C482.97 126.76 482.922 126.632 482.922 126.472C482.922 126.28 482.97 126.152 483.066 126.088C483.194 125.992 483.354 125.912 483.546 125.848L501.258 120.856C501.738 120.728 502.074 120.648 502.266 120.616C502.458 120.552 502.666 120.52 502.89 120.52C503.21 120.52 503.45 120.616 503.61 120.808C503.77 120.968 503.85 121.176 503.85 121.432ZM502.602 157.672L501.69 156.616C503.546 153.992 505.562 152.04 507.738 150.76C509.946 149.448 512.506 148.792 515.418 148.792C519.13 148.792 522.362 149.624 525.114 151.288C527.866 152.952 529.994 155.352 531.498 158.488C533.002 161.624 533.754 165.432 533.754 169.912C533.754 174.712 532.858 178.936 531.066 182.584C529.274 186.2 526.794 189.016 523.626 191.032C520.458 193.016 516.81 194.008 512.682 194.008C509.674 194.008 507.306 193.544 505.578 192.616C503.85 191.656 502.426 190.168 501.306 188.152L502.842 187.384C503.418 188.76 504.138 189.784 505.002 190.456C505.866 191.096 506.938 191.416 508.218 191.416C509.754 191.416 511.098 190.872 512.25 189.784C513.402 188.664 514.298 186.648 514.938 183.736C515.578 180.824 515.898 176.696 515.898 171.352C515.898 166.648 515.626 162.936 515.082 160.216C514.57 157.464 513.834 155.512 512.874 154.36C511.946 153.176 510.842 152.584 509.562 152.584C508.25 152.584 507.002 153 505.818 153.832C504.634 154.664 503.562 155.944 502.602 157.672ZM561.278 148.792C565.918 148.792 569.998 149.768 573.518 151.72C577.07 153.64 579.838 156.312 581.822 159.736C583.838 163.16 584.846 167.112 584.846 171.592C584.846 175.944 583.806 179.8 581.726 183.16C579.646 186.52 576.782 189.176 573.134 191.128C569.486 193.048 565.278 194.008 560.51 194.008C555.902 194.008 551.822 193.064 548.27 191.176C544.718 189.256 541.934 186.616 539.918 183.256C537.934 179.864 536.942 175.96 536.942 171.544C536.942 167.192 537.998 163.304 540.11 159.88C542.222 156.456 545.118 153.752 548.798 151.768C552.478 149.784 556.638 148.792 561.278 148.792ZM564.062 192.616C565.246 192.456 566.11 191.576 566.654 189.976C567.23 188.344 567.502 185.928 567.47 182.728C567.438 179.528 567.054 175.512 566.318 170.68C565.614 165.848 564.83 161.896 563.966 158.824C563.102 155.72 562.158 153.48 561.134 152.104C560.142 150.696 559.054 150.088 557.87 150.28C556.75 150.472 555.902 151.384 555.326 153.016C554.782 154.616 554.542 157 554.606 160.168C554.67 163.336 555.038 167.352 555.71 172.216C556.414 177.048 557.182 181 558.014 184.072C558.878 187.144 559.806 189.384 560.798 190.792C561.822 192.2 562.91 192.808 564.062 192.616Z" fill="#A73718"/>
+<circle id="Ellipse" cx="601.846" cy="183.488" r="11" fill="#A73718"/>
+</svg>
+        </div>
+        <figcaption class="mark-cap">反白 wordmark-reversed · 420×250 · 墨底 #1C1B19 · 句点用砖红</figcaption>
+      </figure>
+      <figure class="mark">
+        <div class="mark-area mark-area--paper">
+          <svg viewBox="0 0 120 120" style="display:block;width:96px;height:96px;margin:0 auto" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Combo 图标"><rect x="0" y="0" width="120" height="120" rx="26" fill="#1C1B19"/><path d="M80 42 A28 28 0 1 0 80 78" fill="none" stroke="#FBFAF6" stroke-width="12" stroke-linecap="round"/><circle cx="90" cy="78" r="8" fill="#A73718"/></svg>
+        </div>
+        <figcaption class="mark-cap">图标 icon-c · 420×250 ·「C.」墨块反白 + 砖红句点</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-label">02 · 品牌三色 Palette</div>
+
+    <div class="swatches">
+      <div class="swatch">
+        <div class="swatch-chip" style="background: #1c1b19;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Ink 墨</div>
+          <div class="swatch-hex">#1C1B19</div>
+          <div class="swatch-role">字标主体；反白场景做底</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="swatch-chip" style="background: #a73718;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Brick 砖红</div>
+          <div class="swatch-hex">#A73718</div>
+          <div class="swatch-role">点睛：「bo.」与句点</div>
+        </div>
+      </div>
+      <div class="swatch">
+        <div class="swatch-chip swatch-chip--paper" style="background: #fbfaf6;"></div>
+        <div class="swatch-meta">
+          <div class="swatch-name">Paper 纸</div>
+          <div class="swatch-hex">#FBFAF6</div>
+          <div class="swatch-role">标识标准底色</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="brand-note">标识用色是品牌资产，独立于 UI token——UI 换肤不改标识。</p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-label">03 · 字体 Type</div>
+
+    <div class="type-row">
+      <div class="type-meta">拉丁字标 · Fraunces Black（--cb-font-brand 回退栈渲染示意，定稿以图形资产为准）</div>
+      <div class="spec-brand"><span class="ink">Com</span><span class="brick">bo.</span></div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">中文与正文 · Noto Sans SC（--cb-font-sans 回退栈）</div>
+      <div class="spec-sans">沉淀真实经验，复用为能力 · Combo 0123456789</div>
+    </div>
+    <p class="type-note">字标只出现拉丁形态；中文场景由 Noto Sans SC 承担品牌语气，不另做中文字标。</p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-label">04 · 用法禁令 Usage（照定稿页原文）</div>
+
+    <div class="rules">
+      <div>
+        <div class="rule-title">规范 DO</div>
+        <ul class="rule-list rule-list--do">
+          <li>主色组合墨 + 砖红、纸做底</li>
+          <li>安全间距 ≥ 字母 o 高度</li>
+          <li>最小宽度数字端 ≥ 88px</li>
+        </ul>
+      </div>
+      <div>
+        <div class="rule-title">禁令 DON'T</div>
+        <ul class="rule-list rule-list--dont">
+          <li>勿改双色顺序</li>
+          <li>勿加描边阴影</li>
+          <li>勿拉伸</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-label">05 · 品牌注入点 Injection Points</div>
+
+    <div class="inject-grid">
+      <div class="inject-tile">
+        <div class="inject-demo">
+          <button class="cb-btn cb-btn--primary cb-btn--md" type="button"><span class="cb-btn-label">创建能力</span></button>
+        </div>
+        <div class="inject-cap">primary 按钮 · 砖红 --cb-accent 是品牌在 UI 的第一出场位</div>
+      </div>
+      <div class="inject-tile">
+        <div class="inject-demo">
+          <span class="cb-badge cb-badge--accent">能力</span>
+        </div>
+        <div class="inject-cap">accent Badge · accent-soft 底 + accent 字</div>
+      </div>
+      <div class="inject-tile">
+        <div class="inject-demo">
+          <div class="cb-card cb-card--surface cb-card--pad-md">
+            <div class="inject-card-head">
+              <span class="brand-mark-24" aria-hidden="true"><svg viewBox="0 0 120 120" style="display:block;width:24px;height:24px" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Combo 图标"><rect x="0" y="0" width="120" height="120" rx="26" fill="#1C1B19"/><path d="M80 42 A28 28 0 1 0 80 78" fill="none" stroke="#FBFAF6" stroke-width="12" stroke-linecap="round"/><circle cx="90" cy="78" r="8" fill="#A73718"/></svg></span>
+              <h3 class="cb-heading cb-heading--4">女装主推款 CTR 判断</h3>
+            </div>
+            <p class="cb-text cb-text--muted mt-2">卡片头部的 C. 图标固定 24px，配色不随换肤改变。</p>
+          </div>
+        </div>
+        <div class="inject-cap">卡片头部 · C. 图标 24px（自 icon 资产裁切）</div>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

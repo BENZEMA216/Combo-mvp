@@ -1,0 +1,404 @@
+{
+  "color": {
+    "ink": {
+      "950": {
+        "$type": "color",
+        "$value": "#161513"
+      },
+      "925": {
+        "$type": "color",
+        "$value": "#1f1e1b"
+      },
+      "900": {
+        "$type": "color",
+        "$value": "#1a1917"
+      },
+      "875": {
+        "$type": "color",
+        "$value": "#1c1b19"
+      },
+      "850": {
+        "$type": "color",
+        "$value": "#211f1d"
+      },
+      "800": {
+        "$type": "color",
+        "$value": "#262421"
+      },
+      "750": {
+        "$type": "color",
+        "$value": "#2e2b28"
+      }
+    },
+    "paper": {
+      "0": {
+        "$type": "color",
+        "$value": "#ffffff"
+      },
+      "50": {
+        "$type": "color",
+        "$value": "#fbfaf6"
+      },
+      "100": {
+        "$type": "color",
+        "$value": "#faf8f4"
+      },
+      "150": {
+        "$type": "color",
+        "$value": "#f7f7f7"
+      },
+      "200": {
+        "$type": "color",
+        "$value": "#efece7"
+      }
+    },
+    "neutral": {
+      "50": {
+        "$type": "color",
+        "$value": "#f5f3ef"
+      },
+      "100": {
+        "$type": "color",
+        "$value": "#eeeae3"
+      },
+      "150": {
+        "$type": "color",
+        "$value": "#ece7df"
+      },
+      "200": {
+        "$type": "color",
+        "$value": "#e7e2d9"
+      },
+      "300": {
+        "$type": "color",
+        "$value": "#dcd7cf"
+      },
+      "400": {
+        "$type": "color",
+        "$value": "#a8a29a"
+      },
+      "500": {
+        "$type": "color",
+        "$value": "#66706c"
+      },
+      "700": {
+        "$type": "color",
+        "$value": "#3a3835"
+      },
+      "750": {
+        "$type": "color",
+        "$value": "#322f2d"
+      },
+      "800": {
+        "$type": "color",
+        "$value": "#2a2825"
+      }
+    },
+    "brick": {
+      "100": {
+        "$type": "color",
+        "$value": "#f7e7e1"
+      },
+      "200": {
+        "$type": "color",
+        "$value": "#f4d4c9"
+      },
+      "300": {
+        "$type": "color",
+        "$value": "#d96f4a"
+      },
+      "400": {
+        "$type": "color",
+        "$value": "#c85a36"
+      },
+      "450": {
+        "$type": "color",
+        "$value": "#b34a28"
+      },
+      "500": {
+        "$type": "color",
+        "$value": "#a73718"
+      },
+      "600": {
+        "$type": "color",
+        "$value": "#8f2d14"
+      },
+      "700": {
+        "$type": "color",
+        "$value": "#6e210f"
+      },
+      "800": {
+        "$type": "color",
+        "$value": "#57291a"
+      },
+      "900": {
+        "$type": "color",
+        "$value": "#3a1a10"
+      }
+    },
+    "sage": {
+      "300": {
+        "$type": "color",
+        "$value": "#8fb5ac"
+      },
+      "400": {
+        "$type": "color",
+        "$value": "#7fa59d"
+      }
+    },
+    "green": {
+      "300": {
+        "$type": "color",
+        "$value": "#7fae84"
+      },
+      "600": {
+        "$type": "color",
+        "$value": "#4f6f52"
+      }
+    },
+    "amber": {
+      "300": {
+        "$type": "color",
+        "$value": "#cf9d54"
+      },
+      "600": {
+        "$type": "color",
+        "$value": "#7a5317"
+      }
+    },
+    "red": {
+      "300": {
+        "$type": "color",
+        "$value": "#e5776b"
+      },
+      "600": {
+        "$type": "color",
+        "$value": "#b3261e"
+      }
+    },
+    "alpha": {
+      "grid-neutral": {
+        "$type": "color",
+        "$value": "rgba(220, 214, 205, 0.72)"
+      },
+      "grid-ink": {
+        "$type": "color",
+        "$value": "rgba(58, 56, 53, 0.6)"
+      }
+    },
+    "mix": {
+      "ok-soft": {
+        "$type": "color",
+        "$value": "color-mix(in srgb, {semantic.ok} 10%, {semantic.surface})"
+      },
+      "warn-soft": {
+        "$type": "color",
+        "$value": "color-mix(in srgb, {semantic.warn} 10%, {semantic.surface})"
+      },
+      "danger-soft": {
+        "$type": "color",
+        "$value": "color-mix(in srgb, {semantic.danger} 8%, {semantic.surface})"
+      },
+      "danger-line": {
+        "$type": "color",
+        "$value": "color-mix(in srgb, {semantic.danger} 28%, transparent)"
+      }
+    }
+  },
+  "font": {
+    "family": {
+      "brand": {
+        "$type": "fontFamily",
+        "$value": "'Fraunces', 'Noto Serif SC', serif"
+      },
+      "serif": {
+        "$type": "fontFamily",
+        "$value": "'Noto Serif SC', 'Songti SC', 'STSong', serif"
+      },
+      "sans": {
+        "$type": "fontFamily",
+        "$value": "'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif"
+      },
+      "mono": {
+        "$type": "fontFamily",
+        "$value": "'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace"
+      }
+    },
+    "size": {
+      "100": {
+        "$type": "dimension",
+        "$value": "11px"
+      },
+      "200": {
+        "$type": "dimension",
+        "$value": "12px"
+      },
+      "300": {
+        "$type": "dimension",
+        "$value": "13px"
+      },
+      "400": {
+        "$type": "dimension",
+        "$value": "14px"
+      },
+      "500": {
+        "$type": "dimension",
+        "$value": "18px"
+      },
+      "600": {
+        "$type": "dimension",
+        "$value": "24px"
+      },
+      "700": {
+        "$type": "dimension",
+        "$value": "32px"
+      }
+    }
+  },
+  "space": {
+    "1": {
+      "$type": "dimension",
+      "$value": "4px"
+    },
+    "2": {
+      "$type": "dimension",
+      "$value": "8px"
+    },
+    "3": {
+      "$type": "dimension",
+      "$value": "10px"
+    },
+    "4": {
+      "$type": "dimension",
+      "$value": "14px"
+    },
+    "5": {
+      "$type": "dimension",
+      "$value": "20px"
+    },
+    "6": {
+      "$type": "dimension",
+      "$value": "26px"
+    },
+    "7": {
+      "$type": "dimension",
+      "$value": "32px"
+    },
+    "8": {
+      "$type": "dimension",
+      "$value": "40px"
+    }
+  },
+  "size": {
+    "sidebar": {
+      "expanded": {
+        "$type": "dimension",
+        "$value": "256px"
+      },
+      "collapsed": {
+        "$type": "dimension",
+        "$value": "64px"
+      }
+    },
+    "dialog": {
+      "$type": "dimension",
+      "$value": "440px"
+    },
+    "thread": {
+      "md": {
+        "$type": "dimension",
+        "$value": "36rem"
+      },
+      "lg": {
+        "$type": "dimension",
+        "$value": "46rem"
+      }
+    },
+    "focus-ring": {
+      "$type": "dimension",
+      "$value": "2px"
+    },
+    "indicator": {
+      "$type": "dimension",
+      "$value": "2px"
+    },
+    "bar": {
+      "$type": "dimension",
+      "$value": "3px"
+    }
+  },
+  "radius": {
+    "sm": {
+      "$type": "dimension",
+      "$value": "6px"
+    },
+    "md": {
+      "$type": "dimension",
+      "$value": "7px"
+    },
+    "xl": {
+      "$type": "dimension",
+      "$value": "18px"
+    },
+    "pill": {
+      "$type": "dimension",
+      "$value": "999px"
+    }
+  },
+  "shadow": {
+    "ink": {
+      "surface": {
+        "$type": "shadow",
+        "$value": "0 2px 8px rgba(28, 27, 25, 0.04)"
+      },
+      "hero": {
+        "$type": "shadow",
+        "$value": "0 8px 24px rgba(28, 27, 25, 0.06)"
+      },
+      "overlay": {
+        "$type": "shadow",
+        "$value": "0 12px 28px rgba(28, 27, 25, 0.1)"
+      }
+    },
+    "black": {
+      "surface": {
+        "$type": "shadow",
+        "$value": "0 2px 8px rgba(0, 0, 0, 0.35)"
+      },
+      "hero": {
+        "$type": "shadow",
+        "$value": "0 8px 24px rgba(0, 0, 0, 0.45)"
+      },
+      "overlay": {
+        "$type": "shadow",
+        "$value": "0 12px 28px rgba(0, 0, 0, 0.55)"
+      }
+    }
+  },
+  "motion": {
+    "duration": {
+      "fast": {
+        "$type": "duration",
+        "$value": "120ms"
+      },
+      "base": {
+        "$type": "duration",
+        "$value": "200ms"
+      },
+      "slow": {
+        "$type": "duration",
+        "$value": "320ms"
+      }
+    },
+    "easing": {
+      "standard": {
+        "$type": "cubicBezier",
+        "$value": "cubic-bezier(0.2, 0, 0, 1)"
+      },
+      "decelerate": {
+        "$type": "cubicBezier",
+        "$value": "cubic-bezier(0, 0, 0.2, 1)"
+      }
+    }
+  }
+}

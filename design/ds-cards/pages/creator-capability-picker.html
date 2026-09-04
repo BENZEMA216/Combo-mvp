@@ -1,0 +1,630 @@
+<!-- @dsCard group="06 · 创作侧 Creator" name="③ 能力挑选 · 一键发布" subtitle="实装镜像：提取成果头+CapabilityPicker(默认全选/逐项独立成败/试用链接/一键发布到市集)。名词=能力" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Combo DS · 能力挑选 · 一键发布</title>
+<style>
+/* 生成物勿手改。
+ * :root token 由 packages/ds-tokens 生成（与 components/markdown.html 逐字一致）；
+ * .cb-page.cb-capabilities / .cb-cap-card* / .cb-link / .cb-copy / .cb-primary-btn 等
+ * 规则从 apps/web/src/styles.css 逐字提取（改样式改源 .css 后重新构建）。 */
+
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+/* 语义别名 token（来自 packages/ds-tokens/dist/tokens.css：--cb-badge-ok: var(--cb-ok)）；
+ * 本卡的已发布 ✓ 与「已发布」状态标签用它取绿。随 --cb-ok 一并暗色适配。 */
+:root { --cb-badge-ok: var(--cb-ok); }
+
+/* ===== 以下规则从 apps/web/src/styles.css 逐字提取 ===== */
+
+/* 返回链接。 */
+.cb-page__back {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.cb-page__back a {
+  color: var(--cb-muted);
+  text-decoration: none;
+}
+.cb-page__back a:hover {
+  color: var(--cb-accent);
+}
+
+/* 主按钮（新建任务 / 重试 / 去能力页）。 */
+.cb-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: var(--cb-accent);
+  color: #fff;
+  border-radius: var(--cb-radius-control);
+  padding: 8px 20px;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cb-primary-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 复制按钮（分享令牌 / 配对码共用）。 */
+.cb-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  color: var(--cb-fg);
+  border-radius: var(--cb-radius-control);
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cb-copy:hover {
+  border-color: var(--cb-accent);
+  color: var(--cb-accent);
+}
+
+/* 已发布分享令牌 code chip。 */
+.cb-caps__token {
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
+  background: var(--cb-accent-soft);
+  border-radius: 4px;
+  padding: 2px 6px;
+  overflow-wrap: anywhere;
+}
+
+/* 提取完成整页成果形态：eyebrow + 大标题 + 引导 + 挑选发布区。 */
+.cb-capabilities {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.cb-capabilities__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cb-capabilities__eyebrow {
+  margin: 0;
+  font-family: var(--cb-font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--cb-accent);
+}
+
+.cb-capabilities__title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--cb-fg);
+}
+
+.cb-capabilities__lead {
+  margin: 0;
+  max-width: 680px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--cb-muted);
+}
+
+.cb-capabilities__empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+/* 统计工具条：已选/统计在左，全选在右。 */
+.cb-capabilities__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-card);
+  background: var(--cb-surface-raised);
+  padding: 10px 14px;
+}
+
+.cb-capabilities__selected {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+.cb-capabilities__selected strong {
+  color: var(--cb-fg);
+  font-family: var(--cb-font-mono);
+  font-weight: 700;
+}
+
+.cb-capabilities__analyzed {
+  white-space: nowrap;
+}
+
+.cb-capabilities__select-all {
+  white-space: nowrap;
+}
+
+.cb-capabilities__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 链接式按钮（全选等次要动作）。 */
+.cb-link {
+  border: none;
+  background: none;
+  color: var(--cb-accent);
+  font-size: 13px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.cb-link:disabled {
+  color: var(--cb-muted);
+  cursor: default;
+}
+
+/* 能力行卡：左勾选 28px / 中主体 / 右动作区。 */
+.cb-cap-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-card);
+  background: var(--cb-surface-raised);
+  padding: 14px 16px;
+}
+
+.cb-cap-card[data-selected='true'] {
+  border-color: var(--cb-accent);
+  background: color-mix(in srgb, var(--cb-accent) 6%, transparent);
+}
+
+.cb-cap-card__select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cb-cap-card__checkbox {
+  margin: 0;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--cb-accent);
+}
+
+.cb-cap-card__published-mark {
+  color: var(--cb-badge-ok);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.cb-cap-card__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cb-cap-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cb-cap-card__name {
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.cb-cap-card__type {
+  font-size: 12px;
+  color: var(--cb-accent);
+  border: 1px solid color-mix(in srgb, var(--cb-accent) 28%, transparent);
+  border-radius: var(--cb-radius-pill);
+  background: var(--cb-accent-soft);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.cb-cap-card__intent {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--cb-muted);
+}
+
+.cb-cap-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 132px;
+}
+
+.cb-cap-card__trial {
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-control);
+  background: var(--cb-surface);
+  color: var(--cb-accent);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cb-cap-card__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--cb-muted);
+}
+
+.cb-cap-card__status-label {
+  font-weight: 600;
+}
+
+.cb-cap-card__status[data-state='published'] .cb-cap-card__status-label {
+  color: var(--cb-badge-ok);
+}
+
+.cb-cap-card__status[data-state='failed'] .cb-cap-card__status-label {
+  color: var(--cb-warn);
+}
+
+.cb-cap-card__status-msg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cb-muted);
+}
+
+.cb-cap-card__retry {
+  border: none;
+  background: none;
+  color: var(--cb-accent);
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* 底部动作区：细线隔开，主按钮/进度句右对齐。 */
+.cb-capabilities__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+  border-top: 1px solid var(--cb-border);
+  padding-top: 16px;
+}
+
+.cb-capabilities__publish {
+  min-width: 220px;
+  justify-content: center;
+}
+
+.cb-capabilities__progress {
+  margin: 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+@media (max-width: 720px) {
+  .cb-capabilities__toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .cb-capabilities__analyzed {
+    display: block;
+    white-space: normal;
+  }
+  .cb-cap-card {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+  .cb-cap-card__actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    min-width: 0;
+  }
+  .cb-capabilities__foot {
+    align-items: stretch;
+  }
+  .cb-capabilities__publish {
+    width: 100%;
+  }
+}
+
+/* ===== 统一交互状态层（B2/B3）：焦点可见 + 指针反馈（逐字提取） ===== */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--cb-focus-ring);
+  outline-offset: 2px;
+}
+.cb-primary-btn:hover:not(:disabled) {
+  background: var(--cb-accent-strong);
+}
+.cb-primary-btn:active:not(:disabled) {
+  background: var(--cb-accent-pressed);
+}
+.cb-copy:hover,
+.cb-cap-card__trial:hover {
+  border-color: var(--cb-accent);
+  color: var(--cb-accent);
+}
+
+/* —— 预览卡自用样式（demo-only，非 DS 产物）：无外壳侧栏，760px 容器承托 —— */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: var(--cb-space-6);
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+.demo-shell { max-width: 760px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<div class="demo-shell">
+
+  <!-- 提取完成（succeeded）：整页成果形态 — TaskDetailPage 的 section.cb-page.cb-capabilities -->
+  <section class="cb-page cb-capabilities" aria-labelledby="cb-task-detail-title">
+
+    <p class="cb-page__back">
+      <a href="#">← 返回任务列表</a>
+    </p>
+
+    <header class="cb-capabilities__header">
+      <p class="cb-capabilities__eyebrow">提取完成 · 能力</p>
+      <h2 class="cb-capabilities__title" id="cb-task-detail-title">
+        你的能力，挑选后一键发布
+      </h2>
+      <p class="cb-capabilities__lead">
+        这次上传共提取出 6 个能力。点任意一项可直接打开「试用」跑一遍，确认后勾选、一键发布到市集；历史全部能力在<a class="cb-link" href="#">能力页</a>。
+      </p>
+    </header>
+
+    <!-- CapabilityPicker：统计工具条 -->
+    <div class="cb-capabilities__toolbar">
+      <span class="cb-capabilities__selected">
+        已选 <strong>5</strong> / 6 项<span class="cb-capabilities__analyzed"> · 上传 12 个分片 · 识别出 6 项</span>
+      </span>
+      <button type="button" class="cb-link cb-capabilities__select-all">取消全选</button>
+    </div>
+
+    <!-- CapabilityPicker：勾选行卡列表（6 张，覆盖 已发布/选中/发布中/失败/取消选） -->
+    <ul class="cb-capabilities__list" aria-label="能力卡列表">
+
+      <!-- 卡1 · 已发布：绿 ✓ 标记 + 已发布状态 + 完整试用链接 + 复制 -->
+      <li class="cb-cap-card" data-status="published" data-selected="false">
+        <div class="cb-cap-card__select">
+          <span class="cb-cap-card__published-mark" aria-hidden="true">✓</span>
+        </div>
+        <div class="cb-cap-card__body">
+          <div class="cb-cap-card__head">
+            <span class="cb-cap-card__name">女装主推款 CTR 判断</span>
+            <span class="cb-cap-card__type">网页</span>
+          </div>
+          <p class="cb-cap-card__intent">输入最新素材数据，判断哪个候选款该接管主推位</p>
+        </div>
+        <div class="cb-cap-card__actions">
+          <a class="cb-cap-card__trial" href="#">试用 →</a>
+          <div class="cb-cap-card__status" data-state="published">
+            <span class="cb-cap-card__status-label">已发布</span>
+            <span class="cb-cap-card__status-msg">
+              <code class="cb-caps__token">https://combo.app/try/c/8fa21c</code>
+              <button type="button" class="cb-copy">复制</button>
+            </span>
+          </div>
+        </div>
+      </li>
+
+      <!-- 卡2 · 选中（勾选默认打勾） -->
+      <li class="cb-cap-card" data-status="ready" data-selected="true">
+        <div class="cb-cap-card__select">
+          <input type="checkbox" class="cb-cap-card__checkbox" checked aria-label="选择能力「小红书封面文案生成」" />
+        </div>
+        <div class="cb-cap-card__body">
+          <div class="cb-cap-card__head">
+            <span class="cb-cap-card__name">小红书封面文案生成</span>
+            <span class="cb-cap-card__type">文档</span>
+          </div>
+          <p class="cb-cap-card__intent">把课程笔记包装成可发布的图文卡文案</p>
+        </div>
+        <div class="cb-cap-card__actions">
+          <a class="cb-cap-card__trial" href="#">试用 →</a>
+        </div>
+      </li>
+
+      <!-- 卡3 · 选中 -->
+      <li class="cb-cap-card" data-status="ready" data-selected="true">
+        <div class="cb-cap-card__select">
+          <input type="checkbox" class="cb-cap-card__checkbox" checked aria-label="选择能力「投放预算再分配建议」" />
+        </div>
+        <div class="cb-cap-card__body">
+          <div class="cb-cap-card__head">
+            <span class="cb-cap-card__name">投放预算再分配建议</span>
+            <span class="cb-cap-card__type">网页</span>
+          </div>
+          <p class="cb-cap-card__intent">按各计划 ROI 给出加减预算的方案</p>
+        </div>
+        <div class="cb-cap-card__actions">
+          <a class="cb-cap-card__trial" href="#">试用 →</a>
+        </div>
+      </li>
+
+      <!-- 卡4 · 发布中：状态槽「发布中…」 -->
+      <li class="cb-cap-card" data-status="publishing" data-selected="true">
+        <div class="cb-cap-card__select">
+          <input type="checkbox" class="cb-cap-card__checkbox" checked aria-label="选择能力「竞品评论情感聚类」" />
+        </div>
+        <div class="cb-cap-card__body">
+          <div class="cb-cap-card__head">
+            <span class="cb-cap-card__name">竞品评论情感聚类</span>
+            <span class="cb-cap-card__type">代码</span>
+          </div>
+          <p class="cb-cap-card__intent">抓取评论按情感与主题聚类</p>
+        </div>
+        <div class="cb-cap-card__actions">
+          <a class="cb-cap-card__trial" href="#">试用 →</a>
+          <div class="cb-cap-card__status" data-state="publishing">
+            <span class="cb-cap-card__status-label">发布中…</span>
+          </div>
+        </div>
+      </li>
+
+      <!-- 卡5 · 失败：状态「失败」+ 人话消息 + 单独重试 -->
+      <li class="cb-cap-card" data-status="failed" data-selected="true">
+        <div class="cb-cap-card__select">
+          <input type="checkbox" class="cb-cap-card__checkbox" checked aria-label="选择能力「直播话术复盘」" />
+        </div>
+        <div class="cb-cap-card__body">
+          <div class="cb-cap-card__head">
+            <span class="cb-cap-card__name">直播话术复盘</span>
+            <span class="cb-cap-card__type">文档</span>
+          </div>
+          <p class="cb-cap-card__intent">逐段点评话术并给改写</p>
+        </div>
+        <div class="cb-cap-card__actions">
+          <a class="cb-cap-card__trial" href="#">试用 →</a>
+          <div class="cb-cap-card__status" data-state="failed">
+            <span class="cb-cap-card__status-label">失败</span>
+            <span class="cb-cap-card__status-msg">令牌生成失败</span>
+            <button type="button" class="cb-cap-card__retry">重试</button>
+          </div>
+        </div>
+      </li>
+
+      <!-- 卡6 · 取消选（未勾选） -->
+      <li class="cb-cap-card" data-status="ready" data-selected="false">
+        <div class="cb-cap-card__select">
+          <input type="checkbox" class="cb-cap-card__checkbox" aria-label="选择能力「库存周转异常预警」" />
+        </div>
+        <div class="cb-cap-card__body">
+          <div class="cb-cap-card__head">
+            <span class="cb-cap-card__name">库存周转异常预警</span>
+            <span class="cb-cap-card__type">网页</span>
+          </div>
+          <p class="cb-cap-card__intent">识别滞销与断货风险 SKU</p>
+        </div>
+        <div class="cb-cap-card__actions">
+          <a class="cb-cap-card__trial" href="#">试用 →</a>
+        </div>
+      </li>
+
+    </ul>
+
+    <!-- CapabilityPicker：底部动作区（右对齐）— 汇总进度句 + 一键发布主按钮 -->
+    <footer class="cb-capabilities__foot">
+      <p class="cb-capabilities__progress" role="status" aria-live="polite">
+        正在逐个发布：已处理 4 / 5（成功 3 · 失败 1）
+      </p>
+      <button type="button" class="cb-primary-btn cb-capabilities__publish">一键发布到市集 · 5 项</button>
+    </footer>
+
+  </section>
+
+</div>
+</body>
+</html>

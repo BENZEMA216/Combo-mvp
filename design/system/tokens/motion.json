@@ -1,0 +1,9 @@
+{
+  "semantic": {
+    "duration-fast": { "$type": "duration", "$value": "{motion.duration.fast}" },
+    "duration-base": { "$type": "duration", "$value": "{motion.duration.base}" },
+    "duration-slow": { "$type": "duration", "$value": "{motion.duration.slow}" },
+    "ease-standard": { "$type": "cubicBezier", "$value": "{motion.easing.standard}" },
+    "ease-decelerate": { "$type": "cubicBezier", "$value": "{motion.easing.decelerate}" }
+  }
+}

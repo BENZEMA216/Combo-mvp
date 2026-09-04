@@ -1,0 +1,281 @@
+<!-- @dsCard group="01 · 基础 Foundations" name="Typography" subtitle="四个字族条 + 字号阶梯 xs..3xl（本地回退栈渲染）" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combo DS · Typography</title>
+<style>
+/* 生成物勿手改。
+ * 本文件由 packages/ds-tokens/build.mjs 从 tokens/primitives.json、tokens/semantic.json、
+ * tokens/motion.json 构建生成；修改 token 请改源 JSON 后重新执行 pnpm -F @cb/ds-tokens build。 */
+
+:root {
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-rail: #f7f7f7;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-skeleton: #eeeae3;
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+  --cb-danger-line: color-mix(in srgb, var(--cb-danger) 28%, transparent);
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-dialog-w: 440px;
+  --cb-thread-w-md: 36rem;
+  --cb-thread-w-lg: 46rem;
+  --cb-focus-ring-w: 2px;
+  --cb-indicator-w: 2px;
+  --cb-bar-w: 3px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-rail: #1f1e1b;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-skeleton: #2e2b28;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  padding: var(--cb-space-6);
+}
+
+.wrap { max-width: 960px; margin: 0 auto; }
+
+.page-title {
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.page-sub {
+  margin-top: var(--cb-space-1);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+.panel {
+  background: var(--cb-paper);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: var(--cb-space-5);
+  margin-top: var(--cb-space-5);
+}
+
+.panel-title {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cb-muted);
+  padding-bottom: var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-3);
+}
+
+/* —— 字族条 —— */
+
+.family-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--cb-space-4);
+  align-items: baseline;
+  padding: var(--cb-space-4) 0;
+  border-bottom: 1px solid var(--cb-line-3);
+}
+
+.family-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+@media (max-width: 720px) {
+  .family-row { grid-template-columns: 1fr; gap: var(--cb-space-1); }
+}
+
+.family-name {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-fg);
+}
+
+.family-stack {
+  margin-top: var(--cb-space-1);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  overflow-wrap: anywhere;
+}
+
+.family-sample { font-size: var(--cb-text-xl); line-height: 1.4; overflow-wrap: anywhere; }
+.family-sample--brand { font-family: var(--cb-font-brand); font-weight: 600; }
+.family-sample--serif { font-family: var(--cb-font-serif); }
+.family-sample--sans { font-family: var(--cb-font-sans); font-size: var(--cb-text-lg); }
+.family-sample--mono { font-family: var(--cb-font-mono); font-size: var(--cb-text-md); }
+
+/* —— 字号阶梯 —— */
+
+.scale-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--cb-space-4);
+  align-items: baseline;
+  padding: var(--cb-space-3) 0;
+  border-bottom: 1px solid var(--cb-line-3);
+}
+
+.scale-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+@media (max-width: 720px) {
+  .scale-row { grid-template-columns: 1fr; gap: var(--cb-space-1); }
+}
+
+.scale-name {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+
+.scale-sample { line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-xs  { font-size: var(--cb-text-xs); }
+.s-sm  { font-size: var(--cb-text-sm); }
+.s-md  { font-size: var(--cb-text-md); }
+.s-lg  { font-size: var(--cb-text-lg); }
+.s-xl  { font-size: var(--cb-text-xl); }
+.s-2xl { font-size: var(--cb-text-2xl); }
+.s-3xl { font-size: var(--cb-text-3xl); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">Typography</h1>
+  <p class="page-sub">font family &amp; size tokens · 无外链字体，按 token 本地回退栈渲染</p>
+
+  <section class="panel">
+    <div class="panel-title">字族 Font Family</div>
+
+    <div class="family-row">
+      <div>
+        <div class="family-name">--cb-font-brand</div>
+        <div class="family-stack">'Fraunces', 'Noto Serif SC', serif</div>
+      </div>
+      <div class="family-sample family-sample--brand">Combo 能力 Capability Deck</div>
+    </div>
+
+    <div class="family-row">
+      <div>
+        <div class="family-name">--cb-font-serif</div>
+        <div class="family-stack">'Noto Serif SC', 'Songti SC', 'STSong', serif</div>
+      </div>
+      <div class="family-sample family-sample--serif">把一次真实会话，沉淀成一个可复用的能力。</div>
+    </div>
+
+    <div class="family-row">
+      <div>
+        <div class="family-name">--cb-font-sans</div>
+        <div class="family-stack">'Noto Sans SC', -apple-system, 'PingFang SC', …, sans-serif</div>
+      </div>
+      <div class="family-sample family-sample--sans">界面正文使用无衬线字族，中英混排 Interface 0123456789。</div>
+    </div>
+
+    <div class="family-row">
+      <div>
+        <div class="family-name">--cb-font-mono</div>
+        <div class="family-stack">'Geist Mono', ui-monospace, 'SFMono-Regular', …, monospace</div>
+      </div>
+      <div class="family-sample family-sample--mono">cb-badge --cb-accent #a73718 cubic-bezier(0.2, 0, 0, 1)</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">字号阶梯 Type Scale</div>
+
+    <div class="scale-row"><div class="scale-name">--cb-text-3xl · 32px</div><div class="scale-sample s-3xl">把会话炼成能力</div></div>
+    <div class="scale-row"><div class="scale-name">--cb-text-2xl · 24px</div><div class="scale-sample s-2xl">把会话炼成能力</div></div>
+    <div class="scale-row"><div class="scale-name">--cb-text-xl · 18px</div><div class="scale-sample s-xl">把会话炼成能力</div></div>
+    <div class="scale-row"><div class="scale-name">--cb-text-lg · 14px</div><div class="scale-sample s-lg">把会话炼成能力</div></div>
+    <div class="scale-row"><div class="scale-name">--cb-text-md · 13px</div><div class="scale-sample s-md">把会话炼成能力</div></div>
+    <div class="scale-row"><div class="scale-name">--cb-text-sm · 12px</div><div class="scale-sample s-sm">把会话炼成能力</div></div>
+    <div class="scale-row"><div class="scale-name">--cb-text-xs · 11px</div><div class="scale-sample s-xs">把会话炼成能力</div></div>
+  </section>
+</div>
+</body>
+</html>

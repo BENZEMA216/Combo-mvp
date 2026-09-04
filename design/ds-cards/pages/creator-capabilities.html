@@ -1,0 +1,1154 @@
+<!-- @dsCard group="06 · 创作侧 Creator" name="④ 我的能力页" subtitle="实装镜像：左侧栏+能力列表(已发布/未发布徽章·分享试用链接·发布/下架·去试用)。名词=能力(经验体已退役)" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Combo DS · 我的能力页</title>
+<style>
+/* 生成物勿手改。
+ * :root / [data-cb-theme='dark'] token 块与 components/markdown.html 逐字一致（同一 ds-tokens 源头）；
+ * 侧栏/进度/徽章新增 token 的真值取自 packages/ds-tokens/dist/tokens.css。
+ * 下面的 .cb-* 组件规则与 apps/web/src/styles.css 实装逐字一致（改样式改源 .css 后重新构建）。 */
+
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+
+  /* —— 补：markdown.html 未含、本卡侧栏/进度/徽章用到（真值取自 packages/ds-tokens/dist/tokens.css） —— */
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-rail: #f7f7f7;
+  --cb-skeleton: #eeeae3;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+
+  /* —— 补：dark 覆盖（真值取自 tokens.css；badge-ok/*-soft 经 var/color-mix 自动跟随） —— */
+  --cb-rail: #1f1e1b;
+  --cb-skeleton: #2e2b28;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--cb-font-sans);
+  color: var(--cb-fg);
+  background: var(--cb-bg);
+}
+
+/* ---------- Shell（左侧固定侧栏 + 主内容区） ---------- */
+.cb-shell {
+  display: grid;
+  grid-template-columns: var(--cb-sidebar-w) 1fr;
+  min-height: 100vh;
+  transition: grid-template-columns 0.18s ease;
+}
+
+/* 收起态：侧栏收窄为纯图标态，主区相应变宽。 */
+.cb-shell[data-collapsed='true'] {
+  grid-template-columns: var(--cb-sidebar-w-collapsed) 1fr;
+}
+
+.cb-shell__sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--cb-border);
+  background: var(--cb-rail);
+  padding: 20px 16px;
+  min-width: 0;
+}
+
+/* ---- 品牌字标 + 收起开关 ---- */
+.cb-shell__brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 12px;
+  border-bottom: 1px solid var(--cb-border);
+}
+
+.cb-shell__brand-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--cb-fg);
+  min-width: 0;
+}
+
+/* 展开态隐去徽标，仅留 Combo 字标；收起态再现身做品牌锚。底色/字体来自 cb-brand-mark。 */
+.cb-shell__brand-mark {
+  display: none;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  font-size: 14px;
+}
+
+.cb-shell__brand-word {
+  font-size: 28px;
+  white-space: nowrap;
+}
+
+.cb-shell__collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  border-radius: 6px;
+  color: var(--cb-muted);
+  cursor: pointer;
+}
+
+.cb-shell__collapse-icon {
+  transition: transform 0.18s ease;
+}
+
+/* ---- 导航 ---- */
+.cb-shell__nav {
+  flex: 1;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+
+.cb-shell__navlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cb-shell__navlink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 12px;
+  margin: 2px 0;
+  border-radius: 6px;
+  color: var(--cb-fg);
+  font-size: 15px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cb-shell__navlink:hover {
+  background: var(--cb-surface);
+  color: var(--cb-fg);
+}
+
+.cb-shell__navicon {
+  flex: 0 0 auto;
+}
+
+.cb-shell__navlink--active {
+  background: var(--cb-surface);
+  color: var(--cb-accent);
+  font-weight: 600;
+}
+
+/* ---- 底部账号常驻区 ---- */
+.cb-shell__account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 8px 2px;
+  border-top: 1px solid var(--cb-border);
+  min-width: 0;
+}
+
+.cb-shell__account-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cb-shell__account-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--cb-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-shell__account-title {
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+/* ---- 头像（底部 / 顶栏共用；缺省走首字母兜底，非破图） ---- */
+.cb-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: var(--cb-radius-pill);
+  background: var(--cb-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  object-fit: cover;
+}
+
+/* ---- 收起态（纯图标）：隐文字、居中图标、品牌只留徽标 ---- */
+.cb-shell[data-collapsed='true'] .cb-shell__brand {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cb-shell[data-collapsed='true'] .cb-shell__brand-mark {
+  display: inline-flex;
+}
+
+.cb-shell[data-collapsed='true'] .cb-shell__brand-word,
+.cb-shell[data-collapsed='true'] .cb-shell__navlabel,
+.cb-shell[data-collapsed='true'] .cb-shell__account-meta {
+  display: none;
+}
+
+.cb-shell[data-collapsed='true'] .cb-shell__navlink {
+  justify-content: center;
+  gap: 0;
+  padding: 8px;
+}
+
+.cb-shell[data-collapsed='true'] .cb-shell__account {
+  justify-content: center;
+}
+
+/* ---- 主区 ---- */
+.cb-shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--cb-surface-raised);
+}
+
+.cb-shell__content {
+  padding: clamp(28px, 4vw, 48px) clamp(28px, 5vw, 64px);
+  flex: 1;
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+}
+
+.cb-section-kicker {
+  margin: 0 0 6px;
+  color: var(--cb-accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+/* 窄屏响应式：提前收窄为图标态，让主内容保留足够排版宽度。 */
+@media (max-width: 900px) {
+  .cb-shell {
+    grid-template-columns: var(--cb-sidebar-w-collapsed) 1fr;
+  }
+
+  .cb-shell__sidebar {
+    padding: 16px 12px;
+  }
+
+  .cb-shell__brand {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .cb-shell__brand-mark {
+    display: inline-flex;
+  }
+
+  .cb-shell__brand-word,
+  .cb-shell__navlabel,
+  .cb-shell__account-meta {
+    display: none;
+  }
+
+  .cb-shell__navlink {
+    justify-content: center;
+    gap: 0;
+    padding: 8px;
+  }
+
+  .cb-shell__account {
+    justify-content: center;
+  }
+
+  .cb-shell__content {
+    padding: 28px 32px;
+  }
+}
+
+@media (max-width: 620px) {
+  .cb-shell__content {
+    padding: 24px 20px;
+  }
+}
+
+/* ---------- 页面通用 ---------- */
+.cb-page__title {
+  font-family: var(--cb-font-serif);
+  margin: 0 0 8px;
+}
+
+.cb-page__head {
+  margin-bottom: 20px;
+}
+
+.cb-page--tasks {
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+/* 页头左标题右主按钮。 */
+.cb-page__head--split {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.cb-page__head--split > :first-child {
+  flex: 1 1 0;
+  min-width: 280px;
+  max-width: 640px;
+}
+
+.cb-page__head--split .cb-primary-btn {
+  margin-top: 2px;
+}
+
+.cb-page__lead {
+  color: var(--cb-muted);
+  font-size: 14px;
+  margin: 4px 0 0;
+  line-height: 1.65;
+}
+
+/* 主按钮（新建任务 / 重试 / 去能力页）。 */
+.cb-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: var(--cb-accent);
+  color: #fff;
+  border-radius: var(--cb-radius-control);
+  padding: 8px 20px;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cb-primary-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---------- 复制按钮 ---------- */
+.cb-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  color: var(--cb-fg);
+  border-radius: var(--cb-radius-control);
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cb-copy:hover {
+  border-color: var(--cb-accent);
+  color: var(--cb-accent);
+}
+
+/* ---------- 配对引导卡（配对码明文仅此一次） ---------- */
+.cb-pairing {
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-card);
+  background: var(--cb-surface-raised);
+  box-shadow: var(--cb-shadow-surface);
+  padding: 18px 22px;
+  margin-bottom: 24px;
+}
+
+.cb-pairing__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.cb-pairing__header > div:first-child {
+  min-width: 0;
+  max-width: 560px;
+}
+
+.cb-pairing__eyebrow {
+  margin: 0 0 4px;
+  color: var(--cb-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cb-pairing__title {
+  font-family: var(--cb-font-serif);
+  font-size: 20px;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.cb-pairing__summary {
+  margin: 8px 0 0;
+  color: var(--cb-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.cb-pairing__code-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-top: 1px solid var(--cb-line-3);
+  padding-top: 16px;
+  margin-bottom: 16px;
+}
+
+.cb-pairing__label {
+  color: var(--cb-accent);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cb-pairing__code {
+  font-family: var(--cb-font-mono);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  background: var(--cb-accent-soft);
+  border-radius: 6px;
+  padding: 7px 12px;
+  overflow-wrap: anywhere;
+}
+
+.cb-pairing__note {
+  color: var(--cb-muted);
+  font-size: 13px;
+}
+
+.cb-pairing__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.cb-pairing__detail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cb-accent);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.cb-pairing__dismiss {
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  color: var(--cb-muted);
+  border-radius: var(--cb-radius-control);
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cb-pairing__phase {
+  margin: 0;
+  color: var(--cb-muted);
+  font-size: 13px;
+}
+
+.cb-pairing__details {
+  margin-top: 12px;
+  border-top: 1px solid var(--cb-line-3);
+  padding-top: 12px;
+  color: var(--cb-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cb-pairing__details summary {
+  width: max-content;
+  color: var(--cb-muted);
+  cursor: pointer;
+}
+
+.cb-pairing__details p {
+  max-width: 720px;
+  margin: 8px 0 0;
+}
+
+/* ---------- 连接命令框 ---------- */
+.cb-cmdbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cb-cmdbox__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cb-cmdbox__hint {
+  font-size: 12px;
+  color: var(--cb-muted);
+}
+
+.cb-cmdbox__command {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--cb-fg);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+/* 命令整行折行显示：命令是复制目标不是阅读对象，折行让整条可见、无截断无滚动条。 */
+.cb-cmdbox__command-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--cb-line-2);
+  font-family: var(--cb-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cb-cmdbox__copy {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--cb-line-2);
+  border-color: var(--cb-muted);
+}
+
+/* ---------- 任务列表 ---------- */
+.cb-tasks-panel {
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-card);
+  background: var(--cb-surface);
+  overflow: hidden;
+}
+
+.cb-tasks-panel__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 24px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--cb-border);
+}
+
+.cb-tasks-panel__header > div:first-child {
+  max-width: 380px;
+}
+
+.cb-tasks-panel__title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: 18px;
+}
+
+.cb-tasks-panel__hint {
+  margin: 6px 0 0;
+  color: var(--cb-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cb-tasks-panel__body {
+  padding: 16px 22px 20px;
+}
+
+.cb-tasks-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(82px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.cb-tasks-stats div {
+  min-width: 82px;
+  border: 1px solid var(--cb-border);
+  border-radius: 6px;
+  background: var(--cb-surface-raised);
+  padding: 10px 12px;
+}
+
+.cb-tasks-stats dt {
+  color: var(--cb-muted);
+  font-size: 12px;
+}
+
+.cb-tasks-stats dd {
+  margin: 3px 0 0;
+  color: var(--cb-fg);
+  font-family: var(--cb-font-serif);
+  font-size: 20px;
+  line-height: 1;
+}
+
+@media (max-width: 900px) {
+  .cb-tasks-panel__header {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .cb-tasks-panel__header > div:first-child {
+    max-width: none;
+  }
+
+  .cb-tasks-stats {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cb-tasks-stats div {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  .cb-page__head--split {
+    gap: 12px;
+  }
+
+  .cb-page__head--split > :first-child {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .cb-page__head--split .cb-primary-btn {
+    width: 100%;
+    justify-content: center;
+    margin-top: 0;
+  }
+
+  .cb-pairing {
+    padding: 16px;
+  }
+
+  .cb-pairing__header,
+  .cb-pairing__actions,
+  .cb-cmdbox__head,
+  .cb-cmdbox__command {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .cb-pairing__header {
+    gap: 12px;
+  }
+
+  .cb-pairing__detail,
+  .cb-pairing__dismiss,
+  .cb-cmdbox__copy {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+  }
+
+  .cb-tasks-panel__header,
+  .cb-tasks-panel__body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .cb-tasks-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.cb-tasks-table {
+  margin-top: 4px;
+}
+
+.cb-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--cb-muted);
+  border-bottom: 1px solid var(--cb-border);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.cb-table td {
+  border-bottom: 1px solid var(--cb-border);
+  padding: 12px;
+  vertical-align: top;
+}
+
+.cb-table tbody tr:hover {
+  background: var(--cb-surface-raised);
+}
+
+.cb-task-link {
+  color: var(--cb-fg);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.cb-task-link:hover {
+  color: var(--cb-accent);
+}
+
+.cb-task-time {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--cb-muted);
+}
+
+.cb-task-error {
+  color: var(--cb-danger);
+  font-size: 13px;
+}
+
+/* ---------- 状态徽章 ---------- */
+.cb-status-badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--cb-skeleton);
+  color: var(--cb-muted);
+}
+
+.cb-status-badge.is-published {
+  background: var(--cb-ok-soft);
+  color: var(--cb-badge-ok);
+}
+
+.cb-status-badge.is-pending {
+  background: var(--cb-warn-soft);
+  color: var(--cb-warn);
+}
+
+.cb-status-badge.is-rejected {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+}
+
+.cb-status-badge.is-unpublished {
+  background: var(--cb-skeleton);
+  color: var(--cb-muted);
+}
+
+/* ---------- cursor 分页器 ---------- */
+.cb-pager {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.cb-pager__more {
+  border: 1px solid var(--cb-border);
+  background: var(--cb-surface);
+  color: var(--cb-fg);
+  border-radius: 6px;
+  padding: 7px 18px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.cb-pager__more:disabled {
+  color: var(--cb-muted);
+  cursor: default;
+}
+
+.cb-pager__end {
+  color: var(--cb-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ===== 统一交互状态层（B2/B3）：焦点可见 + 指针反馈，全站一致 ===== */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--cb-focus-ring);
+  outline-offset: 2px;
+}
+
+.cb-primary-btn:hover:not(:disabled) {
+  background: var(--cb-accent-strong);
+}
+.cb-primary-btn:active:not(:disabled) {
+  background: var(--cb-accent-pressed);
+}
+
+.cb-pager__more:hover:not(:disabled),
+.cb-pairing__dismiss:hover {
+  border-color: var(--cb-accent);
+  color: var(--cb-accent);
+}
+
+/* —— 预览卡自用样式（demo-only，非 DS 产物）：把 100vh 应用壳收成一屏卡；SVG 字标定高 —— */
+.cb-card-stage {
+  max-width: 1240px;
+  margin: 0 auto;
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-card);
+  overflow: hidden;
+  box-shadow: var(--cb-shadow-hero);
+  background: var(--cb-surface-raised);
+}
+
+.cb-card-stage .cb-shell {
+  min-height: 720px;
+}
+
+.cb-wordmark {
+  height: 26px;
+  width: auto;
+  display: block;
+}
+
+/* ---------- 能力页列表（apps/web/src/styles.css，逐字） ---------- */
+.cb-caps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.cb-caps__item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--cb-border);
+}
+.cb-caps__main {
+  min-width: 0;
+}
+.cb-caps__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.cb-caps__kind {
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--cb-muted);
+}
+.cb-caps__summary {
+  margin: 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+  line-height: 1.6;
+}
+.cb-caps__share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+.cb-caps__token {
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
+  background: var(--cb-accent-soft);
+  border-radius: 4px;
+  padding: 2px 6px;
+  overflow-wrap: anywhere;
+}
+.cb-caps__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.cb-caps__trial {
+  color: var(--cb-accent);
+  font-size: 14px;
+  text-decoration: none;
+}
+.cb-caps__trial:hover {
+  text-decoration: underline;
+}
+.cb-caps__toggle {
+  border: 1px solid var(--cb-accent);
+  background: var(--cb-surface);
+  color: var(--cb-accent);
+  border-radius: var(--cb-radius-control);
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cb-caps__toggle[data-published='true'] {
+  border-color: var(--cb-border);
+  color: var(--cb-muted);
+}
+.cb-caps__toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+</style>
+</head>
+<body>
+<div class="cb-card-stage">
+  <!-- Shell：左侧固定侧栏 + 主内容区（apps/web/src/shell/Shell.tsx 结构）。展开态。 -->
+  <div class="cb-shell" data-collapsed="false">
+    <aside class="cb-shell__sidebar" aria-label="侧边导航">
+      <div class="cb-shell__brand">
+        <a href="#" class="cb-shell__brand-link" aria-label="Combo 创作者中心 首页">
+          <!-- Combo SVG 字标（复用 shelf-a-editorial.html · sh-wordmark，逐字照抄） -->
+          <svg class="cb-shell__brand-word cb-wordmark" viewBox="282 94 335 128" fill="none" role="img" aria-label="Combo">
+            <path d="M347.153 170.776C346.929 174.072 346.097 177.16 344.657 180.04C343.217 182.888 341.265 185.4 338.801 187.576C336.369 189.752 333.505 191.448 330.209 192.664C326.913 193.88 323.329 194.488 319.457 194.488C312.769 194.488 307.009 193.08 302.177 190.264C297.377 187.416 293.665 183.448 291.041 178.36C288.449 173.272 287.153 167.32 287.153 160.504C287.153 155.192 287.953 150.344 289.553 145.96C291.185 141.544 293.489 137.736 296.465 134.536C299.441 131.336 302.993 128.872 307.121 127.144C311.281 125.384 315.873 124.504 320.897 124.504C323.745 124.504 326.161 124.792 328.145 125.368C330.161 125.944 331.761 126.536 332.945 127.144C334.129 127.72 334.897 128.008 335.249 128.008C335.761 128.008 336.513 127.72 337.505 127.144C338.497 126.568 339.457 125.992 340.385 125.416C341.313 124.84 341.937 124.552 342.257 124.552C342.449 124.552 342.625 124.648 342.785 124.84C342.945 125 343.057 125.288 343.121 125.704L347.345 146.488C347.441 146.84 347.441 147.128 347.345 147.352C347.281 147.576 347.089 147.72 346.769 147.784C346.513 147.848 346.289 147.816 346.097 147.688C345.905 147.528 345.713 147.24 345.521 146.824C343.633 141.8 341.569 137.832 339.329 134.92C337.089 132.008 334.801 129.944 332.465 128.728C330.129 127.48 327.857 126.856 325.649 126.856C323.377 126.856 321.265 127.448 319.313 128.632C317.393 129.784 315.681 131.528 314.177 133.864C312.673 136.168 311.505 139.016 310.673 142.408C309.841 145.8 309.425 149.72 309.425 154.168C309.425 161.528 310.257 167.576 311.921 172.312C313.617 177.016 315.953 180.504 318.929 182.776C321.937 185.016 325.377 186.136 329.249 186.136C333.249 186.136 336.785 184.856 339.857 182.296C342.929 179.736 344.961 175.848 345.953 170.632C346.049 170.344 346.145 170.136 346.241 170.008C346.337 169.88 346.465 169.816 346.625 169.816C346.849 169.848 346.993 169.96 347.057 170.152C347.153 170.312 347.185 170.52 347.153 170.776ZM374.81 148.792C379.45 148.792 383.53 149.768 387.05 151.72C390.602 153.64 393.37 156.312 395.354 159.736C397.37 163.16 398.378 167.112 398.378 171.592C398.378 175.944 397.338 179.8 395.258 183.16C393.178 186.52 390.314 189.176 386.666 191.128C383.018 193.048 378.81 194.008 374.042 194.008C369.434 194.008 365.354 193.064 361.802 191.176C358.25 189.256 355.466 186.616 353.45 183.256C351.466 179.864 350.474 175.96 350.474 171.544C350.474 167.192 351.53 163.304 353.642 159.88C355.754 156.456 358.65 153.752 362.33 151.768C366.01 149.784 370.17 148.792 374.81 148.792ZM377.594 192.616C378.778 192.456 379.642 191.576 380.186 189.976C380.762 188.344 381.034 185.928 381.002 182.728C380.97 179.528 380.586 175.512 379.85 170.68C379.146 165.848 378.362 161.896 377.498 158.824C376.634 155.72 375.69 153.48 374.666 152.104C373.674 150.696 372.586 150.088 371.402 150.28C370.282 150.472 369.434 151.384 368.858 153.016C368.314 154.616 368.074 157 368.138 160.168C368.202 163.336 368.57 167.352 369.242 172.216C369.946 177.048 370.714 181 371.546 184.072C372.41 187.144 373.338 189.384 374.33 190.792C375.354 192.2 376.442 192.808 377.594 192.616ZM422.404 149.608V189.592C422.404 190.04 422.516 190.456 422.74 190.84C422.964 191.192 423.268 191.416 423.652 191.512L425.428 191.896C425.812 191.992 426.004 192.168 426.004 192.424C426.004 192.808 425.732 193 425.188 193H402.004C401.748 193 401.556 192.952 401.428 192.856C401.3 192.728 401.236 192.6 401.236 192.472C401.236 192.344 401.3 192.216 401.428 192.088C401.588 191.96 401.78 191.864 402.004 191.8L403.684 191.416C404.132 191.32 404.436 191.128 404.596 190.84C404.756 190.552 404.836 190.184 404.836 189.736V156.232C404.836 155.88 404.772 155.608 404.644 155.416C404.548 155.224 404.34 155.128 404.02 155.128H401.956C401.796 155.096 401.668 155.032 401.572 154.936C401.476 154.84 401.428 154.728 401.428 154.6C401.428 154.44 401.476 154.312 401.572 154.216C401.7 154.088 401.892 153.992 402.148 153.928L419.908 148.888C420.26 148.76 420.548 148.68 420.772 148.648C421.028 148.616 421.268 148.6 421.492 148.6C421.844 148.6 422.084 148.712 422.212 148.936C422.34 149.128 422.404 149.352 422.404 149.608ZM421.06 160.504L420.244 159.784L422.02 158.056C425.54 154.728 428.836 152.36 431.908 150.952C434.98 149.512 437.7 148.792 440.068 148.792C443.108 148.792 445.556 149.72 447.412 151.576C449.3 153.432 450.244 156.392 450.244 160.456V190.12C450.244 190.568 450.308 190.904 450.436 191.128C450.596 191.32 450.82 191.448 451.108 191.512L452.26 191.848C452.676 191.976 452.884 192.168 452.884 192.424C452.884 192.808 452.564 193 451.924 193H430.324C429.908 193 429.7 192.808 429.7 192.424C429.7 192.168 429.892 191.992 430.276 191.896L431.476 191.608C432.052 191.448 432.436 191.16 432.628 190.744C432.82 190.296 432.916 189.752 432.916 189.112V162.472C432.916 160.744 432.484 159.352 431.62 158.296C430.756 157.208 429.652 156.664 428.308 156.664C427.156 156.664 426.132 156.856 425.236 157.24C424.372 157.592 423.556 158.136 422.788 158.872L421.06 160.504ZM448.948 160.504L448.132 159.784L449.668 157.816C451.972 154.84 454.42 152.6 457.012 151.096C459.604 149.56 462.26 148.792 464.98 148.792C467.924 148.792 470.436 149.72 472.516 151.576C474.596 153.432 475.844 156.424 476.26 160.552L479.476 189.928C479.54 190.472 479.652 190.872 479.812 191.128C480.004 191.352 480.244 191.512 480.532 191.608L481.588 191.896C481.78 191.96 481.924 192.04 482.02 192.136C482.116 192.232 482.164 192.344 482.164 192.472C482.164 192.632 482.1 192.76 481.972 192.856C481.876 192.952 481.716 193 481.492 193H458.74C458.324 193 458.116 192.808 458.116 192.424C458.116 192.168 458.308 191.992 458.692 191.896L459.892 191.608C460.468 191.448 460.868 191.144 461.092 190.696C461.316 190.248 461.396 189.656 461.332 188.92L458.98 162.472C458.852 160.744 458.372 159.352 457.54 158.296C456.708 157.208 455.588 156.664 454.18 156.664C453.38 156.664 452.66 156.84 452.02 157.192C451.412 157.544 450.868 158.024 450.388 158.632L448.948 160.504Z" fill="#1C1B19"/>
+            <path d="M503.85 121.432V190.552L488.778 193.576C488.426 193.672 488.106 193.752 487.818 193.816C487.562 193.88 487.338 193.912 487.146 193.912C486.89 193.912 486.682 193.832 486.522 193.672C486.362 193.544 486.282 193.368 486.282 193.144V127.96C486.282 127.64 486.202 127.416 486.042 127.288C485.914 127.128 485.69 127.048 485.37 127.048L483.594 127C483.338 127 483.162 126.952 483.066 126.856C482.97 126.76 482.922 126.632 482.922 126.472C482.922 126.28 482.97 126.152 483.066 126.088C483.194 125.992 483.354 125.912 483.546 125.848L501.258 120.856C501.738 120.728 502.074 120.648 502.266 120.616C502.458 120.552 502.666 120.52 502.89 120.52C503.21 120.52 503.45 120.616 503.61 120.808C503.77 120.968 503.85 121.176 503.85 121.432ZM502.602 157.672L501.69 156.616C503.546 153.992 505.562 152.04 507.738 150.76C509.946 149.448 512.506 148.792 515.418 148.792C519.13 148.792 522.362 149.624 525.114 151.288C527.866 152.952 529.994 155.352 531.498 158.488C533.002 161.624 533.754 165.432 533.754 169.912C533.754 174.712 532.858 178.936 531.066 182.584C529.274 186.2 526.794 189.016 523.626 191.032C520.458 193.016 516.81 194.008 512.682 194.008C509.674 194.008 507.306 193.544 505.578 192.616C503.85 191.656 502.426 190.168 501.306 188.152L502.842 187.384C503.418 188.76 504.138 189.784 505.002 190.456C505.866 191.096 506.938 191.416 508.218 191.416C509.754 191.416 511.098 190.872 512.25 189.784C513.402 188.664 514.298 186.648 514.938 183.736C515.578 180.824 515.898 176.696 515.898 171.352C515.898 166.648 515.626 162.936 515.082 160.216C514.57 157.464 513.834 155.512 512.874 154.36C511.946 153.176 510.842 152.584 509.562 152.584C508.25 152.584 507.002 153 505.818 153.832C504.634 154.664 503.562 155.944 502.602 157.672ZM561.278 148.792C565.918 148.792 569.998 149.768 573.518 151.72C577.07 153.64 579.838 156.312 581.822 159.736C583.838 163.16 584.846 167.112 584.846 171.592C584.846 175.944 583.806 179.8 581.726 183.16C579.646 186.52 576.782 189.176 573.134 191.128C569.486 193.048 565.278 194.008 560.51 194.008C555.902 194.008 551.822 193.064 548.27 191.176C544.718 189.256 541.934 186.616 539.918 183.256C537.934 179.864 536.942 175.96 536.942 171.544C536.942 167.192 537.998 163.304 540.11 159.88C542.222 156.456 545.118 153.752 548.798 151.768C552.478 149.784 556.638 148.792 561.278 148.792ZM564.062 192.616C565.246 192.456 566.11 191.576 566.654 189.976C567.23 188.344 567.502 185.928 567.47 182.728C567.438 179.528 567.054 175.512 566.318 170.68C565.614 165.848 564.83 161.896 563.966 158.824C563.102 155.72 562.158 153.48 561.134 152.104C560.142 150.696 559.054 150.088 557.87 150.28C556.75 150.472 555.902 151.384 555.326 153.016C554.782 154.616 554.542 157 554.606 160.168C554.67 163.336 555.038 167.352 555.71 172.216C556.414 177.048 557.182 181 558.014 184.072C558.878 187.144 559.806 189.384 560.798 190.792C561.822 192.2 562.91 192.808 564.062 192.616Z" fill="#A73718"/>
+            <circle cx="601.846" cy="183.488" r="11" fill="#A73718"/>
+          </svg>
+        </a>
+        <button type="button" class="cb-shell__collapse" aria-pressed="false" aria-label="收起侧栏" title="收起侧栏">
+          <svg class="cb-shell__collapse-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M13 6l-6 6 6 6" />
+            <path d="M19 6l-6 6 6 6" />
+          </svg>
+        </button>
+      </div>
+
+      <nav class="cb-shell__nav" aria-label="主导航">
+        <ul class="cb-shell__navlist">
+          <li>
+            <a href="#" class="cb-shell__navlink">
+              <svg class="cb-shell__navicon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="M4 6h2" />
+                <path d="M10 6h10" />
+                <path d="M4 12h2" />
+                <path d="M10 12h10" />
+                <path d="M4 18h2" />
+                <path d="M10 18h10" />
+              </svg>
+              <span class="cb-shell__navlabel">上传任务</span>
+            </a>
+          </li>
+          <li>
+            <a href="#" class="cb-shell__navlink cb-shell__navlink--active" aria-current="page">
+              <svg class="cb-shell__navicon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                <rect x="13" y="3" width="8" height="8" rx="1.5" />
+                <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                <rect x="13" y="13" width="8" height="8" rx="1.5" />
+              </svg>
+              <span class="cb-shell__navlabel">我的能力</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+
+      <div class="cb-shell__account">
+        <span class="cb-avatar cb-shell__account-avatar" role="img" aria-label="董哲 · 创作者">董</span>
+        <span class="cb-shell__account-meta">
+          <span class="cb-shell__account-name">董哲</span>
+          <span class="cb-shell__account-title">创作者</span>
+        </span>
+      </div>
+    </aside>
+
+    <div class="cb-shell__main">
+      <main class="cb-shell__content">
+        <!-- CapabilitiesPage（apps/web/src/pages/capabilities/CapabilitiesPage.tsx）：我的能力列表。 -->
+        <section class="cb-page" aria-labelledby="cb-caps-title">
+          <div class="cb-page__head">
+            <h2 class="cb-page__title" id="cb-caps-title">我的能力</h2>
+            <p class="cb-page__lead">从你的对话历史提取出的能力项：发布拿分享链接，或先去试用。</p>
+          </div>
+          <ul class="cb-caps">
+            <li class="cb-caps__item">
+              <div class="cb-caps__main">
+                <p class="cb-caps__name">女装主推款 CTR 判断<span class="cb-caps__kind">网页</span><span class="cb-status-badge is-published">已发布</span></p>
+                <p class="cb-caps__summary">输入最新素材数据，判断哪个候选款该接管主推位。</p>
+                <p class="cb-caps__share">分享链接：<code class="cb-caps__token">https://combo.app/try/c/8fa21c</code><button type="button" class="cb-copy">复制</button></p>
+              </div>
+              <div class="cb-caps__actions">
+                <a class="cb-caps__trial" href="#">去试用</a>
+                <button type="button" class="cb-caps__toggle" data-published="true">下架</button>
+              </div>
+            </li>
+            <li class="cb-caps__item">
+              <div class="cb-caps__main">
+                <p class="cb-caps__name">小红书封面文案生成<span class="cb-caps__kind">文档</span><span class="cb-status-badge is-published">已发布</span></p>
+                <p class="cb-caps__summary">把课程笔记包装成可发布的图文卡文案。</p>
+                <p class="cb-caps__share">分享链接：<code class="cb-caps__token">https://combo.app/try/c/2b7d90</code><button type="button" class="cb-copy">复制</button></p>
+              </div>
+              <div class="cb-caps__actions">
+                <a class="cb-caps__trial" href="#">去试用</a>
+                <button type="button" class="cb-caps__toggle" data-published="true">下架</button>
+              </div>
+            </li>
+            <li class="cb-caps__item">
+              <div class="cb-caps__main">
+                <p class="cb-caps__name">投放预算再分配建议<span class="cb-caps__kind">网页</span><span class="cb-status-badge is-published">已发布</span></p>
+                <p class="cb-caps__summary">按各计划 ROI 给出加减预算的方案。</p>
+                <p class="cb-caps__share">分享链接：<code class="cb-caps__token">https://combo.app/try/c/5e1a4f</code><button type="button" class="cb-copy">复制</button></p>
+              </div>
+              <div class="cb-caps__actions">
+                <a class="cb-caps__trial" href="#">去试用</a>
+                <button type="button" class="cb-caps__toggle" data-published="true">下架</button>
+              </div>
+            </li>
+            <li class="cb-caps__item">
+              <div class="cb-caps__main">
+                <p class="cb-caps__name">竞品评论情感聚类<span class="cb-caps__kind">代码</span><span class="cb-status-badge is-published">已发布</span></p>
+                <p class="cb-caps__summary">抓取评论按情感与主题聚类，导出结构化结果。</p>
+                <p class="cb-caps__share">分享链接：<code class="cb-caps__token">https://combo.app/try/c/c0d3e2</code><button type="button" class="cb-copy">复制</button></p>
+              </div>
+              <div class="cb-caps__actions">
+                <a class="cb-caps__trial" href="#">去试用</a>
+                <button type="button" class="cb-caps__toggle" data-published="true">下架</button>
+              </div>
+            </li>
+            <li class="cb-caps__item">
+              <div class="cb-caps__main">
+                <p class="cb-caps__name">直播话术复盘<span class="cb-caps__kind">文档</span><span class="cb-status-badge is-unpublished">未发布</span></p>
+                <p class="cb-caps__summary">逐段点评话术并给出可用的改写。</p>
+              </div>
+              <div class="cb-caps__actions">
+                <a class="cb-caps__trial" href="#">去试用</a>
+                <button type="button" class="cb-caps__toggle" data-published="false">发布</button>
+              </div>
+            </li>
+            <li class="cb-caps__item">
+              <div class="cb-caps__main">
+                <p class="cb-caps__name">库存周转异常预警<span class="cb-caps__kind">网页</span><span class="cb-status-badge is-unpublished">未发布</span></p>
+                <p class="cb-caps__summary">识别滞销与断货风险 SKU，给出补货/清仓建议。</p>
+              </div>
+              <div class="cb-caps__actions">
+                <a class="cb-caps__trial" href="#">去试用</a>
+                <button type="button" class="cb-caps__toggle" data-published="false">发布</button>
+              </div>
+            </li>
+          </ul>
+          <div class="cb-pager">
+            <p class="cb-pager__end">没有更多了</p>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+</div>
+</body>
+</html>

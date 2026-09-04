@@ -1,0 +1,336 @@
+<!-- @dsCard group="01 · 基础 Foundations" name="Space / Radius / Shadow" subtitle="间距尺 space-1..8、圆角四档、阴影三档与结构尺寸 token" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combo DS · Space / Radius / Shadow</title>
+<style>
+/* 生成物勿手改。
+ * 本文件由 packages/ds-tokens/build.mjs 从 tokens/primitives.json、tokens/semantic.json、
+ * tokens/motion.json 构建生成；修改 token 请改源 JSON 后重新执行 pnpm -F @cb/ds-tokens build。 */
+
+:root {
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-rail: #f7f7f7;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-skeleton: #eeeae3;
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+  --cb-danger-line: color-mix(in srgb, var(--cb-danger) 28%, transparent);
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-dialog-w: 440px;
+  --cb-thread-w-md: 36rem;
+  --cb-thread-w-lg: 46rem;
+  --cb-focus-ring-w: 2px;
+  --cb-indicator-w: 2px;
+  --cb-bar-w: 3px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-rail: #1f1e1b;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-skeleton: #2e2b28;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  padding: var(--cb-space-6);
+}
+
+.wrap { max-width: 1040px; margin: 0 auto; }
+
+.page-title {
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.page-sub {
+  margin-top: var(--cb-space-1);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+.panel {
+  background: var(--cb-paper);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: var(--cb-space-5);
+  margin-top: var(--cb-space-5);
+}
+
+.panel-title {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cb-muted);
+  padding-bottom: var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-3);
+  margin-bottom: var(--cb-space-4);
+}
+
+.mono-xs {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+
+/* —— 间距尺：色条宽度即 token 实际值 —— */
+
+.space-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: var(--cb-space-4);
+  align-items: center;
+  padding: var(--cb-space-2) 0;
+}
+
+.space-bar {
+  height: var(--cb-space-4);
+  background: var(--cb-accent);
+}
+
+.sp-1 { width: var(--cb-space-1); }
+.sp-2 { width: var(--cb-space-2); }
+.sp-3 { width: var(--cb-space-3); }
+.sp-4 { width: var(--cb-space-4); }
+.sp-5 { width: var(--cb-space-5); }
+.sp-6 { width: var(--cb-space-6); }
+.sp-7 { width: var(--cb-space-7); }
+.sp-8 { width: var(--cb-space-8); }
+
+/* —— 圆角四档 —— */
+
+.radius-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--cb-space-4);
+}
+
+.radius-item { text-align: center; }
+
+.radius-box {
+  height: calc(var(--cb-space-8) + var(--cb-space-5));
+  background: var(--cb-muted-bg);
+  border: 1px solid var(--cb-line-1);
+  margin-bottom: var(--cb-space-2);
+}
+
+.r-control { border-radius: var(--cb-radius-control); }
+.r-card    { border-radius: var(--cb-radius-card); }
+.r-hero    { border-radius: var(--cb-radius-hero); }
+.r-pill    { border-radius: var(--cb-radius-pill); height: var(--cb-space-8); margin-top: var(--cb-space-4); }
+
+/* —— 阴影三档 —— */
+
+.shadow-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--cb-space-5);
+  padding: var(--cb-space-4);
+  background: var(--cb-bg);
+  border-radius: var(--cb-radius-card);
+}
+
+.shadow-card {
+  height: calc(var(--cb-space-8) + var(--cb-space-6));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cb-surface-raised);
+  border-radius: var(--cb-radius-card);
+}
+
+.sh-surface { box-shadow: var(--cb-shadow-surface); }
+.sh-hero    { box-shadow: var(--cb-shadow-hero); }
+.sh-overlay { box-shadow: var(--cb-shadow-overlay); }
+
+/* —— 结构尺寸 —— */
+
+.struct-row {
+  display: grid;
+  grid-template-columns: 220px 100px 1fr;
+  gap: var(--cb-space-4);
+  align-items: center;
+  padding: var(--cb-space-2) 0;
+  border-bottom: 1px solid var(--cb-line-3);
+}
+
+.struct-row:last-child { border-bottom: none; }
+
+.struct-vis { overflow-x: auto; }
+
+.struct-thin {
+  height: var(--cb-space-5);
+  background: var(--cb-accent);
+  border-radius: var(--cb-radius-pill);
+}
+
+.w-focus-ring { width: var(--cb-focus-ring-w); }
+.w-indicator  { width: var(--cb-indicator-w); }
+.w-bar        { width: var(--cb-bar-w); }
+
+.struct-wide {
+  height: var(--cb-space-2);
+  background: var(--cb-accent-soft);
+  border: 1px solid var(--cb-accent-tint);
+  border-radius: var(--cb-radius-pill);
+}
+
+.w-dialog    { width: var(--cb-dialog-w); }
+.w-thread-md { width: var(--cb-thread-w-md); }
+.w-thread-lg { width: var(--cb-thread-w-lg); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">Space / Radius / Shadow</h1>
+  <p class="page-sub">dimension &amp; elevation tokens · 所有示意均按 token 实际值 1:1 渲染</p>
+
+  <section class="panel">
+    <div class="panel-title">间距 Space</div>
+    <div class="space-row"><div class="mono-xs">--cb-space-1 · 4px</div><div class="space-bar sp-1"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-2 · 8px</div><div class="space-bar sp-2"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-3 · 10px</div><div class="space-bar sp-3"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-4 · 14px</div><div class="space-bar sp-4"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-5 · 20px</div><div class="space-bar sp-5"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-6 · 26px</div><div class="space-bar sp-6"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-7 · 32px</div><div class="space-bar sp-7"></div></div>
+    <div class="space-row"><div class="mono-xs">--cb-space-8 · 40px</div><div class="space-bar sp-8"></div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">圆角 Radius</div>
+    <div class="radius-grid">
+      <div class="radius-item"><div class="radius-box r-control"></div><div class="mono-xs">--cb-radius-control · 6px</div></div>
+      <div class="radius-item"><div class="radius-box r-card"></div><div class="mono-xs">--cb-radius-card · 7px</div></div>
+      <div class="radius-item"><div class="radius-box r-hero"></div><div class="mono-xs">--cb-radius-hero · 18px</div></div>
+      <div class="radius-item"><div class="radius-box r-pill"></div><div class="mono-xs">--cb-radius-pill · 999px</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">阴影 Shadow</div>
+    <div class="shadow-strip">
+      <div class="shadow-card sh-surface"><span class="mono-xs">--cb-shadow-surface</span></div>
+      <div class="shadow-card sh-hero"><span class="mono-xs">--cb-shadow-hero</span></div>
+      <div class="shadow-card sh-overlay"><span class="mono-xs">--cb-shadow-overlay</span></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-title">结构尺寸 Structural</div>
+    <div class="struct-row">
+      <div class="mono-xs">--cb-focus-ring-w</div><div class="mono-xs">2px</div>
+      <div class="struct-vis"><div class="struct-thin w-focus-ring"></div></div>
+    </div>
+    <div class="struct-row">
+      <div class="mono-xs">--cb-indicator-w</div><div class="mono-xs">2px</div>
+      <div class="struct-vis"><div class="struct-thin w-indicator"></div></div>
+    </div>
+    <div class="struct-row">
+      <div class="mono-xs">--cb-bar-w</div><div class="mono-xs">3px</div>
+      <div class="struct-vis"><div class="struct-thin w-bar"></div></div>
+    </div>
+    <div class="struct-row">
+      <div class="mono-xs">--cb-dialog-w</div><div class="mono-xs">440px</div>
+      <div class="struct-vis"><div class="struct-wide w-dialog"></div></div>
+    </div>
+    <div class="struct-row">
+      <div class="mono-xs">--cb-thread-w-md</div><div class="mono-xs">36rem</div>
+      <div class="struct-vis"><div class="struct-wide w-thread-md"></div></div>
+    </div>
+    <div class="struct-row">
+      <div class="mono-xs">--cb-thread-w-lg</div><div class="mono-xs">46rem</div>
+      <div class="struct-vis"><div class="struct-wide w-thread-lg"></div></div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

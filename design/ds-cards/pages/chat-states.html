@@ -1,0 +1,1936 @@
+<!-- @dsCard group="04 · 对话框系统 Chat" name="② 对话状态 · States" subtitle="中性对话框的 6 个对话状态 + 状态流转图（与位置正交）" -->
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>伴随对话框 · 对话状态</title></head>
+<body>
+<style>
+/* ============================================================
+   Combo 砖红品牌 token（内联全文；token 块内允许裸 hex）
+   ============================================================ */
+/* Combo 砖红品牌 token（冷纸底 #F4F6F4 + 砖红 #A73718 + 墨；node 2409:24 规范）。对比/消费页用。 */
+:root {
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f4f6f4;
+  --cb-surface: #fafbf8;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eef2ef;
+  --cb-rail: #f7f7f7;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #d8ded8;
+  --cb-line-2: #e3e7e2;
+  --cb-line-3: #ebefea;
+  --cb-border: var(--cb-line-1);
+  --cb-skeleton: #eef2ef;
+  --cb-grid: rgba(216, 222, 216, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+  --cb-danger-line: color-mix(in srgb, var(--cb-danger) 28%, transparent);
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-dialog-w: 440px;
+  --cb-thread-w-md: 36rem;
+  --cb-thread-w-lg: 46rem;
+  --cb-focus-ring-w: 2px;
+  --cb-indicator-w: 2px;
+  --cb-bar-w: 3px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ============================================================
+   @cb/ds 组件样式（内联全文 packages/ds/dist/styles.css）
+   —— 本页只用到 cb-msg-dots / cb-btn-spin 等聊天动效，其余保留以自包含 ——
+   ============================================================ */
+/* 由 @cb/ds scripts/build-css.mjs 生成，勿手改。 */
+/* --- src/avatar/avatar.css --- */
+.cb-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: var(--cb-radius-pill);
+  vertical-align: middle;
+  user-select: none;
+}
+
+.cb-avatar--sm {
+  width: var(--cb-space-5);
+  height: var(--cb-space-5);
+  font-size: var(--cb-text-xs);
+}
+
+.cb-avatar--md {
+  width: var(--cb-space-6);
+  height: var(--cb-space-6);
+  font-size: var(--cb-text-sm);
+}
+
+.cb-avatar--lg {
+  width: var(--cb-space-7);
+  height: var(--cb-space-7);
+  font-size: var(--cb-text-lg);
+}
+
+.cb-avatar--tone-muted {
+  background: var(--cb-muted-bg);
+}
+
+.cb-avatar--tone-accent {
+  background: var(--cb-accent-soft);
+}
+
+.cb-avatar--tone-ok {
+  background: var(--cb-ok-soft);
+}
+
+.cb-avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cb-avatar-initials {
+  font-family: var(--cb-font-mono);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--cb-fg);
+}
+
+/* --- src/badge/badge.css --- */
+.cb-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: calc(var(--cb-space-1) / 2) var(--cb-space-2);
+  border-radius: var(--cb-radius-pill);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cb-badge--neutral {
+  background: var(--cb-muted-bg);
+  color: var(--cb-muted);
+}
+
+.cb-badge--ok {
+  background: var(--cb-ok-soft);
+  color: var(--cb-ok);
+}
+
+.cb-badge--warn {
+  background: var(--cb-warn-soft);
+  color: var(--cb-warn);
+}
+
+.cb-badge--danger {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+}
+
+.cb-badge--accent {
+  background: var(--cb-accent-soft);
+  color: var(--cb-accent);
+}
+
+/* --- src/button/button.css --- */
+.cb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cb-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--cb-radius-control);
+  font-family: var(--cb-font-sans);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--cb-duration-fast) var(--cb-ease-standard),
+    border-color var(--cb-duration-fast) var(--cb-ease-standard),
+    color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 calc(var(--cb-space-1) / 2) var(--cb-surface),
+    0 0 0 var(--cb-space-1) var(--cb-focus-ring);
+}
+
+.cb-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* —— 尺寸 —— */
+
+.cb-btn--sm {
+  padding: var(--cb-space-1) var(--cb-space-2);
+  font-size: var(--cb-text-xs);
+}
+
+.cb-btn--md {
+  padding: var(--cb-space-2) var(--cb-space-4);
+  font-size: var(--cb-text-sm);
+}
+
+.cb-btn--lg {
+  padding: var(--cb-space-3) var(--cb-space-5);
+  font-size: var(--cb-text-md);
+}
+
+/* —— 变体 —— */
+
+.cb-btn--primary {
+  background: var(--cb-accent);
+  border-color: var(--cb-accent);
+  color: var(--cb-accent-contrast);
+}
+
+.cb-btn--primary:hover:not(:disabled) {
+  background: var(--cb-accent-strong);
+  border-color: var(--cb-accent-strong);
+}
+
+.cb-btn--primary:active:not(:disabled) {
+  background: var(--cb-accent-pressed);
+  border-color: var(--cb-accent-pressed);
+}
+
+.cb-btn--secondary {
+  background: var(--cb-surface);
+  border-color: var(--cb-line-1);
+  color: var(--cb-fg);
+}
+
+.cb-btn--secondary:hover:not(:disabled) {
+  background: var(--cb-muted-bg);
+}
+
+.cb-btn--secondary:active:not(:disabled) {
+  background: var(--cb-line-2);
+}
+
+.cb-btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--cb-fg);
+}
+
+.cb-btn--ghost:hover:not(:disabled) {
+  background: var(--cb-muted-bg);
+}
+
+.cb-btn--ghost:active:not(:disabled) {
+  background: var(--cb-line-2);
+}
+
+.cb-btn--danger {
+  background: var(--cb-danger);
+  border-color: var(--cb-danger);
+  color: var(--cb-accent-contrast);
+}
+
+.cb-btn--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cb-danger) 88%, var(--cb-fg));
+  border-color: color-mix(in srgb, var(--cb-danger) 88%, var(--cb-fg));
+}
+
+.cb-btn--danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--cb-danger) 76%, var(--cb-fg));
+  border-color: color-mix(in srgb, var(--cb-danger) 76%, var(--cb-fg));
+}
+
+/* —— 加载 spinner —— */
+
+.cb-btn-spinner {
+  inline-size: 1em;
+  block-size: 1em;
+  flex: none;
+  border: calc(var(--cb-space-1) / 2) solid currentColor;
+  border-inline-end-color: transparent;
+  border-radius: var(--cb-radius-pill);
+  animation: cb-btn-spin calc(var(--cb-duration-slow) * 2) linear infinite;
+}
+
+@keyframes cb-btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- src/card/card.css --- */
+.cb-card {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+/* surface：surface 底、line-2 描边（结构性 1px 描边，颜色走 token）、卡片圆角、极轻阴影。 */
+.cb-card--surface {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+}
+
+/* raised：纯白（surface-raised）底、无描边、卡片圆角、极轻阴影。 */
+.cb-card--raised {
+  background: var(--cb-surface-raised);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+}
+
+/* hero：paper 底、大圆角、hero 阴影，用于首屏或页面主视觉容器。 */
+.cb-card--hero {
+  background: var(--cb-paper);
+  border-radius: var(--cb-radius-hero);
+  box-shadow: var(--cb-shadow-hero);
+}
+
+.cb-card--pad-none {
+  padding: 0;
+}
+
+.cb-card--pad-md {
+  padding: var(--cb-space-4);
+}
+
+.cb-card--pad-lg {
+  padding: var(--cb-space-5);
+}
+
+/* --- src/chat/chat.css --- */
+/* 会话流容器：内容列居中并限制最大宽度，消息之间用间距 token 分隔。 */
+.cb-thread {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.cb-thread-col {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: var(--cb-space-4);
+}
+
+.cb-thread--md .cb-thread-col {
+  max-width: var(--cb-thread-w-md);
+}
+
+.cb-thread--lg .cb-thread-col {
+  max-width: var(--cb-thread-w-lg);
+}
+
+/* 单条消息：按角色决定水平对齐。 */
+.cb-msg {
+  display: flex;
+  max-width: 76%;
+  flex-direction: column;
+}
+
+.cb-thread-col > .cb-msg--user {
+  align-self: flex-end;
+}
+
+.cb-msg--user {
+  align-items: flex-end;
+  margin-left: auto;
+}
+
+.cb-msg--assistant {
+  align-items: flex-start;
+  margin-right: auto;
+}
+
+.cb-msg--system {
+  max-width: 64%;
+  align-items: center;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+/* 气泡上方的作者与时间行：等宽小字、弱化颜色。 */
+.cb-msg-meta {
+  display: flex;
+  gap: var(--cb-space-2);
+  margin-bottom: var(--cb-space-1);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+/* 消息气泡本体。 */
+.cb-msg-bubble {
+  padding: var(--cb-space-2) var(--cb-space-3);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.cb-msg--user .cb-msg-bubble {
+  background: var(--cb-accent-soft);
+  border-radius: var(--cb-radius-card);
+  border-top-right-radius: calc(var(--cb-radius-card) / 4);
+}
+
+.cb-msg--assistant .cb-msg-bubble {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+}
+
+.cb-msg--system .cb-msg-bubble {
+  padding: var(--cb-space-1) var(--cb-space-3);
+  background: var(--cb-muted-bg);
+  border-radius: var(--cb-radius-pill);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  text-align: center;
+}
+
+/* 生成中的三个呼吸点：透明度循环呼吸，节奏与延迟由动效 token 推导。 */
+.cb-msg-dots {
+  display: inline-flex;
+  gap: var(--cb-space-1);
+  padding: var(--cb-space-1) 0;
+}
+
+.cb-msg-dot {
+  width: var(--cb-space-1);
+  height: var(--cb-space-1);
+  background: var(--cb-muted);
+  border-radius: var(--cb-radius-pill);
+  animation: cb-msg-breathe calc(var(--cb-duration-slow) * 3) var(--cb-ease-standard) infinite;
+}
+
+.cb-msg-dot:nth-child(2) {
+  animation-delay: var(--cb-duration-base);
+}
+
+.cb-msg-dot:nth-child(3) {
+  animation-delay: calc(var(--cb-duration-base) * 2);
+}
+
+@keyframes cb-msg-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 输入框容器：白纸浮起底、细描边，聚焦时描边换成焦点色。 */
+.cb-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--cb-space-2);
+  padding: var(--cb-space-2);
+  background: var(--cb-surface-raised);
+  border: 1px solid var(--cb-line-1);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  transition: border-color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-composer:focus-within {
+  border-color: var(--cb-focus-ring);
+}
+
+.cb-composer--disabled {
+  background: var(--cb-muted-bg);
+}
+
+/* 文本域：无自带边框，高度由脚本随内容增长，六行封顶后内部滚动。 */
+.cb-composer-input {
+  flex: 1;
+  max-height: calc(1.5em * 6 + var(--cb-space-1) * 2);
+  padding: var(--cb-space-1) var(--cb-space-2);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.5;
+}
+
+.cb-composer-input::placeholder {
+  color: var(--cb-muted);
+}
+
+.cb-composer-input:disabled {
+  color: var(--cb-muted);
+  cursor: not-allowed;
+}
+
+/* --- src/citation/citation.css --- */
+/* Citation 行内引用样式：颜色/间距/圆角/字体全部引用 --cb-* 语义 token；
+ * 引文块左边框为结构性 1px 描边。 */
+
+.cb-citation {
+  display: inline-block;
+  max-width: 100%;
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.5;
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+}
+
+/* [n] 序号：上标风格徽标，accent-soft 底 accent 字。 */
+.cb-citation-index {
+  display: inline-block;
+  margin-right: var(--cb-space-1);
+  padding: 0 var(--cb-space-1);
+  background: var(--cb-accent-soft);
+  color: var(--cb-accent);
+  border-radius: var(--cb-radius-control);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.4;
+}
+
+.cb-citation-label {
+  color: inherit;
+}
+
+.cb-citation-link {
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--cb-line-1);
+  transition:
+    color var(--cb-duration-fast) var(--cb-ease-standard),
+    text-decoration-color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-citation-link:hover {
+  color: var(--cb-accent);
+  text-decoration-color: var(--cb-accent);
+}
+
+/* 原文引文块：正常体 muted 文字，line-3 左边框。 */
+.cb-citation-quote {
+  display: block;
+  margin-top: var(--cb-space-1);
+  padding-left: var(--cb-space-3);
+  border-left: 1px solid var(--cb-line-3);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-sm);
+  font-style: normal;
+  line-height: 1.6;
+}
+
+/* --- src/dialog/dialog.css --- */
+/* Dialog 组件样式：颜色、间距、圆角、阴影、字体、动效全部引用 --cb-* 语义 token。
+ * 1px 描边是结构性尺寸；焦点环宽度与面板最大宽度分别用 --cb-focus-ring-w / --cb-dialog-w token。 */
+
+.cb-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--cb-fg) 40%, transparent);
+  animation: cb-dialog-overlay-in var(--cb-duration-base) var(--cb-ease-decelerate);
+}
+
+.cb-dialog-overlay[data-state='closed'] {
+  animation: cb-dialog-overlay-out var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(var(--cb-dialog-w), calc(100vw - var(--cb-space-6)));
+  max-height: calc(100vh - var(--cb-space-8));
+  overflow-y: auto;
+  padding: var(--cb-space-5);
+  background: var(--cb-surface-raised);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-overlay);
+  animation: cb-dialog-content-in var(--cb-duration-base) var(--cb-ease-decelerate);
+}
+
+.cb-dialog-content[data-state='closed'] {
+  animation: cb-dialog-content-out var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-dialog-content:focus {
+  outline: none;
+}
+
+.cb-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cb-space-3);
+}
+
+.cb-dialog-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-xl);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.cb-dialog-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cb-space-6);
+  height: var(--cb-space-6);
+  margin: calc(-1 * var(--cb-space-1)) calc(-1 * var(--cb-space-1)) 0 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--cb-radius-control);
+  color: var(--cb-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--cb-duration-fast) var(--cb-ease-standard),
+    color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-dialog-close:hover {
+  background: var(--cb-muted-bg);
+  color: var(--cb-fg);
+}
+
+.cb-dialog-close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--cb-focus-ring-w) color-mix(in srgb, var(--cb-focus-ring) 32%, transparent);
+}
+
+.cb-dialog-close svg {
+  width: var(--cb-space-4);
+  height: var(--cb-space-4);
+}
+
+.cb-dialog-description {
+  margin: var(--cb-space-2) 0 0;
+  font-size: var(--cb-text-sm);
+  line-height: 1.5;
+  color: var(--cb-muted);
+}
+
+.cb-dialog-body {
+  margin-top: var(--cb-space-4);
+  font-size: var(--cb-text-md);
+  line-height: 1.6;
+}
+
+.cb-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--cb-space-2);
+  margin-top: var(--cb-space-5);
+}
+
+@keyframes cb-dialog-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes cb-dialog-overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes cb-dialog-content-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + var(--cb-space-2))) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes cb-dialog-content-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + var(--cb-space-1))) scale(0.98);
+  }
+}
+
+/* --- src/empty-state/empty-state.css --- */
+.cb-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--cb-space-2);
+  padding: var(--cb-space-8) var(--cb-space-5);
+  border-radius: var(--cb-radius-card);
+  background-color: var(--cb-paper);
+  /* 极淡的网格纸背景：网格线颜色与格距全部来自 token。 */
+  background-image:
+    linear-gradient(var(--cb-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--cb-grid) 1px, transparent 1px);
+  background-size: var(--cb-space-5) var(--cb-space-5);
+}
+
+.cb-empty-state-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--cb-space-2);
+  color: var(--cb-muted);
+}
+
+.cb-empty-state-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-xl);
+  font-weight: 600;
+  color: var(--cb-fg);
+}
+
+.cb-empty-state-description {
+  margin: 0;
+  max-width: 44ch;
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.6;
+  color: var(--cb-muted);
+  overflow-wrap: break-word;
+}
+
+.cb-empty-state-action {
+  margin-top: var(--cb-space-3);
+}
+
+/* --- src/input/input.css --- */
+/* Input 组件样式：颜色、间距、圆角、字体、动效全部引用 --cb-* 语义 token。
+ * 1px 描边是结构性尺寸；焦点环宽度用 --cb-focus-ring-w token，颜色均来自 token。 */
+
+.cb-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-1);
+  font-family: var(--cb-font-sans);
+}
+
+.cb-input-label {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+
+.cb-input-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.cb-input-control {
+  width: 100%;
+  padding: var(--cb-space-2) var(--cb-space-3);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  color: var(--cb-fg);
+  background: var(--cb-surface-raised);
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-control);
+  outline: none;
+  transition:
+    border-color var(--cb-duration-fast) var(--cb-ease-standard),
+    box-shadow var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-input-control::placeholder {
+  color: var(--cb-muted);
+}
+
+.cb-input-control[type='search']::-webkit-search-cancel-button,
+.cb-input-control[type='search']::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.cb-input-control:focus {
+  border-color: var(--cb-focus-ring);
+  box-shadow: 0 0 0 var(--cb-focus-ring-w) color-mix(in srgb, var(--cb-focus-ring) 32%, transparent);
+}
+
+.cb-input-control[aria-invalid='true'] {
+  border-color: var(--cb-danger);
+}
+
+.cb-input-control[aria-invalid='true']:focus {
+  border-color: var(--cb-danger);
+  box-shadow: 0 0 0 var(--cb-focus-ring-w) var(--cb-danger-line);
+}
+
+.cb-input-control:disabled {
+  background: var(--cb-muted-bg);
+  color: var(--cb-muted);
+  cursor: not-allowed;
+}
+
+.cb-input-icon {
+  position: absolute;
+  left: var(--cb-space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--cb-space-4);
+  height: var(--cb-space-4);
+  color: var(--cb-muted);
+  pointer-events: none;
+}
+
+.cb-input-search .cb-input-control {
+  padding-left: calc(var(--cb-space-3) + var(--cb-space-4) + var(--cb-space-2));
+}
+
+/* --- src/list-item/list-item.css --- */
+.cb-list-item {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--cb-space-3);
+  width: 100%;
+  padding: var(--cb-space-2) var(--cb-space-3);
+  border: none;
+  border-radius: var(--cb-radius-control);
+  background: transparent;
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  text-align: left;
+  transition: background-color var(--cb-duration-fast) var(--cb-ease-standard);
+}
+
+.cb-list-item--interactive {
+  cursor: pointer;
+}
+
+.cb-list-item--interactive:hover {
+  background: var(--cb-muted-bg);
+}
+
+.cb-list-item--interactive:focus-visible {
+  outline: var(--cb-focus-ring-w) solid var(--cb-focus-ring);
+  outline-offset: calc(-1 * var(--cb-focus-ring-w));
+}
+
+/* 选中态底色，且悬停时保持不被 muted-bg 覆盖。 */
+.cb-list-item--selected,
+.cb-list-item--interactive.cb-list-item--selected:hover {
+  background: var(--cb-accent-soft);
+}
+
+/* 选中态左侧指示条（宽度用 --cb-indicator-w token），绝对定位避免布局位移。 */
+.cb-list-item--selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--cb-space-2);
+  bottom: var(--cb-space-2);
+  width: var(--cb-indicator-w);
+  border-radius: var(--cb-radius-pill);
+  background: var(--cb-accent);
+}
+
+.cb-list-item-leading,
+.cb-list-item-trailing {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.cb-list-item-trailing {
+  color: var(--cb-muted);
+  font-size: var(--cb-text-sm);
+}
+
+.cb-list-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-1);
+}
+
+/* 标题单行截断。 */
+.cb-list-item-title {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--cb-fg);
+}
+
+/* 描述为 muted 小字，最多两行后截断。 */
+.cb-list-item-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--cb-muted);
+  font-size: var(--cb-text-sm);
+}
+
+/* --- src/markdown/markdown.css --- */
+/* Markdown 渲染样式：全部规则作用在 .cb-markdown 作用域内，颜色、字体、间距、圆角只引用 --cb-* 语义 token。 */
+
+.cb-markdown {
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.7;
+  color: var(--cb-fg);
+  overflow-wrap: break-word;
+}
+
+.cb-markdown > :first-child {
+  margin-top: 0;
+}
+
+.cb-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+/* 标题用衬线；mini-app 语境下整体降两档字号：h1 用 xl、h2 用 lg、h3 用 md。 */
+.cb-markdown h1,
+.cb-markdown h2,
+.cb-markdown h3,
+.cb-markdown h4,
+.cb-markdown h5,
+.cb-markdown h6 {
+  font-family: var(--cb-font-serif);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--cb-fg);
+  margin: var(--cb-space-5) 0 var(--cb-space-2);
+}
+
+.cb-markdown h1 {
+  font-size: var(--cb-text-xl);
+}
+
+.cb-markdown h2 {
+  font-size: var(--cb-text-lg);
+}
+
+.cb-markdown h3 {
+  font-size: var(--cb-text-md);
+}
+
+.cb-markdown h4,
+.cb-markdown h5,
+.cb-markdown h6 {
+  font-size: var(--cb-text-sm);
+}
+
+.cb-markdown p {
+  margin: 0 0 var(--cb-space-3);
+}
+
+.cb-markdown ul,
+.cb-markdown ol {
+  margin: 0 0 var(--cb-space-3);
+  padding-left: var(--cb-space-5);
+}
+
+.cb-markdown li {
+  margin: 0 0 var(--cb-space-1);
+}
+
+.cb-markdown li > ul,
+.cb-markdown li > ol {
+  margin: var(--cb-space-1) 0 0;
+}
+
+/* 行内代码：等宽字体，muted 底色，小圆角（control 半径的一半，即 3px）。 */
+.cb-markdown code {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-sm);
+  background: var(--cb-muted-bg);
+  border-radius: calc(var(--cb-radius-control) / 2);
+  padding: 0 var(--cb-space-1);
+}
+
+/* 代码块：墨底反白（--cb-fg 做底、--cb-paper 做字），card 圆角，横向内滚动。 */
+.cb-markdown pre {
+  background: var(--cb-fg);
+  color: var(--cb-paper);
+  border-radius: var(--cb-radius-card);
+  padding: var(--cb-space-3) var(--cb-space-4);
+  margin: 0 0 var(--cb-space-3);
+  overflow-x: auto;
+}
+
+.cb-markdown pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: var(--cb-text-sm);
+}
+
+.cb-markdown a {
+  color: var(--cb-accent);
+  text-decoration: underline;
+}
+
+.cb-markdown a:hover {
+  color: var(--cb-accent-strong);
+}
+
+.cb-markdown blockquote {
+  margin: 0 0 var(--cb-space-3);
+  padding: 0 0 0 var(--cb-space-4);
+  border-left: calc(var(--cb-space-1) / 2) solid var(--cb-line-1);
+  color: var(--cb-muted);
+}
+
+.cb-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 var(--cb-space-3);
+  font-size: var(--cb-text-sm);
+}
+
+.cb-markdown th,
+.cb-markdown td {
+  text-align: left;
+  padding: var(--cb-space-2) var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-2);
+}
+
+.cb-markdown th {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  font-weight: 500;
+  color: var(--cb-muted);
+}
+
+.cb-markdown hr {
+  border: none;
+  border-top: 1px solid var(--cb-line-2);
+  margin: var(--cb-space-5) 0;
+}
+
+.cb-markdown img {
+  max-width: 100%;
+  border-radius: var(--cb-radius-card);
+}
+
+.cb-markdown strong {
+  font-weight: 600;
+}
+
+/* --- src/mini-app-shell/mini-app-shell.css --- */
+/* 能力容器样式：paper 底、hero 圆角、hero 阴影；颜色、间距、圆角、字体、动效只引用 --cb-* 语义 token。 */
+
+.cb-mini-app-shell {
+  display: flex;
+  flex-direction: column;
+  background: var(--cb-paper);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-hero);
+  box-shadow: var(--cb-shadow-hero);
+  overflow: hidden;
+}
+
+.cb-mini-app-shell-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cb-space-4);
+  padding: var(--cb-space-5) var(--cb-space-5) var(--cb-space-4);
+}
+
+.cb-mini-app-shell-heading {
+  min-width: 0;
+}
+
+.cb-mini-app-shell-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-xl);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cb-fg);
+  overflow-wrap: break-word;
+}
+
+.cb-mini-app-shell-subtitle {
+  margin: var(--cb-space-1) 0 0;
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  overflow-wrap: break-word;
+}
+
+.cb-mini-app-shell-side {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-space-3);
+  flex-shrink: 0;
+  padding-top: var(--cb-space-1);
+}
+
+.cb-mini-app-shell-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cb-space-2);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+.cb-mini-app-shell-status--ok {
+  color: var(--cb-ok);
+}
+
+.cb-mini-app-shell-status--running {
+  color: var(--cb-warn);
+}
+
+.cb-mini-app-shell-status--error {
+  color: var(--cb-danger);
+}
+
+.cb-mini-app-shell-dot {
+  width: var(--cb-space-2);
+  height: var(--cb-space-2);
+  border-radius: var(--cb-radius-pill);
+  background: currentColor;
+}
+
+/* running 态的圆点做缓慢呼吸；周期由动效 token 推导，尊重系统减动效偏好。 */
+.cb-mini-app-shell-status--running .cb-mini-app-shell-dot {
+  animation: cb-mini-app-shell-pulse calc(var(--cb-duration-slow) * 4) var(--cb-ease-standard)
+    infinite;
+}
+
+@keyframes cb-mini-app-shell-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-mini-app-shell-status--running .cb-mini-app-shell-dot {
+    animation: none;
+  }
+}
+
+.cb-mini-app-shell-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cb-space-2);
+}
+
+.cb-mini-app-shell-body {
+  background: var(--cb-surface);
+  padding: var(--cb-space-5);
+}
+
+.cb-mini-app-shell-footer {
+  border-top: 1px solid var(--cb-line-3);
+  background: var(--cb-paper);
+  padding: var(--cb-space-3) var(--cb-space-5);
+  font-size: var(--cb-text-sm);
+  color: var(--cb-muted);
+}
+
+/* --- src/skeleton/skeleton.css --- */
+.cb-skeleton {
+  display: inline-block;
+  background: var(--cb-skeleton);
+  /* 呼吸动画：单程时长由 motion token 推导（4 倍 --cb-duration-slow），alternate 往返。 */
+  animation: cb-skeleton-breathe calc(var(--cb-duration-slow) * 4) var(--cb-ease-standard) infinite
+    alternate;
+}
+
+@keyframes cb-skeleton-breathe {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.45;
+  }
+}
+
+.cb-skeleton--text {
+  width: 100%;
+  height: 1em;
+  border-radius: var(--cb-radius-control);
+}
+
+.cb-skeleton--block {
+  width: 100%;
+  height: var(--cb-space-8);
+  border-radius: var(--cb-radius-card);
+}
+
+.cb-skeleton--circle {
+  width: var(--cb-space-6);
+  height: var(--cb-space-6);
+  border-radius: var(--cb-radius-pill);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-skeleton {
+    animation: none;
+  }
+}
+
+/* --- src/text/text.css --- */
+/* Text：正文文本的四个变体。 */
+.cb-text {
+  margin: 0;
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.6;
+  color: var(--cb-fg);
+}
+
+/* body 即基类默认值，显式声明保证枚举值与类名一一对应。 */
+.cb-text--body {
+  color: var(--cb-fg);
+}
+
+.cb-text--muted {
+  color: var(--cb-muted);
+}
+
+.cb-text--caption {
+  font-size: var(--cb-text-sm);
+  line-height: 1.5;
+  color: var(--cb-muted);
+}
+
+.cb-text--label {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.4;
+  letter-spacing: 0.05em;
+  color: var(--cb-muted);
+}
+
+/* Heading：衬线标题，字号按 token 阶梯递减，margin 归零交给使用方排版。 */
+.cb-heading {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cb-fg);
+}
+
+.cb-heading--1 {
+  font-size: var(--cb-text-3xl);
+  line-height: 1.15;
+}
+
+.cb-heading--2 {
+  font-size: var(--cb-text-2xl);
+  line-height: 1.2;
+}
+
+.cb-heading--3 {
+  font-size: var(--cb-text-xl);
+}
+
+.cb-heading--4 {
+  font-size: var(--cb-text-lg);
+}
+
+/* --- src/timestamp/timestamp.css --- */
+/* Timestamp：等宽弱化色时间戳，表格数字对齐依赖 tabular-nums。 */
+.cb-timestamp {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  line-height: 1.4;
+  color: var(--cb-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- src/toast/toast.css --- */
+/* Toast 通知样式：颜色/间距/圆角/阴影/字体全部引用 --cb-* 语义 token；
+ * 左侧变体色条宽度用 --cb-bar-w token，其余描边为结构性 1px。 */
+
+.cb-toast {
+  box-sizing: border-box;
+  padding: var(--cb-space-3) var(--cb-space-4);
+  background: var(--cb-surface-raised);
+  border: 1px solid var(--cb-line-2);
+  border-left-width: var(--cb-bar-w);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-overlay);
+  font-family: var(--cb-font-sans);
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
+
+.cb-toast--info {
+  border-left-color: var(--cb-muted);
+}
+
+.cb-toast--ok {
+  border-left-color: var(--cb-ok);
+}
+
+.cb-toast--warn {
+  border-left-color: var(--cb-warn);
+}
+
+.cb-toast--danger {
+  border-left-color: var(--cb-danger);
+}
+
+.cb-toast-title {
+  margin: 0;
+  color: var(--cb-fg);
+  font-size: var(--cb-text-md);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.cb-toast-desc {
+  margin: var(--cb-space-1) 0 0;
+  color: var(--cb-muted);
+  font-size: var(--cb-text-sm);
+  line-height: 1.5;
+}
+
+/* 右下角固定通知区域：宽度复用 --cb-sidebar-w token，小屏时收缩到视口内。 */
+.cb-toast-region {
+  position: fixed;
+  right: var(--cb-space-4);
+  bottom: var(--cb-space-4);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cb-space-2);
+  width: var(--cb-sidebar-w);
+  max-width: calc(100vw - var(--cb-space-4) * 2);
+  pointer-events: none;
+}
+
+/* ============================================================
+   页面局部样式（只引用 --cb-* 语义 token；中性优先，砖红克制）
+   ============================================================ */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  padding: var(--cb-space-8) var(--cb-space-5);
+}
+.cs-page { max-width: 1200px; margin: 0 auto; }
+
+/* —— 页头 —— */
+.cs-brandrow { display: flex; align-items: center; gap: var(--cb-space-3); }
+.cs-wordmark { height: 22px; width: auto; display: block; }
+.cs-kicker { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.16em; color: var(--cb-muted); }
+.cs-h1 { margin: var(--cb-space-4) 0 var(--cb-space-3); font-family: var(--cb-font-serif); font-weight: 600; font-size: var(--cb-text-3xl); line-height: 1.12; color: var(--cb-fg); }
+.cs-lede { margin: 0; max-width: 62ch; font-family: var(--cb-font-serif); font-size: var(--cb-text-lg); line-height: 1.6; color: var(--cb-muted); }
+
+/* —— 区块标题 —— */
+.cs-section { margin-top: var(--cb-space-8); }
+.cs-sec-head { display: flex; align-items: baseline; gap: var(--cb-space-3); margin-bottom: var(--cb-space-2); }
+.cs-sec-title { font-family: var(--cb-font-serif); font-size: var(--cb-text-xl); font-weight: 600; color: var(--cb-fg); white-space: nowrap; }
+.cs-sec-en { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.1em; color: var(--cb-muted); }
+.cs-sec-rule { flex: 1; height: 1px; background: var(--cb-line-2); }
+.cs-sec-note { margin: 0 0 var(--cb-space-5); max-width: 78ch; font-size: var(--cb-text-sm); line-height: 1.6; color: var(--cb-muted); }
+.cs-sec-note b { color: var(--cb-fg); font-weight: 500; }
+
+/* —— 6 态网格 —— */
+.cs-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 300px)); gap: var(--cb-space-7) var(--cb-space-5); justify-content: center; }
+.cs-cell { display: flex; flex-direction: column; gap: var(--cb-space-2); min-width: 0; }
+.cs-tag { display: flex; align-items: baseline; gap: var(--cb-space-2); font-family: var(--cb-font-mono); }
+.cs-tag-n { font-size: 11px; color: var(--cb-muted); }
+.cs-tag-cn { font-size: var(--cb-text-sm); color: var(--cb-fg); font-weight: 500; }
+.cs-tag-en { font-size: 10px; letter-spacing: 0.12em; color: var(--cb-muted); }
+.cs-when { font-size: var(--cb-text-xs); line-height: 1.5; color: var(--cb-muted); }
+.cs-when-k { font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-control); padding: 0 4px; margin-right: var(--cb-space-1); }
+
+/* —— 中性对话框卡 —— */
+.cs-box { display: flex; flex-direction: column; height: 344px; background: var(--cb-surface-raised); border: 1px solid var(--cb-line-1); border-radius: var(--cb-radius-card); box-shadow: var(--cb-shadow-surface); overflow: hidden; }
+.cs-box-head { flex: none; display: flex; align-items: center; gap: var(--cb-space-2); padding: var(--cb-space-2) var(--cb-space-3); border-bottom: 1px solid var(--cb-line-3); }
+.cs-id { width: 22px; height: 22px; flex: none; border-radius: var(--cb-radius-pill); background: var(--cb-fg); color: var(--cb-surface-raised); display: inline-flex; align-items: center; justify-content: center; font-family: var(--cb-font-serif); font-size: var(--cb-text-xs); }
+.cs-id-meta { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.cs-id-name { font-family: var(--cb-font-mono); font-size: 11px; letter-spacing: 0.04em; color: var(--cb-fg); line-height: 1.2; }
+.cs-id-sub { font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); line-height: 1.2; display: inline-flex; align-items: center; gap: var(--cb-space-1); }
+.cs-head-spacer { flex: 1; }
+.cs-head-ic { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; color: var(--cb-muted); }
+.cs-head-ic svg { width: 14px; height: 14px; }
+.cs-st-dot { width: 6px; height: 6px; border-radius: var(--cb-radius-pill); flex: none; }
+.cs-st-dot--run { background: var(--cb-fg); animation: cspulse var(--cb-duration-slow) var(--cb-ease-standard) infinite alternate; }
+.cs-st-dot--ok { background: var(--cb-ok); }
+.cs-st-dot--err { background: var(--cb-danger); }
+.cs-st-dot--muted { background: var(--cb-muted); }
+@keyframes cspulse { from { opacity: 0.35; } to { opacity: 1; } }
+
+.cs-body { flex: 1; min-height: 0; padding: var(--cb-space-3); display: flex; flex-direction: column; gap: var(--cb-space-3); overflow: hidden; }
+.cs-body--center { align-items: center; justify-content: center; text-align: center; gap: var(--cb-space-4); }
+
+/* 消息 */
+.cs-msg { display: flex; gap: var(--cb-space-2); align-items: flex-start; max-width: 100%; }
+.cs-msg--user { flex-direction: row-reverse; }
+.cs-msg-ava { width: 20px; height: 20px; flex: none; border-radius: var(--cb-radius-pill); background: var(--cb-fg); color: var(--cb-surface-raised); display: inline-flex; align-items: center; justify-content: center; font-family: var(--cb-font-serif); font-size: 11px; margin-top: 1px; }
+.cs-msg-col { min-width: 0; display: flex; flex-direction: column; gap: var(--cb-space-2); }
+.cs-msg--user .cs-msg-col { align-items: flex-end; }
+.cs-bubble { border-radius: var(--cb-radius-card); padding: var(--cb-space-2) var(--cb-space-3); font-family: var(--cb-font-sans); font-size: var(--cb-text-sm); line-height: 1.55; color: var(--cb-fg); }
+.cs-bubble--bot { background: var(--cb-surface); border: 1px solid var(--cb-line-2); border-top-left-radius: 4px; }
+.cs-bubble--user { background: var(--cb-muted-bg); border-top-right-radius: 4px; }
+
+/* 欢迎 / chip */
+.cs-welcome { margin: 0; max-width: 30ch; font-family: var(--cb-font-serif); font-size: var(--cb-text-sm); line-height: 1.6; color: var(--cb-fg); }
+.cs-chips { display: flex; flex-wrap: wrap; gap: var(--cb-space-2); justify-content: center; }
+.cs-chip { display: inline-flex; align-items: center; gap: var(--cb-space-1); padding: var(--cb-space-1) var(--cb-space-2); font-family: var(--cb-font-mono); font-size: 11px; color: var(--cb-fg); background: var(--cb-surface); border: 1px solid var(--cb-line-1); border-radius: var(--cb-radius-pill); }
+.cs-chip svg { width: 10px; height: 10px; color: var(--cb-muted); }
+
+/* tool-run 卡 */
+.cs-tool { border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-card); background: var(--cb-surface); overflow: hidden; }
+.cs-tool-head { display: flex; align-items: center; gap: var(--cb-space-2); padding: var(--cb-space-1) var(--cb-space-3); border-bottom: 1px solid var(--cb-line-3); font-family: var(--cb-font-mono); font-size: 10px; letter-spacing: 0.06em; color: var(--cb-muted); }
+.cs-run-dot { width: 6px; height: 6px; border-radius: var(--cb-radius-pill); background: var(--cb-fg); flex: none; }
+.cs-tool-caret { width: 12px; height: 12px; flex: none; margin-left: auto; color: var(--cb-muted); }
+.cs-tool-body { display: flex; flex-direction: column; gap: var(--cb-space-1); padding: var(--cb-space-2) var(--cb-space-3); }
+.cs-step { display: flex; align-items: flex-start; gap: var(--cb-space-2); font-family: var(--cb-font-mono); font-size: 11px; line-height: 1.5; color: var(--cb-muted); }
+.cs-step svg { width: 12px; height: 12px; flex: none; margin-top: 2px; }
+.cs-step--ok svg { color: var(--cb-ok); }
+.cs-step--ok .cs-step-t { color: var(--cb-fg); }
+.cs-step-t { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+.cs-spin { width: 11px; height: 11px; flex: none; margin-top: 2px; border: 2px solid var(--cb-fg); border-right-color: transparent; border-radius: var(--cb-radius-pill); animation: cb-btn-spin 0.7s linear infinite; }
+.cs-typing { display: inline-flex; align-items: center; padding-left: var(--cb-space-1); }
+.cs-typing .cb-msg-dots { padding: 0; }
+
+/* 内联选择卡 */
+.cs-select { display: flex; flex-direction: column; gap: var(--cb-space-2); padding: var(--cb-space-2); border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-card); background: var(--cb-surface); }
+.cs-opt { display: flex; align-items: center; gap: var(--cb-space-2); width: 100%; text-align: left; padding: var(--cb-space-2) var(--cb-space-3); font-family: var(--cb-font-sans); font-size: var(--cb-text-sm); color: var(--cb-fg); background: var(--cb-surface-raised); border: 1px solid var(--cb-line-1); border-radius: var(--cb-radius-control); cursor: pointer; }
+.cs-opt--on { background: var(--cb-muted-bg); border-color: var(--cb-fg); }
+.cs-opt-radio { width: 12px; height: 12px; flex: none; border-radius: var(--cb-radius-pill); border: 1px solid var(--cb-line-1); }
+.cs-opt--on .cs-opt-radio { background: var(--cb-fg); border-color: var(--cb-fg); }
+.cs-select-note { font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); padding-left: var(--cb-space-1); }
+
+/* 完成态：消息操作 + 系统提示 */
+.cs-acts { display: flex; align-items: center; gap: 2px; padding-left: calc(20px + var(--cb-space-2)); }
+.cs-act { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: transparent; border-radius: var(--cb-radius-control); color: var(--cb-muted); cursor: pointer; transition: color var(--cb-duration-fast) var(--cb-ease-standard), background var(--cb-duration-fast) var(--cb-ease-standard); }
+.cs-act:hover { background: var(--cb-muted-bg); color: var(--cb-fg); }
+.cs-act svg { width: 14px; height: 14px; }
+.cs-sysnote { align-self: center; display: inline-flex; align-items: center; gap: var(--cb-space-1); font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-ok); opacity: 0.85; }
+.cs-sysnote svg { width: 11px; height: 11px; }
+
+/* 出错条 */
+.cs-errbar { border-left: var(--cb-bar-w) solid var(--cb-danger); background: var(--cb-danger-soft); border-radius: var(--cb-radius-control); padding: var(--cb-space-2) var(--cb-space-3); display: flex; flex-direction: column; gap: var(--cb-space-3); }
+.cs-err-title { display: flex; align-items: flex-start; gap: var(--cb-space-2); font-family: var(--cb-font-sans); font-size: var(--cb-text-sm); line-height: 1.5; color: var(--cb-fg); }
+.cs-err-title svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--cb-danger); }
+.cs-err-row { display: flex; align-items: center; gap: var(--cb-space-3); }
+
+/* 输入区 / 按钮 */
+.cs-foot { flex: none; padding: var(--cb-space-2) var(--cb-space-3) var(--cb-space-3); border-top: 1px solid var(--cb-line-3); }
+/* —— 新版完备输入区（全中性 · 紧凑版）：textarea + 工具条 + 墨黑发送 —— */
+.nc { display: flex; flex-direction: column; gap: var(--cb-space-1); padding: var(--cb-space-1) var(--cb-space-2) var(--cb-space-2); background: var(--cb-surface-raised); border: 1px solid var(--cb-line-1); border-radius: var(--cb-radius-card); transition: border-color var(--cb-duration-fast) var(--cb-ease-standard); }
+.nc:focus-within { border-color: var(--cb-focus-ring); }
+.nc--disabled { background: var(--cb-muted-bg); }
+.nc-input { width: 100%; min-height: 30px; max-height: 84px; resize: none; border: none; outline: none; background: transparent; padding: var(--cb-space-1) 0; font-family: var(--cb-font-sans); font-size: var(--cb-text-sm); line-height: 1.5; color: var(--cb-fg); }
+.nc-input::placeholder { color: var(--cb-muted); }
+.nc-input:disabled { color: var(--cb-muted); cursor: not-allowed; }
+.nc-bar { display: flex; align-items: center; gap: var(--cb-space-2); }
+.nc-tools { display: flex; align-items: center; gap: 2px; }
+.nc-tool { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; background: transparent; border-radius: var(--cb-radius-control); color: var(--cb-muted); cursor: pointer; transition: color var(--cb-duration-fast) var(--cb-ease-standard), background var(--cb-duration-fast) var(--cb-ease-standard); }
+.nc-tool:hover { color: var(--cb-fg); background: var(--cb-muted-bg); }
+.nc-tool:disabled { cursor: not-allowed; opacity: 0.5; }
+.nc-tool svg { width: 14px; height: 14px; }
+.nc-send { margin-left: auto; width: 26px; height: 26px; flex: none; border-radius: var(--cb-radius-pill); background: var(--cb-fg); color: var(--cb-surface-raised); border: none; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.nc-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.nc-send svg { width: 13px; height: 13px; }
+.cs-stop { display: inline-flex; align-items: center; justify-content: center; gap: var(--cb-space-2); width: 100%; padding: var(--cb-space-2); font-family: var(--cb-font-mono); font-size: 11px; letter-spacing: 0.06em; color: var(--cb-fg); background: var(--cb-surface); border: 1px solid var(--cb-fg); border-radius: var(--cb-radius-control); cursor: pointer; }
+.cs-stop-sq { width: 9px; height: 9px; flex: none; border-radius: 2px; background: var(--cb-fg); }
+.cs-retry { display: inline-flex; align-items: center; gap: var(--cb-space-1); padding: var(--cb-space-1) var(--cb-space-3); font-family: var(--cb-font-sans); font-size: var(--cb-text-sm); color: var(--cb-fg); background: var(--cb-surface-raised); border: 1px solid var(--cb-fg); border-radius: var(--cb-radius-control); cursor: pointer; }
+.cs-retry svg { width: 13px; height: 13px; }
+.cs-link { font-family: var(--cb-font-mono); font-size: 11px; color: var(--cb-muted); text-decoration: none; }
+.cs-link:hover { color: var(--cb-fg); }
+
+/* —— 状态流转图 —— */
+.sm-wrap { border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-card); background: var(--cb-surface); box-shadow: var(--cb-shadow-surface); padding: var(--cb-space-5); overflow-x: auto; }
+.sm-svg { display: block; width: 100%; height: auto; min-width: 760px; }
+.sm-node { fill: var(--cb-surface-raised); stroke: var(--cb-line-1); stroke-width: 1; }
+.sm-node--run { fill: var(--cb-accent-soft); stroke: var(--cb-accent); }
+.sm-node--err { fill: var(--cb-danger-soft); stroke: var(--cb-danger); }
+.sm-title { fill: var(--cb-fg); font-family: var(--cb-font-serif); font-size: 15px; font-weight: 600; }
+.sm-sub { fill: var(--cb-muted); font-family: var(--cb-font-mono); font-size: 10px; letter-spacing: 0.1em; }
+.sm-run-dot { fill: var(--cb-accent); animation: cspulse var(--cb-duration-slow) var(--cb-ease-standard) infinite alternate; }
+.sm-edge { fill: none; stroke: var(--cb-muted); stroke-width: 1.5; }
+.sm-edge--a { stroke: var(--cb-accent); }
+.sm-edge--d { stroke: var(--cb-danger); }
+.sm-edge--dash { stroke: var(--cb-line-1); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.sm-label { fill: var(--cb-muted); font-family: var(--cb-font-mono); font-size: 11px; }
+.sm-label--a { fill: var(--cb-accent); }
+.sm-label--d { fill: var(--cb-danger); }
+.sm-cap { fill: var(--cb-muted); font-family: var(--cb-font-mono); font-size: 11px; }
+.sm-ah-m { fill: var(--cb-muted); }
+.sm-ah-a { fill: var(--cb-accent); }
+.sm-ah-d { fill: var(--cb-danger); }
+.sm-legend { display: flex; flex-wrap: wrap; gap: var(--cb-space-5); margin-top: var(--cb-space-4); }
+.sm-leg { display: inline-flex; align-items: center; gap: var(--cb-space-2); font-family: var(--cb-font-mono); font-size: 11px; color: var(--cb-muted); }
+.sm-leg-line { width: 22px; border-top: 2px solid var(--cb-muted); }
+.sm-leg-line--a { border-top-color: var(--cb-accent); }
+.sm-leg-line--d { border-top-color: var(--cb-danger); }
+.sm-leg-line--dash { border-top-style: dashed; border-top-color: var(--cb-line-1); }
+
+.cs-foot-note { margin-top: var(--cb-space-5); font-size: var(--cb-text-sm); line-height: 1.65; color: var(--cb-muted); max-width: 76ch; }
+.cs-foot-note b { color: var(--cb-fg); font-weight: 500; }
+
+@media (prefers-reduced-motion: reduce) { .cs-spin, .cs-st-dot--run, .sm-run-dot { animation: none; } }
+</style>
+
+<div class="cs-page">
+
+  <!-- 页头 -->
+  <header>
+    <div class="cs-brandrow">
+      <svg class="cs-wordmark" viewBox="282 94 335 128" fill="none" role="img" aria-label="Combo">
+        <path d="M347.153 170.776C346.929 174.072 346.097 177.16 344.657 180.04C343.217 182.888 341.265 185.4 338.801 187.576C336.369 189.752 333.505 191.448 330.209 192.664C326.913 193.88 323.329 194.488 319.457 194.488C312.769 194.488 307.009 193.08 302.177 190.264C297.377 187.416 293.665 183.448 291.041 178.36C288.449 173.272 287.153 167.32 287.153 160.504C287.153 155.192 287.953 150.344 289.553 145.96C291.185 141.544 293.489 137.736 296.465 134.536C299.441 131.336 302.993 128.872 307.121 127.144C311.281 125.384 315.873 124.504 320.897 124.504C323.745 124.504 326.161 124.792 328.145 125.368C330.161 125.944 331.761 126.536 332.945 127.144C334.129 127.72 334.897 128.008 335.249 128.008C335.761 128.008 336.513 127.72 337.505 127.144C338.497 126.568 339.457 125.992 340.385 125.416C341.313 124.84 341.937 124.552 342.257 124.552C342.449 124.552 342.625 124.648 342.785 124.84C342.945 125 343.057 125.288 343.121 125.704L347.345 146.488C347.441 146.84 347.441 147.128 347.345 147.352C347.281 147.576 347.089 147.72 346.769 147.784C346.513 147.848 346.289 147.816 346.097 147.688C345.905 147.528 345.713 147.24 345.521 146.824C343.633 141.8 341.569 137.832 339.329 134.92C337.089 132.008 334.801 129.944 332.465 128.728C330.129 127.48 327.857 126.856 325.649 126.856C323.377 126.856 321.265 127.448 319.313 128.632C317.393 129.784 315.681 131.528 314.177 133.864C312.673 136.168 311.505 139.016 310.673 142.408C309.841 145.8 309.425 149.72 309.425 154.168C309.425 161.528 310.257 167.576 311.921 172.312C313.617 177.016 315.953 180.504 318.929 182.776C321.937 185.016 325.377 186.136 329.249 186.136C333.249 186.136 336.785 184.856 339.857 182.296C342.929 179.736 344.961 175.848 345.953 170.632C346.049 170.344 346.145 170.136 346.241 170.008C346.337 169.88 346.465 169.816 346.625 169.816C346.849 169.848 346.993 169.96 347.057 170.152C347.153 170.312 347.185 170.52 347.153 170.776ZM374.81 148.792C379.45 148.792 383.53 149.768 387.05 151.72C390.602 153.64 393.37 156.312 395.354 159.736C397.37 163.16 398.378 167.112 398.378 171.592C398.378 175.944 397.338 179.8 395.258 183.16C393.178 186.52 390.314 189.176 386.666 191.128C383.018 193.048 378.81 194.008 374.042 194.008C369.434 194.008 365.354 193.064 361.802 191.176C358.25 189.256 355.466 186.616 353.45 183.256C351.466 179.864 350.474 175.96 350.474 171.544C350.474 167.192 351.53 163.304 353.642 159.88C355.754 156.456 358.65 153.752 362.33 151.768C366.01 149.784 370.17 148.792 374.81 148.792ZM377.594 192.616C378.778 192.456 379.642 191.576 380.186 189.976C380.762 188.344 381.034 185.928 381.002 182.728C380.97 179.528 380.586 175.512 379.85 170.68C379.146 165.848 378.362 161.896 377.498 158.824C376.634 155.72 375.69 153.48 374.666 152.104C373.674 150.696 372.586 150.088 371.402 150.28C370.282 150.472 369.434 151.384 368.858 153.016C368.314 154.616 368.074 157 368.138 160.168C368.202 163.336 368.57 167.352 369.242 172.216C369.946 177.048 370.714 181 371.546 184.072C372.41 187.144 373.338 189.384 374.33 190.792C375.354 192.2 376.442 192.808 377.594 192.616ZM422.404 149.608V189.592C422.404 190.04 422.516 190.456 422.74 190.84C422.964 191.192 423.268 191.416 423.652 191.512L425.428 191.896C425.812 191.992 426.004 192.168 426.004 192.424C426.004 192.808 425.732 193 425.188 193H402.004C401.748 193 401.556 192.952 401.428 192.856C401.3 192.728 401.236 192.6 401.236 192.472C401.236 192.344 401.3 192.216 401.428 192.088C401.588 191.96 401.78 191.864 402.004 191.8L403.684 191.416C404.132 191.32 404.436 191.128 404.596 190.84C404.756 190.552 404.836 190.184 404.836 189.736V156.232C404.836 155.88 404.772 155.608 404.644 155.416C404.548 155.224 404.34 155.128 404.02 155.128H401.956C401.796 155.096 401.668 155.032 401.572 154.936C401.476 154.84 401.428 154.728 401.428 154.6C401.428 154.44 401.476 154.312 401.572 154.216C401.7 154.088 401.892 153.992 402.148 153.928L419.908 148.888C420.26 148.76 420.548 148.68 420.772 148.648C421.028 148.616 421.268 148.6 421.492 148.6C421.844 148.6 422.084 148.712 422.212 148.936C422.34 149.128 422.404 149.352 422.404 149.608ZM421.06 160.504L420.244 159.784L422.02 158.056C425.54 154.728 428.836 152.36 431.908 150.952C434.98 149.512 437.7 148.792 440.068 148.792C443.108 148.792 445.556 149.72 447.412 151.576C449.3 153.432 450.244 156.392 450.244 160.456V190.12C450.244 190.568 450.308 190.904 450.436 191.128C450.596 191.32 450.82 191.448 451.108 191.512L452.26 191.848C452.676 191.976 452.884 192.168 452.884 192.424C452.884 192.808 452.564 193 451.924 193H430.324C429.908 193 429.7 192.808 429.7 192.424C429.7 192.168 429.892 191.992 430.276 191.896L431.476 191.608C432.052 191.448 432.436 191.16 432.628 190.744C432.82 190.296 432.916 189.752 432.916 189.112V162.472C432.916 160.744 432.484 159.352 431.62 158.296C430.756 157.208 429.652 156.664 428.308 156.664C427.156 156.664 426.132 156.856 425.236 157.24C424.372 157.592 423.556 158.136 422.788 158.872L421.06 160.504ZM448.948 160.504L448.132 159.784L449.668 157.816C451.972 154.84 454.42 152.6 457.012 151.096C459.604 149.56 462.26 148.792 464.98 148.792C467.924 148.792 470.436 149.72 472.516 151.576C474.596 153.432 475.844 156.424 476.26 160.552L479.476 189.928C479.54 190.472 479.652 190.872 479.812 191.128C480.004 191.352 480.244 191.512 480.532 191.608L481.588 191.896C481.78 191.96 481.924 192.04 482.02 192.136C482.116 192.232 482.164 192.344 482.164 192.472C482.164 192.632 482.1 192.76 481.972 192.856C481.876 192.952 481.716 193 481.492 193H458.74C458.324 193 458.116 192.808 458.116 192.424C458.116 192.168 458.308 191.992 458.692 191.896L459.892 191.608C460.468 191.448 460.868 191.144 461.092 190.696C461.316 190.248 461.396 189.656 461.332 188.92L458.98 162.472C458.852 160.744 458.372 159.352 457.54 158.296C456.708 157.208 455.588 156.664 454.18 156.664C453.38 156.664 452.66 156.84 452.02 157.192C451.412 157.544 450.868 158.024 450.388 158.632L448.948 160.504Z" fill="#1C1B19"/>
+        <path d="M503.85 121.432V190.552L488.778 193.576C488.426 193.672 488.106 193.752 487.818 193.816C487.562 193.88 487.338 193.912 487.146 193.912C486.89 193.912 486.682 193.832 486.522 193.672C486.362 193.544 486.282 193.368 486.282 193.144V127.96C486.282 127.64 486.202 127.416 486.042 127.288C485.914 127.128 485.69 127.048 485.37 127.048L483.594 127C483.338 127 483.162 126.952 483.066 126.856C482.97 126.76 482.922 126.632 482.922 126.472C482.922 126.28 482.97 126.152 483.066 126.088C483.194 125.992 483.354 125.912 483.546 125.848L501.258 120.856C501.738 120.728 502.074 120.648 502.266 120.616C502.458 120.552 502.666 120.52 502.89 120.52C503.21 120.52 503.45 120.616 503.61 120.808C503.77 120.968 503.85 121.176 503.85 121.432ZM502.602 157.672L501.69 156.616C503.546 153.992 505.562 152.04 507.738 150.76C509.946 149.448 512.506 148.792 515.418 148.792C519.13 148.792 522.362 149.624 525.114 151.288C527.866 152.952 529.994 155.352 531.498 158.488C533.002 161.624 533.754 165.432 533.754 169.912C533.754 174.712 532.858 178.936 531.066 182.584C529.274 186.2 526.794 189.016 523.626 191.032C520.458 193.016 516.81 194.008 512.682 194.008C509.674 194.008 507.306 193.544 505.578 192.616C503.85 191.656 502.426 190.168 501.306 188.152L502.842 187.384C503.418 188.76 504.138 189.784 505.002 190.456C505.866 191.096 506.938 191.416 508.218 191.416C509.754 191.416 511.098 190.872 512.25 189.784C513.402 188.664 514.298 186.648 514.938 183.736C515.578 180.824 515.898 176.696 515.898 171.352C515.898 166.648 515.626 162.936 515.082 160.216C514.57 157.464 513.834 155.512 512.874 154.36C511.946 153.176 510.842 152.584 509.562 152.584C508.25 152.584 507.002 153 505.818 153.832C504.634 154.664 503.562 155.944 502.602 157.672ZM561.278 148.792C565.918 148.792 569.998 149.768 573.518 151.72C577.07 153.64 579.838 156.312 581.822 159.736C583.838 163.16 584.846 167.112 584.846 171.592C584.846 175.944 583.806 179.8 581.726 183.16C579.646 186.52 576.782 189.176 573.134 191.128C569.486 193.048 565.278 194.008 560.51 194.008C555.902 194.008 551.822 193.064 548.27 191.176C544.718 189.256 541.934 186.616 539.918 183.256C537.934 179.864 536.942 175.96 536.942 171.544C536.942 167.192 537.998 163.304 540.11 159.88C542.222 156.456 545.118 153.752 548.798 151.768C552.478 149.784 556.638 148.792 561.278 148.792ZM564.062 192.616C565.246 192.456 566.11 191.576 566.654 189.976C567.23 188.344 567.502 185.928 567.47 182.728C567.438 179.528 567.054 175.512 566.318 170.68C565.614 165.848 564.83 161.896 563.966 158.824C563.102 155.72 562.158 153.48 561.134 152.104C560.142 150.696 559.054 150.088 557.87 150.28C556.75 150.472 555.902 151.384 555.326 153.016C554.782 154.616 554.542 157 554.606 160.168C554.67 163.336 555.038 167.352 555.71 172.216C556.414 177.048 557.182 181 558.014 184.072C558.878 187.144 559.806 189.384 560.798 190.792C561.822 192.2 562.91 192.808 564.062 192.616Z" fill="#A73718"/>
+        <circle cx="601.846" cy="183.488" r="11" fill="#A73718"/>
+      </svg>
+      <span class="cs-kicker">伴随对话框系统 · ②</span>
+    </div>
+    <h1 class="cs-h1">伴随对话框 · 对话状态</h1>
+    <p class="cs-lede">对话状态由系统驱动，与窗口位置正交——任何位置都能处在任何状态。</p>
+  </header>
+
+  <!-- 第 1 区：6 个对话状态 -->
+  <section class="cs-section">
+    <div class="cs-sec-head">
+      <span class="cs-sec-title">对话状态</span>
+      <span class="cs-sec-en">6 STATES</span>
+      <span class="cs-sec-rule"></span>
+    </div>
+    <p class="cs-sec-note">对话框<b>全中性黑白灰，不使用品牌色</b>：用户气泡走中性灰底，发送钮墨黑、其余（身份 / 进行中 / 选中 / 重试）走灰阶；只有<b>出错</b>保留功能性红做报错语义。每张卡都是同一个中性对话框，只有消息区随状态而变。</p>
+
+    <div class="cs-grid">
+
+      <!-- ① 空 EMPTY -->
+      <div class="cs-cell">
+        <div class="cs-tag"><span class="cs-tag-n">①</span><span class="cs-tag-cn">空</span><span class="cs-tag-en">EMPTY</span></div>
+        <div class="cs-box">
+          <div class="cs-box-head">
+            <span class="cs-id">P</span>
+            <span class="cs-id-meta"><span class="cs-id-name">PERSONA GEN</span><span class="cs-id-sub"><span class="cs-st-dot cs-st-dot--muted"></span>待命 · IDLE</span></span>
+            <span class="cs-head-spacer"></span>
+            <span class="cs-head-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></span>
+          </div>
+          <div class="cs-body cs-body--center">
+            <span class="cs-id" style="width:30px;height:30px;font-size:var(--cb-text-sm)">P</span>
+            <p class="cs-welcome">我能帮你改这个产物——换语气、补内容、改结构。</p>
+            <div class="cs-chips">
+              <span class="cs-chip">换更真实的话</span>
+              <span class="cs-chip">补一个人物</span>
+              <span class="cs-chip">改语气</span>
+            </div>
+          </div>
+          <div class="cs-foot">
+            <div class="nc">
+              <textarea class="nc-input" rows="1" placeholder="说说要改哪里，或 / 命令、@ 引用…" aria-label="输入"></textarea>
+              <div class="nc-bar">
+                <div class="nc-tools">
+                  <button class="nc-tool" type="button" aria-label="附加文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="引用 @（artifact 元素或来源）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="斜杠命令 /"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="14" y1="8.5" x2="10" y2="15.5"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg></button>
+                </div>
+                <button class="nc-send" type="button" aria-label="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cs-when"><span class="cs-when-k">何时</span>还没开始对话。</div>
+      </div>
+
+      <!-- ② 生成中 STREAMING -->
+      <div class="cs-cell">
+        <div class="cs-tag"><span class="cs-tag-n">②</span><span class="cs-tag-cn">生成中</span><span class="cs-tag-en">STREAMING</span></div>
+        <div class="cs-box">
+          <div class="cs-box-head">
+            <span class="cs-id">P</span>
+            <span class="cs-id-meta"><span class="cs-id-name">PERSONA GEN</span><span class="cs-id-sub"><span class="cs-st-dot cs-st-dot--run"></span>生成中 · STREAMING</span></span>
+            <span class="cs-head-spacer"></span>
+            <span class="cs-head-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></span>
+          </div>
+          <div class="cs-body">
+            <div class="cs-msg cs-msg--user"><div class="cs-msg-col"><div class="cs-bubble cs-bubble--user">把 Marcus 换成访谈里真实说过的话。</div></div></div>
+            <div class="cs-msg">
+              <span class="cs-msg-ava">P</span>
+              <div class="cs-msg-col">
+                <div class="cs-bubble cs-bubble--bot">收到，先核对访谈记录。</div>
+                <div class="cs-tool">
+                  <div class="cs-tool-head"><span class="cs-run-dot"></span>运行工具 · 2 步<svg class="cs-tool-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></div>
+                  <div class="cs-tool-body">
+                    <div class="cs-step cs-step--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span class="cs-step-t">读取语料 · interview-0612.md</span></div>
+                    <div class="cs-step"><span class="cs-spin"></span><span class="cs-step-t">重写「异议」格 · 2/2</span></div>
+                  </div>
+                </div>
+                <div class="cs-typing"><span class="cb-msg-dots"><span class="cb-msg-dot"></span><span class="cb-msg-dot"></span><span class="cb-msg-dot"></span></span></div>
+              </div>
+            </div>
+          </div>
+          <div class="cs-foot">
+            <button class="cs-stop" type="button"><span class="cs-stop-sq"></span>停止生成 · ESC</button>
+          </div>
+        </div>
+        <div class="cs-when"><span class="cs-when-k">何时</span>助手在跑（含运行工具）。</div>
+      </div>
+
+      <!-- ③ 需补全 NEEDS-INPUT -->
+      <div class="cs-cell">
+        <div class="cs-tag"><span class="cs-tag-n">③</span><span class="cs-tag-cn">需补全</span><span class="cs-tag-en">NEEDS-INPUT</span></div>
+        <div class="cs-box">
+          <div class="cs-box-head">
+            <span class="cs-id">P</span>
+            <span class="cs-id-meta"><span class="cs-id-name">PERSONA GEN</span><span class="cs-id-sub"><span class="cs-st-dot cs-st-dot--muted"></span>等待你 · BLOCKED</span></span>
+            <span class="cs-head-spacer"></span>
+            <span class="cs-head-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></span>
+          </div>
+          <div class="cs-body">
+            <div class="cs-msg">
+              <span class="cs-msg-ava">P</span>
+              <div class="cs-msg-col" style="width:100%">
+                <div class="cs-bubble cs-bubble--bot">「异议」这句，你要哪一版？</div>
+                <div class="cs-select">
+                  <button class="cs-opt cs-opt--on" type="button"><span class="cs-opt-radio"></span>访谈原话</button>
+                  <button class="cs-opt" type="button"><span class="cs-opt-radio"></span>更委婉</button>
+                  <span class="cs-select-note">选一个我继续</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="cs-foot">
+            <div class="nc nc--disabled">
+              <textarea class="nc-input" rows="1" placeholder="先选一个再继续…" disabled aria-label="输入（已禁用）"></textarea>
+              <div class="nc-bar">
+                <div class="nc-tools">
+                  <button class="nc-tool" type="button" aria-label="附加文件" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="引用 @" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="斜杠命令 /" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="14" y1="8.5" x2="10" y2="15.5"/></svg></button>
+                </div>
+                <button class="nc-send" type="button" aria-label="发送" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cs-when"><span class="cs-when-k">何时</span>需要你做个决定才能继续。</div>
+      </div>
+
+      <!-- ④ 完成 FINISHED -->
+      <div class="cs-cell">
+        <div class="cs-tag"><span class="cs-tag-n">④</span><span class="cs-tag-cn">完成</span><span class="cs-tag-en">FINISHED</span></div>
+        <div class="cs-box">
+          <div class="cs-box-head">
+            <span class="cs-id">P</span>
+            <span class="cs-id-meta"><span class="cs-id-name">PERSONA GEN</span><span class="cs-id-sub"><span class="cs-st-dot cs-st-dot--ok"></span>空闲 · READY</span></span>
+            <span class="cs-head-spacer"></span>
+            <span class="cs-head-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></span>
+          </div>
+          <div class="cs-body">
+            <div class="cs-msg">
+              <span class="cs-msg-ava">P</span>
+              <div class="cs-msg-col">
+                <div class="cs-bubble cs-bubble--bot">已把 Marcus 的异议换成访谈原话：「这是不是又一个 ChatGPT 套壳？」——保留了她的语气。</div>
+                <div class="cs-acts">
+                  <button class="cs-act" type="button" aria-label="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+                  <button class="cs-act" type="button" aria-label="重试"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg></button>
+                  <button class="cs-act" type="button" aria-label="赞"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3z"/><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></button>
+                  <button class="cs-act" type="button" aria-label="踩"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3z"/><path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg></button>
+                </div>
+              </div>
+            </div>
+            <div class="cs-sysnote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>已更新 artifact</div>
+          </div>
+          <div class="cs-foot">
+            <div class="nc">
+              <textarea class="nc-input" rows="1" placeholder="回复，或 / 命令、@ 引用、拖入文件…" aria-label="输入"></textarea>
+              <div class="nc-bar">
+                <div class="nc-tools">
+                  <button class="nc-tool" type="button" aria-label="附加文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="引用 @（artifact 元素或来源）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="斜杠命令 /"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="14" y1="8.5" x2="10" y2="15.5"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg></button>
+                </div>
+                <button class="nc-send" type="button" aria-label="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cs-when"><span class="cs-when-k">何时</span>这一轮结束。</div>
+      </div>
+
+      <!-- ⑤ 追问 FOLLOW-UP -->
+      <div class="cs-cell">
+        <div class="cs-tag"><span class="cs-tag-n">⑤</span><span class="cs-tag-cn">追问</span><span class="cs-tag-en">FOLLOW-UP</span></div>
+        <div class="cs-box">
+          <div class="cs-box-head">
+            <span class="cs-id">P</span>
+            <span class="cs-id-meta"><span class="cs-id-name">PERSONA GEN</span><span class="cs-id-sub"><span class="cs-st-dot cs-st-dot--ok"></span>空闲 · READY</span></span>
+            <span class="cs-head-spacer"></span>
+            <span class="cs-head-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></span>
+          </div>
+          <div class="cs-body">
+            <div class="cs-msg">
+              <span class="cs-msg-ava">P</span>
+              <div class="cs-msg-col" style="width:100%">
+                <div class="cs-bubble cs-bubble--bot">还要我——</div>
+                <div class="cs-chips" style="justify-content:flex-start">
+                  <span class="cs-chip">再补一个人物</span>
+                  <span class="cs-chip">换更冲的语气</span>
+                  <span class="cs-chip">导出</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="cs-foot">
+            <div class="nc">
+              <textarea class="nc-input" rows="1" placeholder="接着说，或点上面、/ 命令、@ 引用…" aria-label="输入"></textarea>
+              <div class="nc-bar">
+                <div class="nc-tools">
+                  <button class="nc-tool" type="button" aria-label="附加文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="引用 @（artifact 元素或来源）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="斜杠命令 /"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="14" y1="8.5" x2="10" y2="15.5"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg></button>
+                </div>
+                <button class="nc-send" type="button" aria-label="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cs-when"><span class="cs-when-k">何时</span>一轮完成后建议下一步。</div>
+      </div>
+
+      <!-- ⑥ 出错 ERROR -->
+      <div class="cs-cell">
+        <div class="cs-tag"><span class="cs-tag-n">⑥</span><span class="cs-tag-cn">出错</span><span class="cs-tag-en">ERROR</span></div>
+        <div class="cs-box">
+          <div class="cs-box-head">
+            <span class="cs-id">P</span>
+            <span class="cs-id-meta"><span class="cs-id-name">PERSONA GEN</span><span class="cs-id-sub"><span class="cs-st-dot cs-st-dot--err"></span>已中断 · ERROR</span></span>
+            <span class="cs-head-spacer"></span>
+            <span class="cs-head-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg></span>
+          </div>
+          <div class="cs-body">
+            <div class="cs-msg">
+              <span class="cs-msg-ava">P</span>
+              <div class="cs-msg-col" style="width:100%">
+                <div class="cs-errbar">
+                  <div class="cs-err-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><span>生成中断：语料读取超时。</span></div>
+                  <div class="cs-err-row">
+                    <button class="cs-retry" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>重试</button>
+                    <a class="cs-link" href="#">查看详情</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="cs-foot">
+            <div class="nc">
+              <textarea class="nc-input" rows="1" placeholder="回复，或 / 命令、@ 引用…" aria-label="输入"></textarea>
+              <div class="nc-bar">
+                <div class="nc-tools">
+                  <button class="nc-tool" type="button" aria-label="附加文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="引用 @（artifact 元素或来源）"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="斜杠命令 /"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><line x1="14" y1="8.5" x2="10" y2="15.5"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+                  <button class="nc-tool" type="button" aria-label="语音"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg></button>
+                </div>
+                <button class="nc-send" type="button" aria-label="发送"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cs-when"><span class="cs-when-k">何时</span>失败。</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- 第 2 区：状态流转图 -->
+  <section class="cs-section">
+    <div class="cs-sec-head">
+      <span class="cs-sec-title">状态流转</span>
+      <span class="cs-sec-en">STATE MACHINE</span>
+      <span class="cs-sec-rule"></span>
+    </div>
+    <p class="cs-sec-note">状态之间怎么走：<b>发送</b>把空推进到生成中；生成中或直达完成，或岔去需补全等你决策；完成后进入追问，再发送即回环；<b>任意状态失败</b>都落到出错，<b>重试</b>回到生成中。</p>
+
+    <div class="sm-wrap">
+      <svg class="sm-svg" viewBox="0 0 1120 520" role="img" aria-label="对话状态流转图">
+        <defs>
+          <marker id="ah-m" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path class="sm-ah-m" d="M0,0 L8,4 L0,8 Z"/></marker>
+          <marker id="ah-a" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path class="sm-ah-a" d="M0,0 L8,4 L0,8 Z"/></marker>
+          <marker id="ah-d" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path class="sm-ah-d" d="M0,0 L8,4 L0,8 Z"/></marker>
+        </defs>
+
+        <!-- 边（先画线，节点覆盖其上） -->
+        <!-- 发送：空→生成中 -->
+        <path class="sm-edge sm-edge--a" d="M 180,240 L 296,240" marker-end="url(#ah-a)"/>
+        <text class="sm-label--a sm-label" x="238" y="232" text-anchor="middle">发送</text>
+        <!-- done：生成中→完成 -->
+        <path class="sm-edge" d="M 450,240 L 556,240" marker-end="url(#ah-m)"/>
+        <text class="sm-label" x="503" y="232" text-anchor="middle">done</text>
+        <!-- 下一步：完成→追问 -->
+        <path class="sm-edge" d="M 710,240 L 816,240" marker-end="url(#ah-m)"/>
+        <text class="sm-label" x="763" y="232" text-anchor="middle">下一步</text>
+        <!-- 需决策?：生成中→需补全（上） -->
+        <path class="sm-edge" d="M 360,213 L 360,124" marker-end="url(#ah-m)"/>
+        <text class="sm-label" x="353" y="172" text-anchor="end">需决策?</text>
+        <!-- 补完：需补全→生成中（下） -->
+        <path class="sm-edge" d="M 390,120 L 390,209" marker-end="url(#ah-m)"/>
+        <text class="sm-label" x="398" y="172" text-anchor="start">补完</text>
+        <!-- 继续 / 发送：追问→生成中（回环，走顶） -->
+        <path class="sm-edge sm-edge--a" d="M 895,213 C 895,120 895,26 800,26 L 320,26 C 250,26 250,120 250,176 C 250,206 274,214 296,221" marker-end="url(#ah-a)"/>
+        <text class="sm-label--a sm-label" x="560" y="18" text-anchor="middle">继续 / 发送</text>
+        <!-- 失败：生成中→出错（实线代表，任意状态同理） -->
+        <path class="sm-edge sm-edge--d" d="M 360,267 C 360,335 435,392 505,397" marker-end="url(#ah-d)"/>
+        <text class="sm-label--d sm-label" x="398" y="352" text-anchor="middle">失败</text>
+        <!-- 重试：出错→生成中 -->
+        <path class="sm-edge sm-edge--a" d="M 582,396 C 582,330 475,292 404,270" marker-end="url(#ah-a)"/>
+        <text class="sm-label--a sm-label" x="548" y="352" text-anchor="middle">重试</text>
+        <!-- 任意状态失败（虚线暗示）：完成→出错、追问→出错 -->
+        <path class="sm-edge--dash" fill="none" d="M 635,267 C 635,340 608,372 588,393" marker-end="url(#ah-d)"/>
+        <path class="sm-edge--dash" fill="none" d="M 895,267 C 895,372 705,424 626,425" marker-end="url(#ah-d)"/>
+
+        <!-- 节点 -->
+        <g>
+          <rect class="sm-node" x="30" y="213" width="150" height="54" rx="8"/>
+          <text class="sm-title" x="105" y="237" text-anchor="middle">空</text>
+          <text class="sm-sub" x="105" y="254" text-anchor="middle">EMPTY</text>
+        </g>
+        <g>
+          <rect class="sm-node sm-node--run" x="300" y="213" width="150" height="54" rx="8"/>
+          <circle class="sm-run-dot" cx="333" cy="235" r="3.5"/>
+          <text class="sm-title" x="382" y="237" text-anchor="middle">生成中</text>
+          <text class="sm-sub" x="375" y="254" text-anchor="middle">STREAMING</text>
+        </g>
+        <g>
+          <rect class="sm-node" x="560" y="213" width="150" height="54" rx="8"/>
+          <text class="sm-title" x="635" y="237" text-anchor="middle">完成</text>
+          <text class="sm-sub" x="635" y="254" text-anchor="middle">FINISHED</text>
+        </g>
+        <g>
+          <rect class="sm-node" x="820" y="213" width="150" height="54" rx="8"/>
+          <text class="sm-title" x="895" y="237" text-anchor="middle">追问</text>
+          <text class="sm-sub" x="895" y="254" text-anchor="middle">FOLLOW-UP</text>
+        </g>
+        <g>
+          <rect class="sm-node" x="300" y="66" width="150" height="54" rx="8"/>
+          <text class="sm-title" x="375" y="90" text-anchor="middle">需补全</text>
+          <text class="sm-sub" x="375" y="107" text-anchor="middle">NEEDS-INPUT</text>
+        </g>
+        <g>
+          <rect class="sm-node sm-node--err" x="470" y="396" width="150" height="54" rx="8"/>
+          <text class="sm-title" x="545" y="420" text-anchor="middle">出错</text>
+          <text class="sm-sub" x="545" y="437" text-anchor="middle">ERROR</text>
+        </g>
+
+        <text class="sm-cap" x="545" y="478" text-anchor="middle">任意状态失败 → 出错</text>
+      </svg>
+
+      <div class="sm-legend">
+        <span class="sm-leg"><span class="sm-leg-line sm-leg-line--a"></span>发送 / 继续 / 重试（砖红）</span>
+        <span class="sm-leg"><span class="sm-leg-line sm-leg-line--d"></span>失败（danger）</span>
+        <span class="sm-leg"><span class="sm-leg-line"></span>推进 / 决策（中性）</span>
+        <span class="sm-leg"><span class="sm-leg-line sm-leg-line--dash"></span>任意状态皆可失败</span>
+      </div>
+    </div>
+
+    <p class="cs-foot-note">这套状态与窗口位置（见 <b>①</b>）正交：<b>换位置不改状态，换状态不改位置</b>——停靠、浮动、收纳任一位置都能处在上面六个状态里的任何一个。</p>
+  </section>
+
+</div>
+</body>
+</html>

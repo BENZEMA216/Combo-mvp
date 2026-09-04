@@ -1,0 +1,230 @@
+<!-- @dsCard group="00 · 总览" name="Combo 设计系统 · 总览" subtitle="整套设计系统的地图 + 当前定稿要点 + 待补清单（收拢入口）" -->
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Combo 设计系统 · 总览</title></head>
+<body>
+<style>
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-soft: #f7e7e1;
+  --cb-ok: #4f6f52;
+  --cb-warn: #7a5317;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px; --cb-space-2: 8px; --cb-space-3: 10px; --cb-space-4: 14px;
+  --cb-space-5: 20px; --cb-space-6: 26px; --cb-space-7: 32px; --cb-space-8: 40px;
+  --cb-text-xs: 11px; --cb-text-sm: 12px; --cb-text-md: 13px; --cb-text-lg: 14px;
+  --cb-text-xl: 18px; --cb-text-2xl: 24px; --cb-text-3xl: 32px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background:
+    linear-gradient(var(--cb-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--cb-grid) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-color: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  -webkit-font-smoothing: antialiased;
+  padding: var(--cb-space-8) var(--cb-space-6);
+}
+.wrap { max-width: 1000px; margin: 0 auto; }
+
+/* 头 */
+.head { display: flex; align-items: baseline; gap: var(--cb-space-3); flex-wrap: wrap; }
+.head-title { font-family: var(--cb-font-serif); font-size: var(--cb-text-3xl); font-weight: 600; line-height: 1.1; }
+.head-sub { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.08em; color: var(--cb-muted); text-transform: uppercase; }
+.head-note { margin-top: var(--cb-space-2); color: var(--cb-muted); font-size: var(--cb-text-sm); }
+
+/* 定稿要点条 */
+.canon { margin-top: var(--cb-space-6); display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--cb-line-2); border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-card); overflow: hidden; }
+.canon-item { background: var(--cb-surface-raised); padding: var(--cb-space-3) var(--cb-space-4); display: flex; gap: var(--cb-space-3); align-items: baseline; }
+.canon-k { flex: none; width: 68px; font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); letter-spacing: 0.04em; }
+.canon-v { font-size: var(--cb-text-sm); line-height: 1.5; }
+.canon-v b { color: var(--cb-accent); font-weight: 600; }
+
+/* 区块标题 */
+.sec-title { margin: var(--cb-space-7) 0 var(--cb-space-3); font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.12em; text-transform: uppercase; color: var(--cb-muted); padding-bottom: var(--cb-space-2); border-bottom: 1px solid var(--cb-line-2); }
+
+/* 分组网格 */
+.groups { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--cb-space-4); }
+.group { background: var(--cb-surface-raised); border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-card); box-shadow: var(--cb-shadow-surface); padding: var(--cb-space-4); }
+.group-head { display: flex; align-items: baseline; gap: var(--cb-space-2); margin-bottom: var(--cb-space-3); }
+.group-no { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-accent); font-weight: 600; }
+.group-name { font-family: var(--cb-font-serif); font-size: var(--cb-text-lg); font-weight: 600; }
+.group-count { margin-left: auto; font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); }
+.items { display: flex; flex-direction: column; gap: 2px; }
+.item { display: flex; align-items: center; gap: var(--cb-space-2); padding: var(--cb-space-1) 0; font-size: var(--cb-text-sm); }
+.dot { width: 6px; height: 6px; border-radius: var(--cb-radius-pill); flex: none; }
+.dot--ok { background: var(--cb-ok); }
+.dot--todo { background: var(--cb-warn); }
+.dot--arch { background: var(--cb-line-1); }
+.item-name { min-width: 0; }
+.item-file { margin-left: auto; font-family: var(--cb-font-mono); font-size: 11px; color: var(--cb-muted); white-space: nowrap; }
+
+/* 待补 */
+.todo-box { background: var(--cb-accent-soft); border: 1px solid var(--cb-line-2); border-radius: var(--cb-radius-card); padding: var(--cb-space-4); }
+.todo-row { display: flex; align-items: baseline; gap: var(--cb-space-2); padding: var(--cb-space-1) 0; font-size: var(--cb-text-sm); }
+.todo-row .dot { position: relative; top: -2px; }
+.todo-tag { font-family: var(--cb-font-mono); font-size: 11px; color: var(--cb-muted); flex: none; width: 96px; }
+
+/* 图例 + 脚 */
+.legend { margin-top: var(--cb-space-5); display: flex; gap: var(--cb-space-5); flex-wrap: wrap; font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); }
+.legend span { display: inline-flex; align-items: center; gap: var(--cb-space-1); }
+.foot { margin-top: var(--cb-space-7); padding-top: var(--cb-space-4); border-top: 1px solid var(--cb-line-2); font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); line-height: 1.7; }
+
+@media (max-width: 720px) { .groups, .canon { grid-template-columns: 1fr; } }
+</style>
+
+<div class="wrap">
+
+  <div class="head">
+    <h1 class="head-title">Combo 设计系统</h1>
+    <span class="head-sub">总览 · Overview</span>
+  </div>
+  <p class="head-note">整套系统的地图与状态快照。分组即面板左侧的 <span style="font-family:var(--cb-font-mono)">@dsCard group</span>。定稿要点见下条，完整决策见飞书决策文档。</p>
+
+  <!-- 定稿要点 -->
+  <div class="canon">
+    <div class="canon-item"><span class="canon-k">主色</span><span class="canon-v"><b>砖红 #A73718</b>（唯一红，图章非涂料；画布暖纸中性）</span></div>
+    <div class="canon-item"><span class="canon-k">字标</span><span class="canon-v">固定资产，永不随 UI 变色；消费界面退为 <b>Powered by Combo</b>，创作/品牌界面用完整字标</span></div>
+    <div class="canon-item"><span class="canon-k">对话框</span><span class="canon-v">完整 agent 面，<b>全中性黑白灰</b>（仅出错态用 danger）；位置态 × 对话态两维正交</span></div>
+    <div class="canon-item"><span class="canon-k">artifact</span><span class="canon-v">创作者<b>自由代码</b>，跑在沙盒 iframe（约束在壳、自由在画）；平台标准化的是中性对话框</span></div>
+  </div>
+
+  <!-- 地图 -->
+  <div class="sec-title">系统地图</div>
+  <div class="groups">
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">01</span><span class="group-name">基础 Foundations</span><span class="group-count">4</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Colors</span><span class="item-file">foundations/colors</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Typography</span><span class="item-file">foundations/typography</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Space / Radius / Shadow</span><span class="item-file">foundations/sizes</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Motion</span><span class="item-file">foundations/motion</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">02</span><span class="group-name">品牌 Brand</span><span class="group-count">1</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Combo 品牌标识（字标 / 反白 / 图标）</span><span class="item-file">brand/identity</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">03</span><span class="group-name">组件 Components</span><span class="group-count">9</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Button</span><span class="item-file">components/button</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Input / Composer</span><span class="item-file">components/inputs</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Card / List / Empty / Skeleton / Avatar</span><span class="item-file">components/cards-list</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Chat</span><span class="item-file">components/chat</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Badge / Timestamp / Citation</span><span class="item-file">components/badges-meta</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Dialog / Toast</span><span class="item-file">components/overlay</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Heading / Text</span><span class="item-file">components/text</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">MiniAppShell（三态 running/ok/error）</span><span class="item-file">components/miniapp</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Markdown（富文本渲染）</span><span class="item-file">components/markdown</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">04</span><span class="group-name">对话框系统 Chat</span><span class="group-count">2</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">① 位置与切换 · Positions</span><span class="item-file">pages/chat-positions</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">② 对话状态 · States</span><span class="item-file">pages/chat-states</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">05</span><span class="group-name">消费运行时 · 占卜示例</span><span class="group-count">4</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">⓪ 首屏首次态 · KOL 直达</span><span class="item-file">consumer-oracle-entry</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">① 输入态 · 上传生日</span><span class="item-file">consumer-oracle-input</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">② 运势态 · artifact + 提问</span><span class="item-file">consumer-oracle-result</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">② 悬浮态 · 浮窗</span><span class="item-file">consumer-oracle-floating</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">06</span><span class="group-name">创作侧 Creator · 实装镜像</span><span class="group-count">4</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">① 上传任务页（含配对卡）</span><span class="item-file">pages/creator-tasks</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">② 任务详情 · 上传+SSE提取</span><span class="item-file">pages/creator-task-detail</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">③ 能力挑选 · 一键发布</span><span class="item-file">pages/creator-capability-picker</span></div>
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">④ 我的能力页</span><span class="item-file">pages/creator-capabilities</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">07</span><span class="group-name">对比 Compare</span><span class="group-count">1</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--ok"></span><span class="item-name">Light vs Dark</span><span class="item-file">compare/light-dark</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">08</span><span class="group-name">货架 · 推荐流探索</span><span class="group-count">4</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--todo"></span><span class="item-name">方向 A · 编辑部日报（PH×报纸）</span><span class="item-file">pages/shelf-a-editorial</span></div>
+        <div class="item"><span class="dot dot--todo"></span><span class="item-name">方向 B · 画廊货架（PlugThis×美术馆）</span><span class="item-file">pages/shelf-b-gallery</span></div>
+        <div class="item"><span class="dot dot--todo"></span><span class="item-name">方向 C · 策展推荐流（即梦×杂志）</span><span class="item-file">pages/shelf-c-feed</span></div>
+        <div class="item"><span class="dot dot--arch"></span><span class="item-name">方向 D · 暗房沉浸（暗色对照）</span><span class="item-file">pages/shelf-d-dark</span></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-head"><span class="group-no">—</span><span class="group-name">归档 _archive</span><span class="group-count">17</span></div>
+      <div class="items">
+        <div class="item"><span class="dot dot--arch"></span><span class="item-name">旧创作愿景（工作台/五步向导/App Identity 编辑器）</span><span class="item-file">creator-legacy · 与实装不符</span></div>
+        <div class="item"><span class="dot dot--arch"></span><span class="item-name">Persona 运行时三态 + docked-b</span><span class="item-file">已废弃留档</span></div>
+        <div class="item"><span class="dot dot--arch"></span><span class="item-name">珊瑚版上传 ①-⑤</span><span class="item-file">已废弃留档</span></div>
+        <div class="item"><span class="dot dot--arch"></span><span class="item-name">vs astryx / Simple DS 对比</span><span class="item-file">早期探索</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 待补 -->
+  <div class="sec-title">待补 · Backlog</div>
+  <div class="todo-box">
+    <div class="todo-row"><span class="dot dot--todo"></span><span class="todo-tag">运行时缺态</span><span>收纳态（oracle 版胶囊）· 真·全屏态（从未 mock）· 出错/需补全的实景演示</span></div>
+    <div class="todo-row"><span class="dot dot--todo"></span><span class="todo-tag">核心交互</span><span>@ 指向 artifact 元素的四格分镜（选中 → 引用 chip → 回答锚定），Combo 对话框的存在理由</span></div>
+    <div class="todo-row"><span class="dot dot--todo"></span><span class="todo-tag">协议</span><span>artifact 沙盒协议草案一页纸（消息类型 · 能力声明 · 状态推信号拉数据 · selection SDK）</span></div>
+    <div class="todo-row"><span class="dot dot--todo"></span><span class="todo-tag">产品页</span><span>「我的能力」创作者管理页（创作留存回路）</span></div>
+    <div class="todo-row"><span class="dot dot--todo"></span><span class="todo-tag">工程</span><span>外壳迁 apps/runtime-web React 组件（artifact 位 = 沙盒 iframe）· 暗色 token 人工调校</span></div>
+    <div class="todo-row"><span class="dot dot--todo"></span><span class="todo-tag">货架方向</span><span>4 个风格方向已出（A 编辑部日报 / B 画廊货架 / C 策展推荐流 / D 暗房对照），待选主方向后细化空态·加载·分页·移动端</span></div>
+  </div>
+
+  <div class="legend">
+    <span><span class="dot dot--ok"></span> 已定稿</span>
+    <span><span class="dot dot--todo"></span> 待补</span>
+    <span><span class="dot dot--arch"></span> 已归档</span>
+  </div>
+
+  <div class="foot">
+    Token 唯一事实源：combo-mvp/packages/ds-tokens（构建出 tokens.css）· 品味守则：.claude/skills/design-taste<br>
+    决策文档（DEC-01..36 + 待拍板深度版）：飞书「创业 · Combo」文档库 · docx/D1qEdfDQ8oV4i2xeWgycEnPbnY4
+  </div>
+
+</div>
+</body>
+</html>

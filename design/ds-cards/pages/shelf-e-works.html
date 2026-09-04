@@ -1,0 +1,503 @@
+<!-- @dsCard group="08 · 货架 · 推荐流探索" name="E 结果先行 · 作品流" subtitle="首页摆的不是应用卡,是别人刚生成的结果卡——以作品带能力(小红书/Civitai 式),点作品→我也要一张→进能力" -->
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>货架 · 方向 E 结果先行作品流</title></head>
+<body>
+<style>
+/* ============================================================
+   Combo 砖红品牌 token（暖纸底 + 砖红 + 墨；外壳/货架用）
+   —— token 块内允许裸 hex ——
+   ============================================================ */
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-ok: #4f6f52;
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.sh-page {
+  position: relative;
+  width: 1440px;
+  min-height: 1180px;
+  margin: 0 auto;
+  padding-bottom: var(--cb-space-8);
+  background:
+    linear-gradient(var(--cb-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--cb-grid) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-color: var(--cb-bg);
+}
+
+/* —— 顶部栏（平台自有界面，极简，不重导航） —— */
+.sh-top {
+  display: flex; align-items: center; gap: var(--cb-space-6);
+  padding: var(--cb-space-5) var(--cb-space-8);
+  border-bottom: 1px solid var(--cb-line-2);
+  background: color-mix(in srgb, var(--cb-paper) 82%, transparent);
+  backdrop-filter: blur(6px);
+}
+.sh-wordmark { height: 22px; width: auto; display: block; }
+.sh-top-right { margin-left: auto; display: flex; align-items: center; gap: var(--cb-space-4); }
+.sh-mklink { font-size: var(--cb-text-md); color: var(--cb-muted); text-decoration: none; }
+.sh-mklink:hover { color: var(--cb-fg); }
+.sh-signin {
+  display: inline-flex; align-items: center; gap: var(--cb-space-2);
+  padding: 7px var(--cb-space-4); border-radius: var(--cb-radius-pill);
+  background: var(--cb-fg); color: var(--cb-paper);
+  font-size: var(--cb-text-sm); font-weight: 600; cursor: pointer; border: none;
+}
+.sh-signin svg { width: 14px; height: 14px; }
+
+/* —— 墙头（定位 + 筛选） —— */
+.wall-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--cb-space-6);
+  padding: var(--cb-space-7) var(--cb-space-8) var(--cb-space-6);
+}
+.wall-kicker {
+  font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--cb-accent);
+}
+.wall-title {
+  margin: var(--cb-space-3) 0 var(--cb-space-2);
+  font-family: var(--cb-font-serif); font-weight: 600;
+  font-size: 40px; line-height: 1.06; letter-spacing: -0.01em; color: var(--cb-fg);
+}
+.wall-sub { margin: 0; font-family: var(--cb-font-serif); font-size: var(--cb-text-lg); color: var(--cb-muted); max-width: 56ch; }
+.wall-filter { display: inline-flex; align-items: center; gap: var(--cb-space-2); padding-bottom: 4px; flex: none; }
+.wf {
+  font-size: var(--cb-text-md); color: var(--cb-muted); text-decoration: none;
+  padding: 6px var(--cb-space-4); border-radius: var(--cb-radius-pill);
+  border: 1px solid transparent;
+}
+.wf:hover { color: var(--cb-fg); background: var(--cb-muted-bg); }
+.wf.on { color: var(--cb-paper); background: var(--cb-fg); font-weight: 600; }
+
+/* —— 瀑布墙（砌体） —— */
+.wall {
+  column-count: 4; column-gap: var(--cb-space-5);
+  padding: 0 var(--cb-space-8);
+}
+
+/* 作品卡外壳 */
+.wk {
+  break-inside: avoid; margin-bottom: var(--cb-space-5);
+  display: block; text-decoration: none; color: inherit;
+  background: var(--cb-surface-raised); border: 1px solid var(--cb-line-1);
+  border-radius: var(--cb-radius-card); overflow: hidden;
+  box-shadow: var(--cb-shadow-surface);
+  transition: box-shadow var(--cb-duration-base) var(--cb-ease-standard), transform var(--cb-duration-base) var(--cb-ease-standard);
+}
+.wk:hover { box-shadow: var(--cb-shadow-hero); transform: translateY(-3px); }
+
+/* 作品缩略 = 成品的样子（artifact 地盘，各创作者色相） */
+.wk-art { position: relative; overflow: hidden; }
+.wk-cta {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; justify-content: center; gap: var(--cb-space-2);
+  padding: 11px var(--cb-space-4);
+  background: var(--cb-accent); color: var(--cb-paper);
+  font-size: var(--cb-text-md); font-weight: 600;
+  transform: translateY(103%);
+  transition: transform var(--cb-duration-base) var(--cb-ease-standard);
+}
+.wk-cta svg { width: 15px; height: 15px; }
+.wk:hover .wk-cta { transform: translateY(0); }
+.wk--demo .wk-cta { transform: translateY(0); }
+.wk--demo { box-shadow: var(--cb-shadow-hero); }
+
+/* 归属 + 匿名生成信息 */
+.wk-foot { display: flex; align-items: center; gap: var(--cb-space-3); padding: var(--cb-space-3) var(--cb-space-4) var(--cb-space-4); }
+.wk-ava {
+  width: 26px; height: 26px; flex: none; border-radius: var(--cb-radius-pill);
+  background: var(--hue); color: #fff; display: flex; align-items: center; justify-content: center;
+  font-family: var(--cb-font-serif); font-size: var(--cb-text-sm);
+}
+.wk-foot-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.wk-attr { font-size: var(--cb-text-md); color: var(--cb-fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wk-attr b { color: var(--hue); font-weight: 600; }
+.wk-time { font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); letter-spacing: 0.02em; }
+
+/* ============ 作品缩略内部（各成品的真实感片段） ============ */
+.art { position: relative; padding: var(--cb-space-5); background: var(--tint); }
+.a-row { display: flex; align-items: center; justify-content: space-between; gap: var(--cb-space-2); }
+.a-kick { font-family: var(--cb-font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--hue); }
+.a-date { font-family: var(--cb-font-mono); font-size: 10px; color: color-mix(in srgb, var(--hue) 62%, var(--cb-muted)); letter-spacing: 0.04em; }
+.a-head { margin: var(--cb-space-3) 0 var(--cb-space-1); font-family: var(--cb-font-serif); font-weight: 600; color: var(--cb-fg); line-height: 1.14; }
+.a-sub { font-size: var(--cb-text-sm); color: var(--cb-muted); }
+.a-line { margin: var(--cb-space-3) 0 0; font-family: var(--cb-font-serif); font-size: var(--cb-text-sm); line-height: 1.66; color: color-mix(in srgb, var(--cb-fg) 82%, var(--cb-muted)); }
+.a-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--cb-space-4); }
+.a-chips span {
+  font-family: var(--cb-font-mono); font-size: 10px; letter-spacing: 0.02em;
+  padding: 3px 9px; border-radius: var(--cb-radius-pill);
+  background: color-mix(in srgb, var(--hue) 10%, var(--cb-surface-raised));
+  color: color-mix(in srgb, var(--hue) 78%, var(--cb-fg));
+}
+
+/* 评分/等级大字 */
+.a-score { display: flex; align-items: baseline; gap: var(--cb-space-2); margin: var(--cb-space-4) 0 var(--cb-space-1); }
+.a-score b { font-family: var(--cb-font-serif); font-size: 52px; line-height: 0.9; font-weight: 600; color: var(--hue); }
+.a-score i { font-style: normal; font-family: var(--cb-font-serif); font-size: var(--cb-text-lg); color: var(--cb-muted); }
+.a-score .cap { margin-left: auto; align-self: flex-end; font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); text-align: right; line-height: 1.35; }
+
+/* 维度小条 */
+.a-bars { display: flex; flex-direction: column; gap: var(--cb-space-2); margin-top: var(--cb-space-4); }
+.a-brow { display: grid; grid-template-columns: 40px 1fr 26px; align-items: center; gap: var(--cb-space-3); }
+.a-brow .lb { font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); }
+.a-bar { height: 5px; border-radius: var(--cb-radius-pill); background: color-mix(in srgb, var(--hue) 14%, var(--cb-surface-raised)); overflow: hidden; }
+.a-bar i { display: block; height: 100%; border-radius: var(--cb-radius-pill); background: var(--hue); }
+.a-brow .vn { font-family: var(--cb-font-mono); font-size: 10px; color: color-mix(in srgb, var(--hue) 70%, var(--cb-fg)); text-align: right; }
+
+/* MBTI 型号大字 */
+.a-code { font-family: var(--cb-font-serif); font-weight: 600; font-size: 44px; line-height: 1; color: var(--hue); letter-spacing: 0.02em; margin-top: var(--cb-space-3); }
+.a-code span { font-size: var(--cb-text-2xl); color: color-mix(in srgb, var(--hue) 62%, var(--cb-muted)); }
+
+/* 光谱条（MBTI 四轴） */
+.a-spec { display: flex; flex-direction: column; gap: 9px; margin-top: var(--cb-space-4); }
+.a-srow { display: grid; grid-template-columns: 22px 1fr 22px; align-items: center; gap: var(--cb-space-2); font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); }
+.a-track { position: relative; height: 4px; border-radius: var(--cb-radius-pill); background: color-mix(in srgb, var(--hue) 16%, var(--cb-surface-raised)); }
+.a-knob { position: absolute; top: 50%; width: 9px; height: 9px; border-radius: var(--cb-radius-pill); background: var(--hue); transform: translate(-50%, -50%); }
+
+/* 诊断问题列表 */
+.a-issues { display: flex; flex-direction: column; gap: 9px; margin-top: var(--cb-space-4); }
+.a-iss { display: flex; align-items: flex-start; gap: var(--cb-space-2); font-size: var(--cb-text-sm); line-height: 1.4; color: color-mix(in srgb, var(--cb-fg) 84%, var(--cb-muted)); }
+.a-iss .sev { flex: none; margin-top: 3px; font-family: var(--cb-font-mono); font-size: 9px; letter-spacing: 0.04em; padding: 1px 6px; border-radius: var(--cb-radius-pill); }
+.a-iss .sev.hi { background: var(--cb-accent-soft); color: var(--cb-accent); }
+.a-iss .sev.mid { background: color-mix(in srgb, var(--hue) 12%, var(--cb-surface-raised)); color: color-mix(in srgb, var(--hue) 74%, var(--cb-fg)); }
+
+/* 塔罗三张牌 */
+.a-tarot { display: flex; gap: var(--cb-space-2); margin-top: var(--cb-space-3); }
+.a-tcard { flex: 1; aspect-ratio: 3 / 4.4; border-radius: 5px; border: 1px solid color-mix(in srgb, var(--gold) 42%, transparent); display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--gold) 8%, transparent); }
+.a-tcard span { font-family: var(--cb-font-serif); font-size: var(--cb-text-lg); color: var(--gold); }
+
+/* 五格印章 */
+.a-seal { display: flex; align-items: center; gap: var(--cb-space-4); margin-top: var(--cb-space-4); }
+.a-sealbox { width: 58px; height: 58px; flex: none; border: 1.5px solid var(--hue); border-radius: 5px; display: flex; align-items: center; justify-content: center; font-family: var(--cb-font-serif); font-size: 30px; font-weight: 600; color: var(--hue); }
+.a-wux { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.a-wrow { display: grid; grid-template-columns: 26px 1fr; align-items: center; gap: var(--cb-space-2); font-family: var(--cb-font-mono); font-size: 10px; color: var(--cb-muted); }
+
+/* 匹配 */
+.a-match { display: flex; align-items: center; justify-content: center; gap: var(--cb-space-3); margin: var(--cb-space-4) 0 var(--cb-space-2); }
+.a-mtag { font-family: var(--cb-font-serif); font-size: var(--cb-text-xl); font-weight: 600; color: var(--hue); }
+.a-mpct { font-family: var(--cb-font-serif); font-size: 34px; font-weight: 600; color: var(--hue); line-height: 1; }
+.a-mx { font-family: var(--cb-font-mono); font-size: var(--cb-text-md); color: var(--cb-muted); }
+
+/* 色板 */
+.a-swatch { display: flex; gap: 6px; margin-top: var(--cb-space-4); }
+.a-swatch i { flex: 1; height: 30px; border-radius: 5px; border: 1px solid rgba(28,27,25,0.06); }
+
+/* 流年弧线 */
+.a-arc { margin-top: var(--cb-space-3); }
+.a-arc svg { width: 100%; height: 74px; display: block; }
+.a-arc-lbl { display: flex; justify-content: space-between; font-family: var(--cb-font-mono); font-size: 9px; color: var(--cb-muted); margin-top: 4px; }
+
+/* ---- 夜空（星野）暗色 artifact 内部：克制渐变，创作者地盘 ---- */
+.art--night {
+  --gold: #d7b56a;
+  background:
+    radial-gradient(130% 100% at 26% -8%, #2c2856 0%, #1b1930 60%, #17152a 100%);
+  color: #e9e6f4;
+}
+.art--night .a-head { color: #f2eefb; }
+.art--night .a-line { color: rgba(233,230,244,0.82); }
+.art--night .a-kick { color: var(--gold); }
+.art--night .a-date { color: rgba(215,181,106,0.72); }
+.art--night .a-chips span { background: rgba(215,181,106,0.1); color: #e5cf9a; }
+.a-verdict { display: flex; align-items: baseline; gap: var(--cb-space-3); margin: var(--cb-space-4) 0 var(--cb-space-1); }
+.a-verdict .lbl { font-family: var(--cb-font-mono); font-size: 10px; letter-spacing: 0.1em; color: rgba(215,181,106,0.8); }
+.a-verdict b { font-family: var(--cb-font-serif); font-size: var(--cb-text-3xl); font-weight: 600; color: var(--gold); line-height: 1; }
+.a-constel { position: absolute; right: -22px; top: -18px; width: 128px; height: 128px; color: var(--gold); opacity: 0.22; }
+.a-dots { display: flex; gap: 6px; margin-top: var(--cb-space-3); }
+.a-dots i { width: 7px; height: 7px; border-radius: var(--cb-radius-pill); border: 1px solid var(--gold); }
+.a-dots i.on { background: var(--gold); }
+
+.sh-foot { padding: var(--cb-space-7) var(--cb-space-8) 0; display: flex; align-items: center; justify-content: space-between; margin-top: var(--cb-space-6); border-top: 1px solid var(--cb-line-2); }
+.sh-foot span { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); letter-spacing: 0.04em; }
+</style>
+
+<div class="sh-page">
+
+  <!-- 顶部栏 -->
+  <header class="sh-top">
+    <svg class="sh-wordmark" viewBox="282 94 335 128" fill="none" role="img" aria-label="Combo">
+      <path d="M347.153 170.776C346.929 174.072 346.097 177.16 344.657 180.04C343.217 182.888 341.265 185.4 338.801 187.576C336.369 189.752 333.505 191.448 330.209 192.664C326.913 193.88 323.329 194.488 319.457 194.488C312.769 194.488 307.009 193.08 302.177 190.264C297.377 187.416 293.665 183.448 291.041 178.36C288.449 173.272 287.153 167.32 287.153 160.504C287.153 155.192 287.953 150.344 289.553 145.96C291.185 141.544 293.489 137.736 296.465 134.536C299.441 131.336 302.993 128.872 307.121 127.144C311.281 125.384 315.873 124.504 320.897 124.504C323.745 124.504 326.161 124.792 328.145 125.368C330.161 125.944 331.761 126.536 332.945 127.144C334.129 127.72 334.897 128.008 335.249 128.008C335.761 128.008 336.513 127.72 337.505 127.144C338.497 126.568 339.457 125.992 340.385 125.416C341.313 124.84 341.937 124.552 342.257 124.552C342.449 124.552 342.625 124.648 342.785 124.84C342.945 125 343.057 125.288 343.121 125.704L347.345 146.488C347.441 146.84 347.441 147.128 347.345 147.352C347.281 147.576 347.089 147.72 346.769 147.784C346.513 147.848 346.289 147.816 346.097 147.688C345.905 147.528 345.713 147.24 345.521 146.824C343.633 141.8 341.569 137.832 339.329 134.92C337.089 132.008 334.801 129.944 332.465 128.728C330.129 127.48 327.857 126.856 325.649 126.856C323.377 126.856 321.265 127.448 319.313 128.632C317.393 129.784 315.681 131.528 314.177 133.864C312.673 136.168 311.505 139.016 310.673 142.408C309.841 145.8 309.425 149.72 309.425 154.168C309.425 161.528 310.257 167.576 311.921 172.312C313.617 177.016 315.953 180.504 318.929 182.776C321.937 185.016 325.377 186.136 329.249 186.136C333.249 186.136 336.785 184.856 339.857 182.296C342.929 179.736 344.961 175.848 345.953 170.632C346.049 170.344 346.145 170.136 346.241 170.008C346.337 169.88 346.465 169.816 346.625 169.816C346.849 169.848 346.993 169.96 347.057 170.152C347.153 170.312 347.185 170.52 347.153 170.776ZM374.81 148.792C379.45 148.792 383.53 149.768 387.05 151.72C390.602 153.64 393.37 156.312 395.354 159.736C397.37 163.16 398.378 167.112 398.378 171.592C398.378 175.944 397.338 179.8 395.258 183.16C393.178 186.52 390.314 189.176 386.666 191.128C383.018 193.048 378.81 194.008 374.042 194.008C369.434 194.008 365.354 193.064 361.802 191.176C358.25 189.256 355.466 186.616 353.45 183.256C351.466 179.864 350.474 175.96 350.474 171.544C350.474 167.192 351.53 163.304 353.642 159.88C355.754 156.456 358.65 153.752 362.33 151.768C366.01 149.784 370.17 148.792 374.81 148.792ZM377.594 192.616C378.778 192.456 379.642 191.576 380.186 189.976C380.762 188.344 381.034 185.928 381.002 182.728C380.97 179.528 380.586 175.512 379.85 170.68C379.146 165.848 378.362 161.896 377.498 158.824C376.634 155.72 375.69 153.48 374.666 152.104C373.674 150.696 372.586 150.088 371.402 150.28C370.282 150.472 369.434 151.384 368.858 153.016C368.314 154.616 368.074 157 368.138 160.168C368.202 163.336 368.57 167.352 369.242 172.216C369.946 177.048 370.714 181 371.546 184.072C372.41 187.144 373.338 189.384 374.33 190.792C375.354 192.2 376.442 192.808 377.594 192.616ZM422.404 149.608V189.592C422.404 190.04 422.516 190.456 422.74 190.84C422.964 191.192 423.268 191.416 423.652 191.512L425.428 191.896C425.812 191.992 426.004 192.168 426.004 192.424C426.004 192.808 425.732 193 425.188 193H402.004C401.748 193 401.556 192.952 401.428 192.856C401.3 192.728 401.236 192.6 401.236 192.472C401.236 192.344 401.3 192.216 401.428 192.088C401.588 191.96 401.78 191.864 402.004 191.8L403.684 191.416C404.132 191.32 404.436 191.128 404.596 190.84C404.756 190.552 404.836 190.184 404.836 189.736V156.232C404.836 155.88 404.772 155.608 404.644 155.416C404.548 155.224 404.34 155.128 404.02 155.128H401.956C401.796 155.096 401.668 155.032 401.572 154.936C401.476 154.84 401.428 154.728 401.428 154.6C401.428 154.44 401.476 154.312 401.572 154.216C401.7 154.088 401.892 153.992 402.148 153.928L419.908 148.888C420.26 148.76 420.548 148.68 420.772 148.648C421.028 148.616 421.268 148.6 421.492 148.6C421.844 148.6 422.084 148.712 422.212 148.936C422.34 149.128 422.404 149.352 422.404 149.608ZM421.06 160.504L420.244 159.784L422.02 158.056C425.54 154.728 428.836 152.36 431.908 150.952C434.98 149.512 437.7 148.792 440.068 148.792C443.108 148.792 445.556 149.72 447.412 151.576C449.3 153.432 450.244 156.392 450.244 160.456V190.12C450.244 190.568 450.308 190.904 450.436 191.128C450.596 191.32 450.82 191.448 451.108 191.512L452.26 191.848C452.676 191.976 452.884 192.168 452.884 192.424C452.884 192.808 452.564 193 451.924 193H430.324C429.908 193 429.7 192.808 429.7 192.424C429.7 192.168 429.892 191.992 430.276 191.896L431.476 191.608C432.052 191.448 432.436 191.16 432.628 190.744C432.82 190.296 432.916 189.752 432.916 189.112V162.472C432.916 160.744 432.484 159.352 431.62 158.296C430.756 157.208 429.652 156.664 428.308 156.664C427.156 156.664 426.132 156.856 425.236 157.24C424.372 157.592 423.556 158.136 422.788 158.872L421.06 160.504ZM448.948 160.504L448.132 159.784L449.668 157.816C451.972 154.84 454.42 152.6 457.012 151.096C459.604 149.56 462.26 148.792 464.98 148.792C467.924 148.792 470.436 149.72 472.516 151.576C474.596 153.432 475.844 156.424 476.26 160.552L479.476 189.928C479.54 190.472 479.652 190.872 479.812 191.128C480.004 191.352 480.244 191.512 480.532 191.608L481.588 191.896C481.78 191.96 481.924 192.04 482.02 192.136C482.116 192.232 482.164 192.344 482.164 192.472C482.164 192.632 482.1 192.76 481.972 192.856C481.876 192.952 481.716 193 481.492 193H458.74C458.324 193 458.116 192.808 458.116 192.424C458.116 192.168 458.308 191.992 458.692 191.896L459.892 191.608C460.468 191.448 460.868 191.144 461.092 190.696C461.316 190.248 461.396 189.656 461.332 188.92L458.98 162.472C458.852 160.744 458.372 159.352 457.54 158.296C456.708 157.208 455.588 156.664 454.18 156.664C453.38 156.664 452.66 156.84 452.02 157.192C451.412 157.544 450.868 158.024 450.388 158.632L448.948 160.504Z" fill="#1C1B19"/>
+      <path d="M503.85 121.432V190.552L488.778 193.576C488.426 193.672 488.106 193.752 487.818 193.816C487.562 193.88 487.338 193.912 487.146 193.912C486.89 193.912 486.682 193.832 486.522 193.672C486.362 193.544 486.282 193.368 486.282 193.144V127.96C486.282 127.64 486.202 127.416 486.042 127.288C485.914 127.128 485.69 127.048 485.37 127.048L483.594 127C483.338 127 483.162 126.952 483.066 126.856C482.97 126.76 482.922 126.632 482.922 126.472C482.922 126.28 482.97 126.152 483.066 126.088C483.194 125.992 483.354 125.912 483.546 125.848L501.258 120.856C501.738 120.728 502.074 120.648 502.266 120.616C502.458 120.552 502.666 120.52 502.89 120.52C503.21 120.52 503.45 120.616 503.61 120.808C503.77 120.968 503.85 121.176 503.85 121.432ZM502.602 157.672L501.69 156.616C503.546 153.992 505.562 152.04 507.738 150.76C509.946 149.448 512.506 148.792 515.418 148.792C519.13 148.792 522.362 149.624 525.114 151.288C527.866 152.952 529.994 155.352 531.498 158.488C533.002 161.624 533.754 165.432 533.754 169.912C533.754 174.712 532.858 178.936 531.066 182.584C529.274 186.2 526.794 189.016 523.626 191.032C520.458 193.016 516.81 194.008 512.682 194.008C509.674 194.008 507.306 193.544 505.578 192.616C503.85 191.656 502.426 190.168 501.306 188.152L502.842 187.384C503.418 188.76 504.138 189.784 505.002 190.456C505.866 191.096 506.938 191.416 508.218 191.416C509.754 191.416 511.098 190.872 512.25 189.784C513.402 188.664 514.298 186.648 514.938 183.736C515.578 180.824 515.898 176.696 515.898 171.352C515.898 166.648 515.626 162.936 515.082 160.216C514.57 157.464 513.834 155.512 512.874 154.36C511.946 153.176 510.842 152.584 509.562 152.584C508.25 152.584 507.002 153 505.818 153.832C504.634 154.664 503.562 155.944 502.602 157.672ZM561.278 148.792C565.918 148.792 569.998 149.768 573.518 151.72C577.07 153.64 579.838 156.312 581.822 159.736C583.838 163.16 584.846 167.112 584.846 171.592C584.846 175.944 583.806 179.8 581.726 183.16C579.646 186.52 576.782 189.176 573.134 191.128C569.486 193.048 565.278 194.008 560.51 194.008C555.902 194.008 551.822 193.064 548.27 191.176C544.718 189.256 541.934 186.616 539.918 183.256C537.934 179.864 536.942 175.96 536.942 171.544C536.942 167.192 537.998 163.304 540.11 159.88C542.222 156.456 545.118 153.752 548.798 151.768C552.478 149.784 556.638 148.792 561.278 148.792ZM564.062 192.616C565.246 192.456 566.11 191.576 566.654 189.976C567.23 188.344 567.502 185.928 567.47 182.728C567.438 179.528 567.054 175.512 566.318 170.68C565.614 165.848 564.83 161.896 563.966 158.824C563.102 155.72 562.158 153.48 561.134 152.104C560.142 150.696 559.054 150.088 557.87 150.28C556.75 150.472 555.902 151.384 555.326 153.016C554.782 154.616 554.542 157 554.606 160.168C554.67 163.336 555.038 167.352 555.71 172.216C556.414 177.048 557.182 181 558.014 184.072C558.878 187.144 559.806 189.384 560.798 190.792C561.822 192.2 562.91 192.808 564.062 192.616Z" fill="#A73718"/>
+      <circle cx="601.846" cy="183.488" r="11" fill="#A73718"/>
+    </svg>
+    <div class="sh-top-right">
+      <a class="sh-mklink" href="#">成为创作者</a>
+      <button class="sh-signin" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 1 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+        登录
+      </button>
+    </div>
+  </header>
+
+  <!-- 墙头 -->
+  <section class="wall-head">
+    <div class="wall-head-main">
+      <div class="wall-kicker">JUST GENERATED · 刚出炉</div>
+      <h1 class="wall-title">看看大家都在生成什么</h1>
+      <p class="wall-sub">这些都是刚刚有人用创作者的能力生成的真结果。看中哪张，自己也来一张 —— 点进去就是那位创作者的能力。</p>
+    </div>
+    <nav class="wall-filter">
+      <a class="wf on" href="#">全部</a>
+      <a class="wf" href="#">占卜</a>
+      <a class="wf" href="#">测评</a>
+      <a class="wf" href="#">生活</a>
+    </nav>
+  </section>
+
+  <!-- 瀑布墙 -->
+  <main class="wall">
+
+    <!-- 1 · 星野 · 明日运势（占卜 / 夜空 / 长） -->
+    <a class="wk" href="#" style="--hue:#2e2b52;--tint:#ecebf3;">
+      <div class="wk-art art--night">
+        <svg class="a-constel" viewBox="0 0 200 200" fill="none" aria-hidden="true"><circle cx="100" cy="100" r="70" stroke="currentColor" stroke-width="1.4"/><circle cx="100" cy="100" r="46" stroke="currentColor" stroke-width="1.4"/><path d="M100 30v140M30 100h140M50 50l100 100M150 50 50 150" stroke="currentColor" stroke-width="1"/></svg>
+        <div class="a-row"><span class="a-kick">明日运势 · 命盘速览</span><span class="a-date">07·14 周二</span></div>
+        <div class="a-verdict"><span class="lbl">今日宜</span><b>静观其变</b></div>
+        <div class="a-dots"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></div>
+        <p class="a-line">水逆将退，急事缓办。午后有旧友来讯，是机会也是考验；宜多听、少允诺，一切等周四见分晓。</p>
+        <div class="a-chips"><span>事业 · 平</span><span>感情 · 吉</span><span>财 · 缓</span></div>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">星</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>星野</b> · 明日运势</span><span class="wk-time">3 分钟前 · 林小满 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 2 · 阿橘 · 今日穿搭评分（生活 / 橘 / hover 示意） -->
+    <a class="wk wk--demo" href="#" style="--hue:#b5541f;--tint:#f7ece1;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">今日穿搭 · 通勤</span><span class="a-date">评分报告</span></div>
+        <div class="a-score"><b>87</b><i>分</i><span class="cap">超过<br>91% 通勤搭</span></div>
+        <div class="a-bars">
+          <div class="a-brow"><span class="lb">色彩</span><div class="a-bar"><i style="width:92%"></i></div><span class="vn">92</span></div>
+          <div class="a-brow"><span class="lb">比例</span><div class="a-bar"><i style="width:84%"></i></div><span class="vn">84</span></div>
+          <div class="a-brow"><span class="lb">场合</span><div class="a-bar"><i style="width:88%"></i></div><span class="vn">88</span></div>
+        </div>
+        <p class="a-line">上浅下深很稳。唯一建议：把鞋色收进外套的棕，整体会更「成套」。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">橘</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>阿橘</b> · 今日穿搭评分</span><span class="wk-time">刚刚 · 阿泽 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 3 · 苏见川 · 16 型人格深测（测评 / 青瓷绿 / 中） -->
+    <a class="wk" href="#" style="--hue:#2f6f6a;--tint:#e5efee;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">深层人格 · 测评报告</span><span class="a-date">60 题</span></div>
+        <div class="a-code">INFJ<span>-A</span></div>
+        <div class="a-head" style="font-size:var(--cb-text-lg)">提倡者 · 温柔的理想主义者</div>
+        <div class="a-spec">
+          <div class="a-srow"><span>I</span><div class="a-track"><span class="a-knob" style="left:28%"></span></div><span>E</span></div>
+          <div class="a-srow"><span>N</span><div class="a-track"><span class="a-knob" style="left:22%"></span></div><span>S</span></div>
+          <div class="a-srow"><span>F</span><div class="a-track"><span class="a-knob" style="left:38%"></span></div><span>T</span></div>
+          <div class="a-srow"><span>J</span><div class="a-track"><span class="a-knob" style="left:31%"></span></div><span>P</span></div>
+        </div>
+        <p class="a-line">你更在意「意义」而非热闹。独处充电，却常在关键时刻替别人扛下决定。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">苏</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>苏见川</b> · 16 型人格深测</span><span class="wk-time">6 分钟前 · 芋圆 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 4 · 星野 · 今日塔罗（占卜 / 夜空 / 短） -->
+    <a class="wk" href="#" style="--hue:#2e2b52;--tint:#ecebf3;">
+      <div class="wk-art art--night">
+        <div class="a-row"><span class="a-kick">今日塔罗 · 三张牌</span><span class="a-date">正位 · 2</span></div>
+        <div class="a-tarot">
+          <div class="a-tcard"><span>XVII</span></div>
+          <div class="a-tcard"><span>VI</span></div>
+          <div class="a-tcard"><span>X</span></div>
+        </div>
+        <p class="a-line">过去是星、当下是恋人、未来是命运之轮 —— 一段关系正被推着往前走。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">星</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>星野</b> · 今日塔罗</span><span class="wk-time">12 分钟前 · 夜航船 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 5 · 老陈 · 简历诊断（测评 / 石板 / 长） -->
+    <a class="wk" href="#" style="--hue:#47506a;--tint:#eaecf1;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">简历诊断 · 产品经理</span><span class="a-date">总评</span></div>
+        <div class="a-score"><b>B+</b><span class="cap">改完预计<br>可到 A-</span></div>
+        <div class="a-issues">
+          <div class="a-iss"><span class="sev hi">高</span>三段项目都用「负责」开头，缺一句量化结果。</div>
+          <div class="a-iss"><span class="sev mid">中</span>技能罗列 14 项，稀释了真正的强项。</div>
+          <div class="a-iss"><span class="sev mid">中</span>首屏没有一句话定位，HR 抓不住你是谁。</div>
+        </div>
+        <p class="a-line">骨架不错，问题都在「说法」。逐条改完，通过初筛的概率会明显上来。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">陈</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>老陈</b> · 简历诊断</span><span class="wk-time">8 分钟前 · 一杯美式 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 6 · 月见 · 姓名五格（占卜 / 紫 / 中） -->
+    <a class="wk" href="#" style="--hue:#6d3f6a;--tint:#f0e8ef;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">姓名五格 · 三才配置</span><span class="a-date">吉</span></div>
+        <div class="a-seal">
+          <div class="a-sealbox">昭</div>
+          <div class="a-wux">
+            <div class="a-wrow"><span>木</span><div class="a-bar"><i style="width:70%"></i></div></div>
+            <div class="a-wrow"><span>火</span><div class="a-bar"><i style="width:44%"></i></div></div>
+            <div class="a-wrow"><span>土</span><div class="a-bar"><i style="width:58%"></i></div></div>
+            <div class="a-wrow"><span>金</span><div class="a-bar"><i style="width:30%"></i></div></div>
+          </div>
+        </div>
+        <p class="a-line">三才「木火土」相生，主聪敏、性温。金稍弱，决断力可后天补，宜多做主张。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">月</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>月见</b> · 姓名五格</span><span class="wk-time">15 分钟前 · 竹里 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 7 · 阿橘 · 衣橱色彩诊断（生活 / 橘 / 短） -->
+    <a class="wk" href="#" style="--hue:#b5541f;--tint:#f7ece1;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">衣橱色彩诊断</span><span class="a-date">季型</span></div>
+        <div class="a-head" style="font-size:var(--cb-text-2xl)">秋型 · 暖调深</div>
+        <div class="a-swatch"><i style="background:#8a5a2b"></i><i style="background:#b5773a"></i><i style="background:#5f6b3a"></i><i style="background:#9a4030"></i><i style="background:#d8b578"></i></div>
+        <p class="a-line">你适合有「土气温度」的颜色。远离冷粉与荧光，靠近砖、橄榄、姜黄。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">橘</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>阿橘</b> · 衣橱色彩诊断</span><span class="wk-time">20 分钟前 · Momo 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 8 · 苏见川 · 恋爱人格匹配（测评 / 青瓷绿 / 短） -->
+    <a class="wk" href="#" style="--hue:#2f6f6a;--tint:#e5efee;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">恋爱人格匹配</span><span class="a-date">高契合</span></div>
+        <div class="a-match"><span class="a-mtag">INFJ</span><span class="a-mx">×</span><span class="a-mpct">82%</span><span class="a-mx">×</span><span class="a-mtag">ENFP</span></div>
+        <p class="a-line">理想主义碰上点子王：你负责深度，ta 负责把日子过得有声有色。雷区在「计划 vs 随性」。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">苏</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>苏见川</b> · 恋爱人格匹配</span><span class="wk-time">25 分钟前 · 半糖 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 9 · 星野 · 流年运程（占卜 / 夜空 / 中） -->
+    <a class="wk" href="#" style="--hue:#2e2b52;--tint:#ecebf3;">
+      <div class="wk-art art--night">
+        <div class="a-row"><span class="a-kick">流年运程 · 2026</span><span class="a-date">峰值 9 月</span></div>
+        <div class="a-arc">
+          <svg viewBox="0 0 260 74" fill="none" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M4 58 C40 52 58 30 92 34 C120 37 130 18 156 14 C188 9 206 40 232 30 C244 26 252 22 256 20" stroke="#d7b56a" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+            <circle cx="156" cy="14" r="3.4" fill="#d7b56a"/>
+            <circle cx="4" cy="58" r="2.4" fill="rgba(215,181,106,0.55)"/>
+          </svg>
+          <div class="a-arc-lbl"><span>1月</span><span>4月</span><span>9月 ★</span><span>12月</span></div>
+        </div>
+        <p class="a-line">上半年蓄力，别急着摊牌。转机集中在秋天 —— 9 月前后是全年最该出手的窗口。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">星</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>星野</b> · 流年运程</span><span class="wk-time">半小时前 · 观星人 生成</span></span>
+      </div>
+    </a>
+
+    <!-- 10 · 老陈 · 面试问题预测（测评 / 石板 / 中） -->
+    <a class="wk" href="#" style="--hue:#47506a;--tint:#eaecf1;">
+      <div class="wk-art art">
+        <div class="a-row"><span class="a-kick">面试问题预测 · 产品</span><span class="a-date">命中率 高</span></div>
+        <div class="a-issues">
+          <div class="a-iss"><span class="sev hi">必问</span>「讲一个你砍掉需求的决定，为什么砍？」</div>
+          <div class="a-iss"><span class="sev mid">高频</span>「你怎么衡量这个功能成没成功？」</div>
+          <div class="a-iss"><span class="sev mid">高频</span>「和研发意见不一致时，你上一次怎么处理？」</div>
+        </div>
+        <p class="a-line">按你的简历，这三题基本跑不掉。每题都替你备了一句「结果先行」的开头。</p>
+        <div class="wk-cta">我也要一张 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></div>
+      </div>
+      <div class="wk-foot">
+        <span class="wk-ava">陈</span>
+        <span class="wk-foot-main"><span class="wk-attr">@<b>老陈</b> · 面试问题预测</span><span class="wk-time">32 分钟前 · 陈皮 生成</span></span>
+      </div>
+    </a>
+
+  </main>
+
+  <footer class="sh-foot">
+    <span>COMBO · 能力市集 · 方向 E 结果先行作品流</span>
+    <span>以作品带能力 · 点作品即进能力 · 砖红只做「我也要一张」的图章</span>
+  </footer>
+
+</div>
+</body>
+</html>

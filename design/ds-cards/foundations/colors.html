@@ -1,0 +1,324 @@
+<!-- @dsCard group="01 · 基础 Foundations" name="Colors" subtitle="语义色 token 全档，Light｜Dark 两列同构对比" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Combo DS · Colors</title>
+<style>
+/* 生成物勿手改。
+ * 本文件由 packages/ds-tokens/build.mjs 从 tokens/primitives.json、tokens/semantic.json、
+ * tokens/motion.json 构建生成；修改 token 请改源 JSON 后重新执行 pnpm -F @cb/ds-tokens build。 */
+
+:root {
+  --cb-sidebar-w: 256px;
+  --cb-sidebar-w-collapsed: 64px;
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-rail: #f7f7f7;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-skeleton: #eeeae3;
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+  --cb-danger-line: color-mix(in srgb, var(--cb-danger) 28%, transparent);
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-dialog-w: 440px;
+  --cb-thread-w-md: 36rem;
+  --cb-thread-w-lg: 46rem;
+  --cb-focus-ring-w: 2px;
+  --cb-indicator-w: 2px;
+  --cb-bar-w: 3px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-rail: #1f1e1b;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-skeleton: #2e2b28;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  padding: var(--cb-space-6);
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; }
+
+.page-title {
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.page-sub {
+  margin-top: var(--cb-space-1);
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+}
+
+.themes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--cb-space-5);
+  margin-top: var(--cb-space-5);
+}
+
+@media (max-width: 860px) {
+  .themes { grid-template-columns: 1fr; }
+}
+
+.theme-panel {
+  background: var(--cb-paper);
+  color: var(--cb-fg);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: var(--cb-space-5);
+}
+
+.theme-label {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cb-muted);
+  padding-bottom: var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-3);
+  margin-bottom: var(--cb-space-4);
+}
+
+.group + .group { margin-top: var(--cb-space-5); }
+
+.group-title {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  margin-bottom: var(--cb-space-2);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: var(--cb-space-3);
+}
+
+.sw { min-width: 0; }
+
+.sw-chip {
+  height: var(--cb-space-7);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-control);
+}
+
+.sw-name {
+  margin-top: var(--cb-space-1);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-fg);
+  overflow-wrap: anywhere;
+}
+
+.sw-val {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  overflow-wrap: anywhere;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page-title">Colors</h1>
+  <p class="page-sub">semantic color tokens · :root（light）与 [data-cb-theme='dark'] 同名变量自动切换</p>
+
+  <div class="themes">
+    <section class="theme-panel">
+      <div class="theme-label">Light</div>
+      <div class="groups" id="groups-light">
+
+        <div class="group">
+          <div class="group-title">表面 Surface</div>
+          <div class="grid">
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-paper)"></div><div class="sw-name">--cb-paper</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-bg)"></div><div class="sw-name">--cb-bg</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-surface)"></div><div class="sw-name">--cb-surface</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-surface-raised)"></div><div class="sw-name">--cb-surface-raised</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-muted-bg)"></div><div class="sw-name">--cb-muted-bg</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-rail)"></div><div class="sw-name">--cb-rail</div><div class="sw-val"></div></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">文字 Text</div>
+          <div class="grid">
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-fg)"></div><div class="sw-name">--cb-fg</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-muted)"></div><div class="sw-name">--cb-muted</div><div class="sw-val"></div></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">描边 Line</div>
+          <div class="grid">
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-line-1)"></div><div class="sw-name">--cb-line-1</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-line-2)"></div><div class="sw-name">--cb-line-2</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-line-3)"></div><div class="sw-name">--cb-line-3</div><div class="sw-val"></div></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">强调 Accent</div>
+          <div class="grid">
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-accent)"></div><div class="sw-name">--cb-accent</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-accent-strong)"></div><div class="sw-name">--cb-accent-strong</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-accent-pressed)"></div><div class="sw-name">--cb-accent-pressed</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-accent-soft)"></div><div class="sw-name">--cb-accent-soft</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-accent-tint)"></div><div class="sw-name">--cb-accent-tint</div><div class="sw-val"></div></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">状态 Status</div>
+          <div class="grid">
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-ok)"></div><div class="sw-name">--cb-ok</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-ok-soft)"></div><div class="sw-name">--cb-ok-soft</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-warn)"></div><div class="sw-name">--cb-warn</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-warn-soft)"></div><div class="sw-name">--cb-warn-soft</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-danger)"></div><div class="sw-name">--cb-danger</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-danger-soft)"></div><div class="sw-name">--cb-danger-soft</div><div class="sw-val"></div></div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">焦点与反色 Focus / Contrast</div>
+          <div class="grid">
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-focus-ring)"></div><div class="sw-name">--cb-focus-ring</div><div class="sw-val"></div></div>
+            <div class="sw"><div class="sw-chip" style="background: var(--cb-accent-contrast)"></div><div class="sw-name">--cb-accent-contrast</div><div class="sw-val"></div></div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <section class="theme-panel" data-cb-theme="dark" style="background: var(--cb-paper); color: var(--cb-fg);">
+      <div class="theme-label">Dark</div>
+      <div class="groups" id="groups-dark"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  // 暗色列与亮色列同构：直接克隆同一份 swatch 标记，暗色差异由 [data-cb-theme='dark'] 子树变量接管。
+  document.getElementById('groups-dark').innerHTML = document.getElementById('groups-light').innerHTML;
+
+  function toHex(c) {
+    var m = c.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)/);
+    if (m) {
+      var r = Math.round(+m[1]), g = Math.round(+m[2]), b = Math.round(+m[3]);
+      var hex = '#' + [r, g, b].map(function (n) { return n.toString(16).padStart(2, '0'); }).join('');
+      if (m[4] !== undefined && parseFloat(m[4]) < 1) {
+        hex += ' / ' + Math.round(parseFloat(m[4]) * 100) + '%';
+      }
+      return hex;
+    }
+    m = c.match(/color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)/);
+    if (m) {
+      var hx = '#' + [m[1], m[2], m[3]].map(function (f) {
+        return Math.round(parseFloat(f) * 255).toString(16).padStart(2, '0');
+      }).join('');
+      if (m[4] !== undefined && parseFloat(m[4]) < 1) {
+        hx += ' / ' + Math.round(parseFloat(m[4]) * 100) + '%';
+      }
+      return hx;
+    }
+    return c;
+  }
+
+  document.querySelectorAll('.sw').forEach(function (sw) {
+    var chip = sw.querySelector('.sw-chip');
+    var val = sw.querySelector('.sw-val');
+    val.textContent = toHex(getComputedStyle(chip).backgroundColor);
+  });
+})();
+</script>
+</body>
+</html>

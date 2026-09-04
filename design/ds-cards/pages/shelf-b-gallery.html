@@ -1,0 +1,354 @@
+<!-- @dsCard group="08 · 货架 · 推荐流探索" name="方向 B · 画廊货架" subtitle="PlugThis × 美术馆：左分类栏（带计数）+ Market Card 网格 + 排序工具条。大留白、可浏览、每卡封面承载创作者色相。货架的字面解法（DEC-11/43）" -->
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>货架 · 方向 B 画廊货架</title></head>
+<body>
+<style>
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-soft: #f7e7e1;
+  --cb-ok: #4f6f52;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--cb-bg); color: var(--cb-fg); font-family: var(--cb-font-sans); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+.sh-page { position: relative; width: 1440px; min-height: 1180px; margin: 0 auto; background: var(--cb-bg); }
+
+/* 顶部栏 */
+.sh-top { display: flex; align-items: center; gap: var(--cb-space-6); padding: var(--cb-space-5) var(--cb-space-8); border-bottom: 1px solid var(--cb-line-2); background: color-mix(in srgb, var(--cb-paper) 82%, transparent); }
+.sh-wordmark { height: 22px; width: auto; display: block; }
+.sh-nav { display: flex; align-items: center; gap: var(--cb-space-2); margin-left: var(--cb-space-6); }
+.sh-nav a { font-size: var(--cb-text-md); color: var(--cb-muted); text-decoration: none; padding: 6px var(--cb-space-3); border-radius: var(--cb-radius-pill); }
+.sh-nav a:hover { color: var(--cb-fg); background: var(--cb-muted-bg); }
+.sh-nav a.on { color: var(--cb-fg); font-weight: 600; }
+.sh-top-right { margin-left: auto; display: flex; align-items: center; gap: var(--cb-space-4); }
+.sh-search { display: inline-flex; align-items: center; gap: var(--cb-space-2); width: 260px; padding: 8px var(--cb-space-3); background: var(--cb-surface-raised); border: 1px solid var(--cb-line-1); border-radius: var(--cb-radius-pill); color: var(--cb-muted); }
+.sh-search svg { width: 15px; height: 15px; flex: none; }
+.sh-search span { font-size: var(--cb-text-sm); }
+.sh-search kbd { margin-left: auto; font-family: var(--cb-font-mono); font-size: 10px; padding: 1px 5px; border: 1px solid var(--cb-line-1); border-radius: 4px; color: var(--cb-muted); }
+.sh-signin { display: inline-flex; align-items: center; gap: var(--cb-space-2); padding: 7px var(--cb-space-4); border-radius: var(--cb-radius-pill); background: var(--cb-fg); color: var(--cb-paper); font-size: var(--cb-text-sm); font-weight: 600; cursor: pointer; border: none; }
+
+/* 页头 */
+.sh-hero { padding: var(--cb-space-8) var(--cb-space-8) var(--cb-space-6); display: flex; align-items: flex-end; justify-content: space-between; gap: var(--cb-space-6); }
+.sh-hero-eyebrow { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.18em; text-transform: uppercase; color: var(--cb-accent); }
+.sh-hero-title { margin: var(--cb-space-3) 0 0; font-family: var(--cb-font-serif); font-weight: 600; font-size: var(--cb-text-3xl); line-height: 1.1; }
+.sh-hero-sub { margin: var(--cb-space-2) 0 0; font-family: var(--cb-font-serif); font-size: var(--cb-text-lg); color: var(--cb-muted); }
+.sh-sort { display: inline-flex; gap: 2px; padding: 3px; background: var(--cb-muted-bg); border-radius: var(--cb-radius-pill); }
+.sh-sort button { padding: 6px var(--cb-space-4); border: none; background: transparent; border-radius: var(--cb-radius-pill); font-family: var(--cb-font-sans); font-size: var(--cb-text-sm); color: var(--cb-muted); cursor: pointer; }
+.sh-sort button.on { background: var(--cb-surface-raised); color: var(--cb-fg); font-weight: 500; box-shadow: var(--cb-shadow-surface); }
+
+/* 主体两栏：左分类栏 + 右网格 */
+.sh-body { display: grid; grid-template-columns: 200px 1fr; gap: var(--cb-space-8); padding: 0 var(--cb-space-8) var(--cb-space-8); align-items: start; }
+
+/* 左分类栏 */
+.sh-cats { position: sticky; top: var(--cb-space-6); display: flex; flex-direction: column; gap: 2px; }
+.sh-cats-title { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); letter-spacing: 0.1em; text-transform: uppercase; color: var(--cb-muted); padding: 0 var(--cb-space-3) var(--cb-space-3); }
+.sh-cat { display: flex; align-items: center; gap: var(--cb-space-3); padding: 9px var(--cb-space-3); border-radius: var(--cb-radius-control); text-decoration: none; color: var(--cb-muted); font-size: var(--cb-text-md); }
+.sh-cat:hover { background: var(--cb-surface); color: var(--cb-fg); }
+.sh-cat.on { background: var(--cb-fg); color: var(--cb-paper); font-weight: 500; }
+.sh-cat .dot { width: 8px; height: 8px; border-radius: var(--cb-radius-pill); background: var(--hue, var(--cb-line-1)); flex: none; }
+.sh-cat.on .dot { background: var(--cb-paper); }
+.sh-cat .cnt { margin-left: auto; font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); }
+.sh-cat.on .cnt { color: color-mix(in srgb, var(--cb-paper) 66%, transparent); }
+.sh-cats-sep { height: 1px; background: var(--cb-line-2); margin: var(--cb-space-3) var(--cb-space-3); }
+.sh-cats-foot { padding: var(--cb-space-3); }
+.sh-cats-foot p { margin: 0 0 var(--cb-space-3); font-family: var(--cb-font-serif); font-size: var(--cb-text-sm); color: var(--cb-muted); line-height: 1.6; }
+.sh-cats-foot a { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-accent); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+.sh-cats-foot a svg { width: 12px; height: 12px; }
+
+/* 网格 */
+.sh-count { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); margin-bottom: var(--cb-space-4); letter-spacing: 0.04em; }
+.sh-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--cb-space-5); }
+
+/* Market Card */
+.sh-mc { display: flex; flex-direction: column; background: var(--cb-surface-raised); border: 1px solid var(--cb-line-1); border-radius: var(--cb-radius-card); overflow: hidden; text-decoration: none; color: inherit; box-shadow: var(--cb-shadow-surface); transition: box-shadow var(--cb-duration-fast) var(--cb-ease-standard), transform var(--cb-duration-fast) var(--cb-ease-standard), border-color var(--cb-duration-fast) var(--cb-ease-standard); }
+.sh-mc:hover { box-shadow: var(--cb-shadow-hero); transform: translateY(-3px); border-color: var(--cb-line-1); }
+.sh-mc-cover { position: relative; height: 148px; background: var(--tint); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.sh-mc-cover .motif { position: absolute; inset: 0; color: var(--hue); opacity: 0.15; }
+.sh-mc-cover .glyph { position: relative; font-family: var(--cb-font-serif); font-size: 48px; font-weight: 600; color: var(--hue); opacity: 0.92; }
+.sh-mc-cat { position: absolute; top: var(--cb-space-3); left: var(--cb-space-3); display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: var(--cb-radius-pill); background: color-mix(in srgb, var(--cb-surface-raised) 82%, transparent); color: var(--hue); font-size: 10px; font-weight: 600; letter-spacing: 0.02em; backdrop-filter: blur(4px); }
+.sh-mc-cat svg { width: 11px; height: 11px; }
+.sh-mc-fav { position: absolute; top: var(--cb-space-3); right: var(--cb-space-3); width: 26px; height: 26px; border-radius: var(--cb-radius-pill); background: color-mix(in srgb, var(--cb-surface-raised) 82%, transparent); display: flex; align-items: center; justify-content: center; color: var(--cb-muted); backdrop-filter: blur(4px); }
+.sh-mc-fav svg { width: 14px; height: 14px; }
+.sh-mc-body { padding: var(--cb-space-4) var(--cb-space-5) var(--cb-space-5); display: flex; flex-direction: column; flex: 1; }
+.sh-mc-title { font-family: var(--cb-font-serif); font-size: var(--cb-text-xl); font-weight: 600; line-height: 1.25; color: var(--cb-fg); }
+.sh-mc-desc { margin-top: var(--cb-space-2); font-size: var(--cb-text-md); line-height: 1.55; color: var(--cb-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sh-mc-by { margin-top: var(--cb-space-3); display: inline-flex; align-items: center; gap: var(--cb-space-2); }
+.sh-mc-ava { width: 20px; height: 20px; border-radius: var(--cb-radius-pill); background: var(--hue); color: #fff; display: flex; align-items: center; justify-content: center; font-family: var(--cb-font-serif); font-size: 10px; flex: none; }
+.sh-mc-byname { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); }
+.sh-mc-byname b { color: var(--cb-fg); font-weight: 500; }
+.sh-mc-foot { margin-top: var(--cb-space-4); padding-top: var(--cb-space-3); border-top: 1px solid var(--cb-line-3); display: flex; align-items: center; justify-content: space-between; }
+.sh-mc-uses { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); display: inline-flex; align-items: center; gap: 5px; }
+.sh-mc-uses svg { width: 12px; height: 12px; }
+.sh-mc-price { font-family: var(--cb-font-mono); font-size: var(--cb-text-sm); font-weight: 600; color: var(--cb-accent); }
+.sh-mc-price.free { color: var(--cb-ok); }
+
+/* 特色横条卡（占两列，打破网格节奏） */
+.sh-mc--wide { grid-column: span 2; flex-direction: row; }
+.sh-mc--wide .sh-mc-cover { height: auto; width: 260px; flex: none; }
+.sh-mc--wide .sh-mc-cover .glyph { font-size: 62px; }
+.sh-mc--wide .sh-mc-body { justify-content: center; }
+.sh-mc--wide .sh-mc-title { font-size: var(--cb-text-2xl); }
+.sh-mc--wide .sh-mc-desc { -webkit-line-clamp: 3; max-width: 46ch; }
+
+.sh-foot { padding: var(--cb-space-6) var(--cb-space-8) var(--cb-space-8); display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--cb-line-2); }
+.sh-foot span { font-family: var(--cb-font-mono); font-size: var(--cb-text-xs); color: var(--cb-muted); letter-spacing: 0.04em; }
+</style>
+
+<div class="sh-page">
+
+  <header class="sh-top">
+    <svg class="sh-wordmark" viewBox="282 94 335 128" fill="none" role="img" aria-label="Combo">
+      <path d="M347.153 170.776C346.929 174.072 346.097 177.16 344.657 180.04C343.217 182.888 341.265 185.4 338.801 187.576C336.369 189.752 333.505 191.448 330.209 192.664C326.913 193.88 323.329 194.488 319.457 194.488C312.769 194.488 307.009 193.08 302.177 190.264C297.377 187.416 293.665 183.448 291.041 178.36C288.449 173.272 287.153 167.32 287.153 160.504C287.153 155.192 287.953 150.344 289.553 145.96C291.185 141.544 293.489 137.736 296.465 134.536C299.441 131.336 302.993 128.872 307.121 127.144C311.281 125.384 315.873 124.504 320.897 124.504C323.745 124.504 326.161 124.792 328.145 125.368C330.161 125.944 331.761 126.536 332.945 127.144C334.129 127.72 334.897 128.008 335.249 128.008C335.761 128.008 336.513 127.72 337.505 127.144C338.497 126.568 339.457 125.992 340.385 125.416C341.313 124.84 341.937 124.552 342.257 124.552C342.449 124.552 342.625 124.648 342.785 124.84C342.945 125 343.057 125.288 343.121 125.704L347.345 146.488C347.441 146.84 347.441 147.128 347.345 147.352C347.281 147.576 347.089 147.72 346.769 147.784C346.513 147.848 346.289 147.816 346.097 147.688C345.905 147.528 345.713 147.24 345.521 146.824C343.633 141.8 341.569 137.832 339.329 134.92C337.089 132.008 334.801 129.944 332.465 128.728C330.129 127.48 327.857 126.856 325.649 126.856C323.377 126.856 321.265 127.448 319.313 128.632C317.393 129.784 315.681 131.528 314.177 133.864C312.673 136.168 311.505 139.016 310.673 142.408C309.841 145.8 309.425 149.72 309.425 154.168C309.425 161.528 310.257 167.576 311.921 172.312C313.617 177.016 315.953 180.504 318.929 182.776C321.937 185.016 325.377 186.136 329.249 186.136C333.249 186.136 336.785 184.856 339.857 182.296C342.929 179.736 344.961 175.848 345.953 170.632C346.049 170.344 346.145 170.136 346.241 170.008C346.337 169.88 346.465 169.816 346.625 169.816C346.849 169.848 346.993 169.96 347.057 170.152C347.153 170.312 347.185 170.52 347.153 170.776ZM374.81 148.792C379.45 148.792 383.53 149.768 387.05 151.72C390.602 153.64 393.37 156.312 395.354 159.736C397.37 163.16 398.378 167.112 398.378 171.592C398.378 175.944 397.338 179.8 395.258 183.16C393.178 186.52 390.314 189.176 386.666 191.128C383.018 193.048 378.81 194.008 374.042 194.008C369.434 194.008 365.354 193.064 361.802 191.176C358.25 189.256 355.466 186.616 353.45 183.256C351.466 179.864 350.474 175.96 350.474 171.544C350.474 167.192 351.53 163.304 353.642 159.88C355.754 156.456 358.65 153.752 362.33 151.768C366.01 149.784 370.17 148.792 374.81 148.792ZM377.594 192.616C378.778 192.456 379.642 191.576 380.186 189.976C380.762 188.344 381.034 185.928 381.002 182.728C380.97 179.528 380.586 175.512 379.85 170.68C379.146 165.848 378.362 161.896 377.498 158.824C376.634 155.72 375.69 153.48 374.666 152.104C373.674 150.696 372.586 150.088 371.402 150.28C370.282 150.472 369.434 151.384 368.858 153.016C368.314 154.616 368.074 157 368.138 160.168C368.202 163.336 368.57 167.352 369.242 172.216C369.946 177.048 370.714 181 371.546 184.072C372.41 187.144 373.338 189.384 374.33 190.792C375.354 192.2 376.442 192.808 377.594 192.616ZM422.404 149.608V189.592C422.404 190.04 422.516 190.456 422.74 190.84C422.964 191.192 423.268 191.416 423.652 191.512L425.428 191.896C425.812 191.992 426.004 192.168 426.004 192.424C426.004 192.808 425.732 193 425.188 193H402.004C401.748 193 401.556 192.952 401.428 192.856C401.3 192.728 401.236 192.6 401.236 192.472C401.236 192.344 401.3 192.216 401.428 192.088C401.588 191.96 401.78 191.864 402.004 191.8L403.684 191.416C404.132 191.32 404.436 191.128 404.596 190.84C404.756 190.552 404.836 190.184 404.836 189.736V156.232C404.836 155.88 404.772 155.608 404.644 155.416C404.548 155.224 404.34 155.128 404.02 155.128H401.956C401.796 155.096 401.668 155.032 401.572 154.936C401.476 154.84 401.428 154.728 401.428 154.6C401.428 154.44 401.476 154.312 401.572 154.216C401.7 154.088 401.892 153.992 402.148 153.928L419.908 148.888C420.26 148.76 420.548 148.68 420.772 148.648C421.028 148.616 421.268 148.6 421.492 148.6C421.844 148.6 422.084 148.712 422.212 148.936C422.34 149.128 422.404 149.352 422.404 149.608ZM421.06 160.504L420.244 159.784L422.02 158.056C425.54 154.728 428.836 152.36 431.908 150.952C434.98 149.512 437.7 148.792 440.068 148.792C443.108 148.792 445.556 149.72 447.412 151.576C449.3 153.432 450.244 156.392 450.244 160.456V190.12C450.244 190.568 450.308 190.904 450.436 191.128C450.596 191.32 450.82 191.448 451.108 191.512L452.26 191.848C452.676 191.976 452.884 192.168 452.884 192.424C452.884 192.808 452.564 193 451.924 193H430.324C429.908 193 429.7 192.808 429.7 192.424C429.7 192.168 429.892 191.992 430.276 191.896L431.476 191.608C432.052 191.448 432.436 191.16 432.628 190.744C432.82 190.296 432.916 189.752 432.916 189.112V162.472C432.916 160.744 432.484 159.352 431.62 158.296C430.756 157.208 429.652 156.664 428.308 156.664C427.156 156.664 426.132 156.856 425.236 157.24C424.372 157.592 423.556 158.136 422.788 158.872L421.06 160.504ZM448.948 160.504L448.132 159.784L449.668 157.816C451.972 154.84 454.42 152.6 457.012 151.096C459.604 149.56 462.26 148.792 464.98 148.792C467.924 148.792 470.436 149.72 472.516 151.576C474.596 153.432 475.844 156.424 476.26 160.552L479.476 189.928C479.54 190.472 479.652 190.872 479.812 191.128C480.004 191.352 480.244 191.512 480.532 191.608L481.588 191.896C481.78 191.96 481.924 192.04 482.02 192.136C482.116 192.232 482.164 192.344 482.164 192.472C482.164 192.632 482.1 192.76 481.972 192.856C481.876 192.952 481.716 193 481.492 193H458.74C458.324 193 458.116 192.808 458.116 192.424C458.116 192.168 458.308 191.992 458.692 191.896L459.892 191.608C460.468 191.448 460.868 191.144 461.092 190.696C461.316 190.248 461.396 189.656 461.332 188.92L458.98 162.472C458.852 160.744 458.372 159.352 457.54 158.296C456.708 157.208 455.588 156.664 454.18 156.664C453.38 156.664 452.66 156.84 452.02 157.192C451.412 157.544 450.868 158.024 450.388 158.632L448.948 160.504Z" fill="#1C1B19"/>
+      <path d="M503.85 121.432V190.552L488.778 193.576C488.426 193.672 488.106 193.752 487.818 193.816C487.562 193.88 487.338 193.912 487.146 193.912C486.89 193.912 486.682 193.832 486.522 193.672C486.362 193.544 486.282 193.368 486.282 193.144V127.96C486.282 127.64 486.202 127.416 486.042 127.288C485.914 127.128 485.69 127.048 485.37 127.048L483.594 127C483.338 127 483.162 126.952 483.066 126.856C482.97 126.76 482.922 126.632 482.922 126.472C482.922 126.28 482.97 126.152 483.066 126.088C483.194 125.992 483.354 125.912 483.546 125.848L501.258 120.856C501.738 120.728 502.074 120.648 502.266 120.616C502.458 120.552 502.666 120.52 502.89 120.52C503.21 120.52 503.45 120.616 503.61 120.808C503.77 120.968 503.85 121.176 503.85 121.432ZM502.602 157.672L501.69 156.616C503.546 153.992 505.562 152.04 507.738 150.76C509.946 149.448 512.506 148.792 515.418 148.792C519.13 148.792 522.362 149.624 525.114 151.288C527.866 152.952 529.994 155.352 531.498 158.488C533.002 161.624 533.754 165.432 533.754 169.912C533.754 174.712 532.858 178.936 531.066 182.584C529.274 186.2 526.794 189.016 523.626 191.032C520.458 193.016 516.81 194.008 512.682 194.008C509.674 194.008 507.306 193.544 505.578 192.616C503.85 191.656 502.426 190.168 501.306 188.152L502.842 187.384C503.418 188.76 504.138 189.784 505.002 190.456C505.866 191.096 506.938 191.416 508.218 191.416C509.754 191.416 511.098 190.872 512.25 189.784C513.402 188.664 514.298 186.648 514.938 183.736C515.578 180.824 515.898 176.696 515.898 171.352C515.898 166.648 515.626 162.936 515.082 160.216C514.57 157.464 513.834 155.512 512.874 154.36C511.946 153.176 510.842 152.584 509.562 152.584C508.25 152.584 507.002 153 505.818 153.832C504.634 154.664 503.562 155.944 502.602 157.672ZM561.278 148.792C565.918 148.792 569.998 149.768 573.518 151.72C577.07 153.64 579.838 156.312 581.822 159.736C583.838 163.16 584.846 167.112 584.846 171.592C584.846 175.944 583.806 179.8 581.726 183.16C579.646 186.52 576.782 189.176 573.134 191.128C569.486 193.048 565.278 194.008 560.51 194.008C555.902 194.008 551.822 193.064 548.27 191.176C544.718 189.256 541.934 186.616 539.918 183.256C537.934 179.864 536.942 175.96 536.942 171.544C536.942 167.192 537.998 163.304 540.11 159.88C542.222 156.456 545.118 153.752 548.798 151.768C552.478 149.784 556.638 148.792 561.278 148.792ZM564.062 192.616C565.246 192.456 566.11 191.576 566.654 189.976C567.23 188.344 567.502 185.928 567.47 182.728C567.438 179.528 567.054 175.512 566.318 170.68C565.614 165.848 564.83 161.896 563.966 158.824C563.102 155.72 562.158 153.48 561.134 152.104C560.142 150.696 559.054 150.088 557.87 150.28C556.75 150.472 555.902 151.384 555.326 153.016C554.782 154.616 554.542 157 554.606 160.168C554.67 163.336 555.038 167.352 555.71 172.216C556.414 177.048 557.182 181 558.014 184.072C558.878 187.144 559.806 189.384 560.798 190.792C561.822 192.2 562.91 192.808 564.062 192.616Z" fill="#A73718"/>
+      <circle cx="601.846" cy="183.488" r="11" fill="#A73718"/>
+    </svg>
+    <nav class="sh-nav">
+      <a href="#">发现</a>
+      <a href="#" class="on">货架</a>
+      <a href="#">排行</a>
+      <a href="#">创作者</a>
+    </nav>
+    <div class="sh-top-right">
+      <div class="sh-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <span>搜能力、创作者、场景</span>
+        <kbd>/</kbd>
+      </div>
+      <button class="sh-signin" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 1 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+        登录
+      </button>
+    </div>
+  </header>
+
+  <div class="sh-hero">
+    <div>
+      <div class="sh-hero-eyebrow">Combo 货架</div>
+      <h1 class="sh-hero-title">在架能力</h1>
+      <p class="sh-hero-sub">1,438 个创作者能力，按你要办的事挑一个。</p>
+    </div>
+    <div class="sh-sort">
+      <button class="on" type="button">热门</button>
+      <button type="button">最新</button>
+      <button type="button">价格</button>
+    </div>
+  </div>
+
+  <div class="sh-body">
+
+    <!-- 左分类栏 -->
+    <aside class="sh-cats">
+      <div class="sh-cats-title">分类</div>
+      <a class="sh-cat on" href="#"><span class="dot" style="background:var(--cb-fg)"></span>全部<span class="cnt">1438</span></a>
+      <a class="sh-cat" href="#" style="--hue:#a83a5b;"><span class="dot"></span>视觉<span class="cnt">312</span></a>
+      <a class="sh-cat" href="#" style="--hue:#3f7050;"><span class="dot"></span>写作<span class="cnt">268</span></a>
+      <a class="sh-cat" href="#" style="--hue:#2f5aa8;"><span class="dot"></span>理财<span class="cnt">154</span></a>
+      <a class="sh-cat" href="#" style="--hue:#9a6a1a;"><span class="dot"></span>生活<span class="cnt">203</span></a>
+      <a class="sh-cat" href="#" style="--hue:#2f5d3a;"><span class="dot"></span>健身<span class="cnt">97</span></a>
+      <a class="sh-cat" href="#" style="--hue:#2e2b52;"><span class="dot"></span>占卜<span class="cnt">86</span></a>
+      <a class="sh-cat" href="#" style="--hue:#5b3fa8;"><span class="dot"></span>音乐<span class="cnt">61</span></a>
+      <a class="sh-cat" href="#" style="--hue:#2f6f6a;"><span class="dot"></span>设计<span class="cnt">124</span></a>
+      <a class="sh-cat" href="#" style="--hue:#47506a;"><span class="dot"></span>法律<span class="cnt">73</span></a>
+      <div class="sh-cats-sep"></div>
+      <div class="sh-cats-foot">
+        <p>没找到合适的？把你的经验做成一件。</p>
+        <a href="#">成为创作者 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></a>
+      </div>
+    </aside>
+
+    <!-- 网格 -->
+    <main>
+      <div class="sh-count">显示 全部 · 按 热门 排序 · 共 1,438 件</div>
+      <div class="sh-grid">
+
+        <!-- 宽卡：编辑精选 -->
+        <a class="sh-mc sh-mc--wide" href="#" style="--hue:#2e2b52;--tint:#ecebf3;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 200 200" fill="none" aria-hidden="true"><circle cx="100" cy="100" r="70" stroke="currentColor" stroke-width="1.4"/><circle cx="100" cy="100" r="46" stroke="currentColor" stroke-width="1.4"/><path d="M100 30v140M30 100h140M50 50l100 100M150 50 50 150" stroke="currentColor" stroke-width="1"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>占卜 · 编辑精选</span>
+            <span class="glyph">卜</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">明日运势 · 一张命盘看走向</div>
+            <div class="sh-mc-desc">把生日交给星野的命理能力，排一张命盘，读懂明天的机会与要避的坑。跑过 3 万次的真实命理会话，沉成这一件。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">星</span><span class="sh-mc-byname">by <b>星野</b> · 命理创作者</span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>32.4k 使用</span><span class="sh-mc-price">0.2/次</span></div>
+          </div>
+        </a>
+
+        <!-- 常规卡 -->
+        <a class="sh-mc" href="#" style="--hue:#a83a5b;--tint:#f6e7ec;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><rect x="18" y="24" width="64" height="44" rx="4" stroke="currentColor" stroke-width="1.6"/><path d="M18 54l18-14 16 12 14-10 16 10" stroke="currentColor" stroke-width="1.6"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="16" height="12" rx="2"/></svg>视觉</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">封</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">小红书封面生成器</div>
+            <div class="sh-mc-desc">把课程笔记包装成可发布的图文卡，标题、配色、排版一次给齐。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">象</span><span class="sh-mc-byname">by <b>阿象</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>12.8k</span><span class="sh-mc-price">0.2/次</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#9a6a1a;--tint:#f6efe0;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><path d="M30 30v40M30 30c8 0 8 20 0 20M66 28v44M60 28v18a6 6 0 0012 0V28" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h16M6 20V8h12v12"/></svg>生活</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">厨</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">今晚吃什么</div>
+            <div class="sh-mc-desc">报一下冰箱里有啥，给你三个能落地的菜谱和采购清单。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">林</span><span class="sh-mc-byname">by <b>林师傅</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>23.1k</span><span class="sh-mc-price free">免费</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#2f5aa8;--tint:#e7edf6;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><path d="M16 70l16-18 14 10 20-28 18 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 18 10 12l4 4 6-8"/></svg>理财</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">仓</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">组合仓位分析</div>
+            <div class="sh-mc-desc">贴上持仓，读出收益归因、夏普与最大回撤，给出加减仓的判断框架。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">V</span><span class="sh-mc-byname">by <b>Vincent</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>8.4k</span><span class="sh-mc-price">1.0/次</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#3f7050;--tint:#e8f0ea;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><path d="M28 26h44M28 42h44M28 58h30M28 74h20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 5h14M5 12h14M5 19h9"/></svg>写作</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">写</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">雅思写作陪练</div>
+            <div class="sh-mc-desc">贴上你的作文，按考官维度批注，给出可背的升级句式。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">L</span><span class="sh-mc-byname">by <b>Coach Lin</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>5.2k</span><span class="sh-mc-price">0.5/次</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#2f5d3a;--tint:#e6efe8;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><path d="M24 50h8M68 50h8M32 42h6v16h-6zM62 42h6v16h-6zM38 50h24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h4M16 12h4M8 9h8v6H8z"/></svg>健身</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">练</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">下肢日训练计划</div>
+            <div class="sh-mc-desc">说清器械和时长，排一套带组数、重量与休息的今日计划。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">R</span><span class="sh-mc-byname">by <b>Reach</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>3.1k</span><span class="sh-mc-price">0.3/次</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#5b3fa8;--tint:#ece7f6;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><path d="M20 60V40M32 68V32M44 56V44M56 64V36M68 58V42M80 62V38" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>音乐</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">乐</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">旋律工作流</div>
+            <div class="sh-mc-desc">哼一段动机，帮你搭出和弦走向、鼓组与贝斯的编排草稿。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">S</span><span class="sh-mc-byname">by <b>SoundFlow</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>2.0k</span><span class="sh-mc-price">1.5/次</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#2f6f6a;--tint:#e4efee;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><rect x="24" y="24" width="52" height="52" rx="6" stroke="currentColor" stroke-width="1.6"/><path d="M24 46h52M46 24v52" stroke="currentColor" stroke-width="1.2"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>设计</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">评</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">设计评审</div>
+            <div class="sh-mc-desc">丢一张稿，给出层级、对比、可用性的结构化评审意见。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">D</span><span class="sh-mc-byname">by <b>DesignCritique</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>2.4k</span><span class="sh-mc-price free">免费</span></div>
+          </div>
+        </a>
+
+        <a class="sh-mc" href="#" style="--hue:#47506a;--tint:#eaecf1;">
+          <div class="sh-mc-cover">
+            <svg class="motif" viewBox="0 0 100 100" fill="none"><path d="M50 24v52M30 40h40M34 40l-8 18h16zM66 40l8 18H58z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="sh-mc-cat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M6 8h12M7 8l-3 7h6zM17 8l3 7h-6z"/></svg>法律</span>
+            <span class="sh-mc-fav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.3 3-5.5A3.5 3.5 0 0 0 12 6a3.5 3.5 0 0 0-10 2.5C2 10.7 3.5 12.5 5 14l7 7Z"/></svg></span>
+            <span class="glyph">法</span>
+          </div>
+          <div class="sh-mc-body">
+            <div class="sh-mc-title">合同条款解读</div>
+            <div class="sh-mc-desc">贴上条款，逐条讲清含义、风险点与可谈判的空间。</div>
+            <div class="sh-mc-by"><span class="sh-mc-ava">L</span><span class="sh-mc-byname">by <b>LexisGuide</b></span></div>
+            <div class="sh-mc-foot"><span class="sh-mc-uses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7 9 18l-5-5"/></svg>1.9k</span><span class="sh-mc-price">2.0/次</span></div>
+          </div>
+        </a>
+
+      </div>
+    </main>
+  </div>
+
+  <footer class="sh-foot">
+    <span>COMBO · 货架 · 方向 B 画廊网格</span>
+    <span>纸感 · 左分类栏 · Market Card · 大留白</span>
+  </footer>
+
+</div>
+</body>
+</html>

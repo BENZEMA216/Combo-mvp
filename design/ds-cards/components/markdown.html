@@ -1,0 +1,296 @@
+<!-- @dsCard group="03 · 组件 Components" name="Markdown" subtitle="能力产物 / 对话回答的富文本渲染（.cb-markdown）：衬线标题 + 墨底反白代码块 + 表格 / 引用 / 列表，样式与 packages/ds 实装逐字一致" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Combo DS · Markdown</title>
+<style>
+/* 生成物勿手改。
+ * 本文件 :root token 由 packages/ds-tokens 生成；.cb-markdown 规则与
+ * packages/ds/src/markdown/markdown.css 逐字一致（改样式改源 .css 后重新构建）。 */
+
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+/* --- src/markdown/markdown.css （与实装逐字一致） --- */
+.cb-markdown {
+  font-family: var(--cb-font-sans);
+  font-size: var(--cb-text-md);
+  line-height: 1.7;
+  color: var(--cb-fg);
+  overflow-wrap: break-word;
+}
+.cb-markdown > :first-child { margin-top: 0; }
+.cb-markdown > :last-child { margin-bottom: 0; }
+.cb-markdown h1,
+.cb-markdown h2,
+.cb-markdown h3,
+.cb-markdown h4,
+.cb-markdown h5,
+.cb-markdown h6 {
+  font-family: var(--cb-font-serif);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--cb-fg);
+  margin: var(--cb-space-5) 0 var(--cb-space-2);
+}
+.cb-markdown h1 { font-size: var(--cb-text-xl); }
+.cb-markdown h2 { font-size: var(--cb-text-lg); }
+.cb-markdown h3 { font-size: var(--cb-text-md); }
+.cb-markdown h4,
+.cb-markdown h5,
+.cb-markdown h6 { font-size: var(--cb-text-sm); }
+.cb-markdown p { margin: 0 0 var(--cb-space-3); }
+.cb-markdown ul,
+.cb-markdown ol {
+  margin: 0 0 var(--cb-space-3);
+  padding-left: var(--cb-space-5);
+}
+.cb-markdown li { margin: 0 0 var(--cb-space-1); }
+.cb-markdown li > ul,
+.cb-markdown li > ol { margin: var(--cb-space-1) 0 0; }
+.cb-markdown code {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-sm);
+  background: var(--cb-muted-bg);
+  border-radius: calc(var(--cb-radius-control) / 2);
+  padding: 0 var(--cb-space-1);
+}
+.cb-markdown pre {
+  background: var(--cb-fg);
+  color: var(--cb-paper);
+  border-radius: var(--cb-radius-card);
+  padding: var(--cb-space-3) var(--cb-space-4);
+  margin: 0 0 var(--cb-space-3);
+  overflow-x: auto;
+}
+.cb-markdown pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: var(--cb-text-sm);
+}
+.cb-markdown a {
+  color: var(--cb-accent);
+  text-decoration: underline;
+}
+.cb-markdown a:hover { color: var(--cb-accent-strong); }
+.cb-markdown blockquote {
+  margin: 0 0 var(--cb-space-3);
+  padding: 0 0 0 var(--cb-space-4);
+  border-left: calc(var(--cb-space-1) / 2) solid var(--cb-line-1);
+  color: var(--cb-muted);
+}
+.cb-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 var(--cb-space-3);
+  font-size: var(--cb-text-sm);
+}
+.cb-markdown th,
+.cb-markdown td {
+  text-align: left;
+  padding: var(--cb-space-2) var(--cb-space-3);
+  border-bottom: 1px solid var(--cb-line-2);
+}
+.cb-markdown th {
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  font-weight: 500;
+  color: var(--cb-muted);
+}
+.cb-markdown hr {
+  border: none;
+  border-top: 1px solid var(--cb-line-2);
+  margin: var(--cb-space-5) 0;
+}
+.cb-markdown img {
+  max-width: 100%;
+  border-radius: var(--cb-radius-card);
+}
+.cb-markdown strong { font-weight: 600; }
+
+/* —— 预览卡自用样式（demo-only，非 DS 产物） —— */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: var(--cb-space-6);
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+.demo-page { max-width: 720px; margin: 0 auto; }
+.demo-head { margin: 0 0 var(--cb-space-5); }
+.demo-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.demo-sub {
+  margin: var(--cb-space-1) 0 0;
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+.demo-section { margin: 0 0 var(--cb-space-6); }
+.demo-section:last-child { margin-bottom: 0; }
+.demo-label {
+  margin: 0 0 var(--cb-space-2);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+}
+/* markdown 一般落在能力 surface 内衬区里，这里用 surface 卡承托还原真实语境 */
+.demo-surface {
+  background: var(--cb-surface);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: var(--cb-space-5);
+}
+</style>
+</head>
+<body>
+<div class="demo-page">
+
+  <div class="demo-head">
+    <h1 class="demo-title">Markdown</h1>
+    <p class="demo-sub">.cb-markdown · 能力产物与对话回答的富文本渲染作用域</p>
+  </div>
+
+  <section class="demo-section">
+    <p class="demo-label">全元素渲染 — 落在能力 surface 内衬区（真实语境）</p>
+    <div class="demo-surface">
+      <div class="cb-markdown">
+        <h1>女装主推款 CTR 判断 · 复盘报告</h1>
+        <p>基于近三场投放复盘会话沉淀的判断经验，输入最新素材数据后<strong>自动复跑</strong>。以下为本轮结论，命中主推条件的款式已标注。</p>
+
+        <h2>候选款排序</h2>
+        <table>
+          <thead>
+            <tr><th>候选款</th><th>7 日 CTR</th><th>较品类均值</th><th>判断</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>法式方领连衣裙</td><td>4.2%</td><td>+1.8 pt</td><td>主推</td></tr>
+            <tr><td>泡泡袖真丝衬衫</td><td>2.9%</td><td>+0.5 pt</td><td>观察</td></tr>
+            <tr><td>高腰阔腿裤</td><td>1.6%</td><td>−0.8 pt</td><td>淘汰</td></tr>
+          </tbody>
+        </table>
+
+        <h2>结论与动作</h2>
+        <ul>
+          <li><strong>法式方领连衣裙</strong>满足主推条件：CTR 连续 3 天高于 4%，素材尚未进入衰减期。
+            <ul>
+              <li>建议接管主推位，预算上浮 20%。</li>
+              <li>保留一组备用素材，防止单条疲劳。</li>
+            </ul>
+          </li>
+          <li>泡泡袖真丝衬衫：追加 2 组新素材，<code>3d</code> 后再复跑本判断。</li>
+          <li>高腰阔腿裤：撤出主推位，释放预算给候选 A。</li>
+        </ul>
+
+        <h3>复跑命令</h3>
+        <p>把最新素材数据贴进对话，或用行内代码 <code>ctr-review --since=7d</code> 触发；也可直接调用：</p>
+        <pre><code>combo run ctr-review \
+  --data ./投放明细_0713.csv \
+  --threshold 1.5pt \
+  --window 3d</code></pre>
+
+        <blockquote>
+          <p>判断标准：候选款 CTR 高于品类均值 1.5 个点且连续 3 天保持，才能接管主推位。标准来自 <a href="#">2026-06-24 投放复盘会话</a>。</p>
+        </blockquote>
+
+        <hr />
+
+        <p>本报告由创作者「阿象」的能力生成 · 数据仅覆盖已授权投放账户。</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

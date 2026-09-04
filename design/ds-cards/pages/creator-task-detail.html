@@ -1,0 +1,568 @@
+<!-- @dsCard group="06 · 创作侧 Creator" name="② 任务详情 · 上传+SSE提取" subtitle="实装镜像：上传卡+提取卡(进度条+子任务点亮+慢提示+失败卡)。SSE 实时提取，永不裸转圈。名词=能力" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Combo DS · 任务详情 · 上传+SSE提取</title>
+<style>
+/* 生成物勿手改。
+ * 本文件 :root token 由 packages/ds-tokens 生成；.cb-* 规则与
+ * apps/web/src/styles.css 逐字一致（改样式改源 .css 后重新构建）。 */
+
+:root {
+  --cb-paper: #fbfaf6;
+  --cb-bg: #f5f3ef;
+  --cb-surface: #faf8f4;
+  --cb-surface-raised: #ffffff;
+  --cb-muted-bg: #eeeae3;
+  --cb-fg: #1c1b19;
+  --cb-muted: #66706c;
+  --cb-line-1: #dcd7cf;
+  --cb-line-2: #e7e2d9;
+  --cb-line-3: #ece7df;
+  --cb-border: var(--cb-line-1);
+  --cb-grid: rgba(220, 214, 205, 0.72);
+  --cb-accent: #a73718;
+  --cb-accent-strong: #8f2d14;
+  --cb-accent-pressed: #6e210f;
+  --cb-accent-soft: #f7e7e1;
+  --cb-accent-tint: #f4d4c9;
+  --cb-focus-ring: #7fa59d;
+  --cb-ok: #4f6f52;
+  --cb-warn: #7a5317;
+  --cb-danger: #b3261e;
+  --cb-radius-control: 6px;
+  --cb-radius-card: 7px;
+  --cb-radius-hero: 18px;
+  --cb-radius-pill: 999px;
+  --cb-shadow-surface: 0 2px 8px rgba(28, 27, 25, 0.04);
+  --cb-shadow-hero: 0 8px 24px rgba(28, 27, 25, 0.06);
+  --cb-shadow-overlay: 0 12px 28px rgba(28, 27, 25, 0.1);
+  --cb-font-brand: 'Fraunces', 'Noto Serif SC', serif;
+  --cb-font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --cb-font-sans: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
+  --cb-space-1: 4px;
+  --cb-space-2: 8px;
+  --cb-space-3: 10px;
+  --cb-space-4: 14px;
+  --cb-space-5: 20px;
+  --cb-space-6: 26px;
+  --cb-space-7: 32px;
+  --cb-space-8: 40px;
+  --cb-text-xs: 11px;
+  --cb-text-sm: 12px;
+  --cb-text-md: 13px;
+  --cb-text-lg: 14px;
+  --cb-text-xl: 18px;
+  --cb-text-2xl: 24px;
+  --cb-text-3xl: 32px;
+  --cb-accent-contrast: #ffffff;
+  --cb-duration-fast: 120ms;
+  --cb-duration-base: 200ms;
+  --cb-duration-slow: 320ms;
+  --cb-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --cb-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+}
+
+[data-cb-theme='dark'] {
+  --cb-paper: #1a1917;
+  --cb-bg: #161513;
+  --cb-surface: #211f1d;
+  --cb-surface-raised: #262421;
+  --cb-muted-bg: #2e2b28;
+  --cb-fg: #efece7;
+  --cb-muted: #a8a29a;
+  --cb-line-1: #3a3835;
+  --cb-line-2: #322f2d;
+  --cb-line-3: #2a2825;
+  --cb-grid: rgba(58, 56, 53, 0.6);
+  --cb-accent: #c85a36;
+  --cb-accent-strong: #d96f4a;
+  --cb-accent-pressed: #b34a28;
+  --cb-accent-soft: #3a1a10;
+  --cb-accent-tint: #57291a;
+  --cb-focus-ring: #8fb5ac;
+  --cb-ok: #7fae84;
+  --cb-warn: #cf9d54;
+  --cb-danger: #e5776b;
+  --cb-shadow-surface: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --cb-shadow-hero: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cb-shadow-overlay: 0 12px 28px rgba(0, 0, 0, 0.55);
+}
+
+/* 补充 semantic token（源 packages/ds-tokens/dist/tokens.css，逐字一致）——
+ * 本卡的进度条 / 上传进度 / 状态徽章 / 失败态用到，markdown.html 的 token 子集里没有，
+ * 从 tokens.css 原样取来，保证渲染与实装一致（非虚构）。 */
+:root {
+  --cb-skeleton: #eeeae3;
+  --cb-badge-ok: var(--cb-ok);
+  --cb-ok-soft: color-mix(in srgb, var(--cb-ok) 10%, var(--cb-surface));
+  --cb-warn-soft: color-mix(in srgb, var(--cb-warn) 10%, var(--cb-surface));
+  --cb-danger-soft: color-mix(in srgb, var(--cb-danger) 8%, var(--cb-surface));
+}
+
+[data-cb-theme='dark'] {
+  --cb-skeleton: #2e2b28;
+}
+
+/* ================= 以下 .cb-* 与 apps/web/src/styles.css 逐字一致 ================= */
+
+* {
+  box-sizing: border-box;
+}
+
+/* ---------- 页面通用 ---------- */
+.cb-page__title {
+  font-family: var(--cb-font-serif);
+  margin: 0 0 8px;
+}
+
+.cb-page__head {
+  margin-bottom: 20px;
+}
+
+.cb-page__lead {
+  color: var(--cb-muted);
+  font-size: 14px;
+  margin: 4px 0 0;
+  line-height: 1.65;
+}
+
+.cb-page__back {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.cb-page__back a {
+  color: var(--cb-muted);
+  text-decoration: none;
+}
+
+.cb-page__back a:hover {
+  color: var(--cb-accent);
+}
+
+/* 主按钮（新建任务 / 重试 / 去能力页）。 */
+.cb-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: var(--cb-accent);
+  color: #fff;
+  border-radius: var(--cb-radius-control);
+  padding: 8px 20px;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cb-primary-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 通用卡片（任务详情分区）。 */
+.cb-card {
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-card);
+  background: var(--cb-surface);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.cb-card__title {
+  font-family: var(--cb-font-serif);
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+.cb-card__line {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+.cb-card__hint {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+  line-height: 1.6;
+}
+
+.cb-card__reconnect {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--cb-muted);
+  background: var(--cb-accent-soft);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.cb-card--failed {
+  border-color: color-mix(in srgb, var(--cb-danger) 22%, transparent);
+  background: var(--cb-danger-soft);
+}
+
+/* ---------- LoadingState（永不裸转圈三件套） ---------- */
+.cb-progress__track {
+  height: 6px;
+  background: var(--cb-skeleton);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cb-progress__fill {
+  height: 100%;
+  background: var(--cb-accent);
+  transition: width 0.3s ease;
+}
+
+.cb-progress__phrase {
+  font-size: 13px;
+  color: var(--cb-muted);
+  margin: 6px 0 0;
+}
+
+.cb-progress__slow {
+  font-size: 12px;
+  color: var(--cb-muted);
+}
+
+.cb-subtasks {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+
+.cb-subtasks__item {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.cb-subtasks__item[data-status='done'] {
+  color: var(--cb-fg);
+}
+
+.cb-subtasks__item[data-status='pending'] {
+  color: var(--cb-muted);
+}
+
+.cb-subtasks__item[data-status='failed'] {
+  color: var(--cb-danger);
+}
+
+/* ---------- SlowHint（慢但没坏的安抚，非错误） ---------- */
+.cb-slowhint {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--cb-border);
+  border-radius: 8px;
+  background: var(--cb-paper);
+}
+
+.cb-slowhint__phrase {
+  margin: 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+.cb-slowhint__elapsed {
+  color: var(--cb-border);
+}
+
+/* ---------- 上传阶段卡 ---------- */
+.cb-upload-card {
+  padding: 18px 20px;
+  background: var(--cb-surface);
+}
+
+.cb-upload-card--waiting {
+  border-color: var(--cb-border);
+}
+
+.cb-upload-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.cb-upload-card__meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--cb-skeleton);
+  margin: 10px 0 8px;
+}
+
+.cb-upload-card__meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cb-accent);
+  transition: width 0.18s ease;
+}
+
+.cb-upload-card__steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.cb-upload-card__steps span {
+  position: relative;
+  border: 1px solid var(--cb-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cb-muted);
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 8px 10px 8px 24px;
+}
+
+.cb-upload-card__steps span::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cb-muted);
+  transform: translateY(-50%);
+}
+
+.cb-upload-card__steps span.is-active {
+  border-color: var(--cb-line-1);
+  color: var(--cb-fg);
+  background: var(--cb-surface-raised);
+}
+
+.cb-upload-card__steps span.is-active::before {
+  background: var(--cb-accent);
+}
+
+.cb-task-error {
+  color: var(--cb-danger);
+  font-size: 13px;
+}
+
+/* ---------- 状态徽章 ---------- */
+.cb-status-badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--cb-skeleton);
+  color: var(--cb-muted);
+}
+
+.cb-status-badge.is-published {
+  background: var(--cb-ok-soft);
+  color: var(--cb-badge-ok);
+}
+
+.cb-status-badge.is-pending {
+  background: var(--cb-warn-soft);
+  color: var(--cb-warn);
+}
+
+.cb-status-badge.is-rejected {
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+}
+
+.cb-status-badge.is-unpublished {
+  background: var(--cb-skeleton);
+  color: var(--cb-muted);
+}
+
+/* ---------- 能力挑选-发布区（此处只用到 lead 一句） ---------- */
+.cb-capabilities__lead {
+  margin: 0;
+  max-width: 680px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--cb-muted);
+}
+
+.cb-capabilities__empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--cb-muted);
+}
+
+/* 键盘焦点：所有可交互元素统一 canon 焦点环。 */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--cb-focus-ring);
+  outline-offset: 2px;
+}
+
+.cb-primary-btn:hover:not(:disabled) {
+  background: var(--cb-accent-strong);
+}
+.cb-primary-btn:active:not(:disabled) {
+  background: var(--cb-accent-pressed);
+}
+
+/* —— 预览卡自用样式（demo-only，非 DS 产物） —— */
+body {
+  margin: 0;
+  padding: var(--cb-space-6);
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  font-family: var(--cb-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+.demo-page { max-width: 760px; margin: 0 auto; }
+.demo-head { margin: 0 0 var(--cb-space-5); }
+.demo-title {
+  margin: 0;
+  font-family: var(--cb-font-serif);
+  font-size: var(--cb-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.demo-sub {
+  margin: var(--cb-space-1) 0 0;
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  line-height: 1.6;
+}
+/* 主内容区在实装里是 .cb-shell__main（surface-raised 白底），卡片是 surface 暖白，
+ * 用这层承托还原「白页 + 暖卡」的真实对比语境。 */
+.demo-frame {
+  background: var(--cb-surface-raised);
+  border: 1px solid var(--cb-line-2);
+  border-radius: var(--cb-radius-card);
+  box-shadow: var(--cb-shadow-surface);
+  padding: clamp(20px, 4vw, 40px);
+}
+.demo-divider {
+  margin: var(--cb-space-7) 0 var(--cb-space-4);
+  font-family: var(--cb-font-mono);
+  font-size: var(--cb-text-xs);
+  color: var(--cb-muted);
+  border-top: 1px solid var(--cb-line-2);
+  padding-top: var(--cb-space-4);
+  line-height: 1.6;
+}
+</style>
+</head>
+<body>
+<div class="demo-page">
+
+  <div class="demo-head">
+    <h1 class="demo-title">任务详情 · 上传 + SSE 提取（进行中）</h1>
+    <p class="demo-sub">.cb-page + UploadCard + ExtractCard · GET /tasks/:id 轮询兜底 + SSE /tasks/:id/events 实时提取 · 永不裸转圈 · 名词=能力</p>
+  </div>
+
+  <div class="demo-frame">
+
+    <!-- ===== TaskDetailPage：running + currentStep=extract（进行中/提取中段） ===== -->
+    <section class="cb-page" aria-labelledby="cb-task-detail-title">
+      <p class="cb-page__back">
+        <a href="#">← 返回任务列表</a>
+      </p>
+      <div class="cb-page__head">
+        <h2 class="cb-page__title" id="cb-task-detail-title">近三场投放复盘会话</h2>
+        <p class="cb-page__lead">
+          创建于 07-13 02:30 ·
+          <span class="cb-status-badge is-pending">提取中</span>
+        </p>
+      </div>
+
+      <!-- UploadCard：上传已处理（processed），进度条满格，进入提取阶段 -->
+      <div class="cb-card cb-upload-card" aria-label="上传状态：正在接收对话历史">
+        <div class="cb-upload-card__top">
+          <span class="cb-status-badge is-pending">上传完成</span>
+        </div>
+        <div
+          class="cb-upload-card__meter"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="100"
+        >
+          <span style="width: 100%"></span>
+        </div>
+        <p class="cb-card__line">已接收 12 / 12 片，进入提取阶段</p>
+      </div>
+
+      <!-- ExtractCard：SSE 实时进度（进度条 + 子任务点亮 + 慢提示） -->
+      <div class="cb-card" data-sse-status="open">
+        <h3 class="cb-card__title">提取</h3>
+
+        <!-- ProgressBar：量化百分比 + phrase 短语 -->
+        <div class="cb-progress" aria-live="polite">
+          <div
+            class="cb-progress__track"
+            role="progressbar"
+            aria-valuenow="64"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <div class="cb-progress__fill" style="width: 64%"></div>
+          </div>
+          <p class="cb-progress__phrase">正在识别第 3 / 5 段会话的能力…</p>
+        </div>
+
+        <!-- SubtaskChecklist：逐条点亮 ●完成 / ◐进行中 / ○待处理 -->
+        <ul class="cb-subtasks">
+          <li class="cb-subtasks__item" data-status="done">
+            <span class="cb-subtasks__mark" aria-hidden="true">●</span>
+            <span class="cb-subtasks__label">解析会话结构</span>
+          </li>
+          <li class="cb-subtasks__item" data-status="done">
+            <span class="cb-subtasks__mark" aria-hidden="true">●</span>
+            <span class="cb-subtasks__label">脱敏隐私信息</span>
+          </li>
+          <li class="cb-subtasks__item" data-status="running">
+            <span class="cb-subtasks__mark" aria-hidden="true">◐</span>
+            <span class="cb-subtasks__label">识别可复用能力</span>
+          </li>
+          <li class="cb-subtasks__item" data-status="pending">
+            <span class="cb-subtasks__mark" aria-hidden="true">○</span>
+            <span class="cb-subtasks__label">归纳能力摘要</span>
+          </li>
+          <li class="cb-subtasks__item" data-status="pending">
+            <span class="cb-subtasks__mark" aria-hidden="true">○</span>
+            <span class="cb-subtasks__label">生成试用入口</span>
+          </li>
+        </ul>
+
+        <!-- SlowHint：慢但没坏的安抚（非错误）+ 已等待时长 -->
+        <div class="cb-slowhint" role="status" aria-live="polite">
+          <p class="cb-slowhint__phrase">
+            仍在处理，请稍候…<span class="cb-slowhint__elapsed">（已等待约 40 秒）</span>
+          </p>
+        </div>
+      </div>
+
+      <!-- 已浮现能力提示：边提取边出现，可在下方挑选发布 -->
+      <p class="cb-capabilities__lead">已识别出 3 个能力，可在下方挑选发布（还在提取中…）</p>
+    </section>
+
+    <!-- ===== 对照：同页失败态 FailedCard（提取失败时，进度卡替换为此卡） ===== -->
+    <p class="demo-divider">对照 · 同页失败态 FailedCard（会话为空 / 提取失败时，提取卡替换为此卡）</p>
+
+    <div class="cb-card cb-card--failed">
+      <h3 class="cb-card__title">这次没成功</h3>
+      <p class="cb-card__line cb-task-error">上传的会话为空，没有可提取的能力。</p>
+      <p class="cb-card__hint">已重试 1 次。</p>
+      <button type="button" class="cb-primary-btn">重试</button>
+    </div>
+
+  </div>
+
+</div>
+</body>
+</html>
