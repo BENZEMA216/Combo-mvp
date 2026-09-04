@@ -1,0 +1,6 @@
+interface:
+  display_name: 'Ship with Proof'
+  short_description: 'Keep product, code, preview, CI, and release evidence aligned'
+  default_prompt: 'Use $ship-with-proof to prepare and verify this development handoff.'
+policy:
+  allow_implicit_invocation: true
