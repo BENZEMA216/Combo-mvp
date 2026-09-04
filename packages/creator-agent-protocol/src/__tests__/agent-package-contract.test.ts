@@ -1,21 +1,35 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CREATOR_AGENT_PACKAGE_COMPILATION_RECEIPT_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CONVERSATION_PROVENANCE_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CONVERSATION_SOURCE_RECEIPT_PROTOCOL,
   CREATOR_AGENT_PACKAGE_PROVENANCE_PROTOCOL,
   CREATOR_AGENT_PACKAGE_PROTOCOL,
   CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+  createCreatorAgentPackageCompilationReceipt,
+  createCreatorAgentPackageConversationProvenance,
+  createCreatorAgentPackageConversationSourceReceipt,
   createCreatorAgentPackageProvenance,
   createCreatorAgentPackageManifest,
   createCreatorAgentPackageSourceReceipt,
   digestCreatorAgentPackage,
+  digestCreatorAgentPackageConversationSourceReceipt,
   digestCreatorAgentPackageFile,
   digestCreatorAgentPackageSourceReceipt,
   parseCreatorAgentPackageManifest,
+  parseCreatorAgentPackageCompilationReceipt,
+  parseCreatorAgentPackageConversationProvenance,
+  parseCreatorAgentPackageConversationSourceReceipt,
   parseCreatorAgentPackageProvenance,
   parseCreatorAgentPackageSourceReceipt,
+  serializeCreatorAgentPackageCompilationReceipt,
+  serializeCreatorAgentPackageConversationProvenance,
+  serializeCreatorAgentPackageConversationSourceReceipt,
   serializeCreatorAgentPackageManifest,
   serializeCreatorAgentPackageProvenance,
   serializeCreatorAgentPackageSourceReceipt,
+  verifyCreatorAgentPackageCompilationReceiptBinding,
   verifyCreatorAgentPackageManifest,
 } from '../agent-package.js';
 import {
@@ -156,6 +170,198 @@ describe('Creator Agent Package contract', () => {
         }),
       ).toThrow(/local paths/u);
     }
+  });
+
+  it('binds one current-conversation Draft, compiler version, provenance, and Package digest', () => {
+    const compilerVersion = 'combo.creator-worker.agent-package-draft-v2-compiler/1';
+    const draft = createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput());
+    const sourceReceipt = createCreatorAgentPackageConversationSourceReceipt({
+      protocol: CREATOR_AGENT_PACKAGE_CONVERSATION_SOURCE_RECEIPT_PROTOCOL,
+      sourceKind: 'current_conversation',
+      sourceBoundary: draft.source.sourceBoundary,
+      snapshotBoundary: draft.source.snapshotBoundary,
+      visibility: draft.source.visibility,
+      snapshotCompleteness: draft.source.snapshotCompleteness,
+      rawStored: draft.source.rawStored,
+      snapshotCommitmentScheme: draft.source.snapshotCommitmentScheme,
+      snapshotCommitment: draft.source.snapshotCommitment,
+      selectedVisibleItemCount: draft.source.selectedVisibleItemCount,
+      coverageSummary: draft.source.coverageSummary,
+    });
+    const provenance = createCreatorAgentPackageConversationProvenance({
+      protocol: CREATOR_AGENT_PACKAGE_CONVERSATION_PROVENANCE_PROTOCOL,
+      sourceKind: 'current_conversation',
+      sourceReceiptDigest: digestCreatorAgentPackageConversationSourceReceipt(sourceReceipt),
+      creatorRequestDigest: digestCreatorAgentPackageCreatorRequestV2(draft.creatorRequest),
+    });
+    const sourceReceiptText = serializeCreatorAgentPackageConversationSourceReceipt(sourceReceipt);
+    const provenanceText = serializeCreatorAgentPackageConversationProvenance(provenance);
+    const packageManifest = createCreatorAgentPackageManifest({
+      protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+      name: draft.content.name,
+      description: draft.content.description,
+      instructions: 'AGENT.md',
+      skills: ['skills/release-review/SKILL.md'],
+      files: [
+        { path: 'AGENT.md', byteLength: 320, digest: AGENT_DIGEST },
+        {
+          path: 'skills/release-review/SKILL.md',
+          byteLength: 640,
+          digest: SKILL_DIGEST,
+        },
+        {
+          path: 'skills/release-review/provenance.json',
+          byteLength: Buffer.byteLength(provenanceText, 'utf8'),
+          digest: digestCreatorAgentPackageFile(Buffer.from(provenanceText, 'utf8')),
+        },
+      ],
+    });
+    const receipt = createCreatorAgentPackageCompilationReceipt({
+      protocol: CREATOR_AGENT_PACKAGE_COMPILATION_RECEIPT_PROTOCOL,
+      draftProtocol: CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
+      draftId: draft.draftId,
+      draftRevision: draft.revision,
+      draftFingerprint: draft.draftFingerprint,
+      compilerVersion,
+      sourceReceiptDigest: digestCreatorAgentPackageConversationSourceReceipt(sourceReceipt),
+      creatorRequestDigest: digestCreatorAgentPackageCreatorRequestV2(draft.creatorRequest),
+      provenancePath: 'skills/release-review/provenance.json',
+      provenanceFileDigest: digestCreatorAgentPackageFile(Buffer.from(provenanceText, 'utf8')),
+      packageProtocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+      packageDigest: digestCreatorAgentPackage(packageManifest),
+    });
+
+    const text = serializeCreatorAgentPackageCompilationReceipt(receipt);
+    expect(parseCreatorAgentPackageConversationSourceReceipt(sourceReceiptText)).toEqual(
+      sourceReceipt,
+    );
+    expect(parseCreatorAgentPackageConversationProvenance(provenanceText)).toEqual(provenance);
+    expect(parseCreatorAgentPackageCompilationReceipt(text)).toEqual(receipt);
+    expect(() =>
+      createCreatorAgentPackageCompilationReceipt({
+        ...receipt,
+        provenancePath: 'AGENT.md',
+      }),
+    ).toThrow();
+    expect(
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        receipt,
+        draft,
+        compilerVersion,
+        packageManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toEqual(receipt);
+    expect(text).not.toMatch(/taskId|threadId|sessionId|rawTranscript|messages/u);
+    expect(provenance).not.toHaveProperty('packageDigest');
+    expect(provenance).not.toHaveProperty('receiptDigest');
+
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        { ...receipt, draftRevision: receipt.draftRevision + 1 },
+        draft,
+        compilerVersion,
+        packageManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toThrow(/exact Draft/u);
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        receipt,
+        draft,
+        'combo.creator-worker.agent-package-draft-v2-compiler/2',
+        packageManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toThrow(/compiler version/u);
+
+    const receiptMutations = [
+      { ...receipt, draftId: `draft.agent-package.${'f'.repeat(32)}` },
+      { ...receipt, draftFingerprint: REFERENCE_DIGEST },
+      { ...receipt, sourceReceiptDigest: REFERENCE_DIGEST },
+      { ...receipt, creatorRequestDigest: REFERENCE_DIGEST },
+      { ...receipt, provenancePath: 'skills/release-review/references/rubric.md' },
+      { ...receipt, provenanceFileDigest: REFERENCE_DIGEST },
+      { ...receipt, packageDigest: REFERENCE_DIGEST },
+      { ...receipt, packageProtocol: 'combo.agent-package/2' },
+    ];
+    for (const changedReceipt of receiptMutations) {
+      expect(() =>
+        verifyCreatorAgentPackageCompilationReceiptBinding(
+          changedReceipt,
+          draft,
+          compilerVersion,
+          packageManifest,
+          provenance,
+          sourceReceipt,
+        ),
+      ).toThrow();
+    }
+
+    const detachedManifest = createCreatorAgentPackageManifest({
+      ...packageManifest,
+      files: packageManifest.files.map((file) =>
+        file.path === receipt.provenancePath ? { ...file, digest: REFERENCE_DIGEST } : file,
+      ),
+    });
+    const detachedReceipt = createCreatorAgentPackageCompilationReceipt({
+      ...receipt,
+      provenanceFileDigest: REFERENCE_DIGEST,
+      packageDigest: digestCreatorAgentPackage(detachedManifest),
+    });
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        detachedReceipt,
+        draft,
+        compilerVersion,
+        detachedManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toThrow(/provenance/u);
+
+    const changedSourceReceipt = createCreatorAgentPackageConversationSourceReceipt({
+      ...sourceReceipt,
+      snapshotCommitment: REFERENCE_DIGEST,
+    });
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        receipt,
+        draft,
+        compilerVersion,
+        packageManifest,
+        provenance,
+        changedSourceReceipt,
+      ),
+    ).toThrow(/conversation source/u);
+
+    expect(() =>
+      createCreatorAgentPackageConversationProvenance({
+        ...provenance,
+        packageDigest: receipt.packageDigest,
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageConversationProvenance({
+        ...provenance,
+        receiptDigest: AGENT_DIGEST,
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageSourceReceipt({
+        ...sourceReceipt,
+        protocol: CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageProvenance({
+        ...provenance,
+        protocol: CREATOR_AGENT_PACKAGE_PROVENANCE_PROTOCOL,
+      }),
+    ).toThrow();
   });
 
   it('accepts the declared maximum file inventory within the canonical byte budget', () => {

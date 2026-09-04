@@ -60,7 +60,9 @@
   公共导出。
 - `authoring/agent-package-builder.ts` 把经过复验的 Project 语义提取结果或 exact Package Draft 确定性编译为
   根 `AGENT.md`、一个 `extracted-method` 原生技能和规范 `agent.json`。完整脱敏来源回执只返回给创作端；
-  可分享 Package 仅清单绑定一个不含文件名和来源摘要的 opaque provenance digest。
+  可分享 Package 仅清单绑定一个不含来源正文的 opaque provenance digest。Project V1 与
+  current-conversation V2 使用互斥 receipt/provenance；V2 另返回包外 compilation receipt，保持内容寻址
+  Package 不受 Draft ID、revision 或 compiler version 增盐。
 - `authoring/index.ts` 是 application composition 使用的创作层内部出口。
 - `project-context-compiler.ts` 是旧内部路径的薄兼容入口，保留错误类、Schema、类型与测试 seam 的同一身份，
   并从 application composition re-export 生产用编译函数。
@@ -117,6 +119,10 @@
   `@cb/creator-worker/agent-package-authoring` 导入，得到内容寻址包路径与来源摘要后再显式创建推理会话。
 - `agent-package-creator.ts` 是独立的 Creator Draft 公共子路径。Combo Plugin 或 Studio 用它把一句制作要求
   与 Host 已绑定的当前 Project 变成可修订 Draft，并在明确编译动作后得到 exact Package digest。
+- `agent-package-compiler.ts` 是 current-conversation V2 Draft 的窄公共编译子路径。它只接受预先限制字节数、
+  完整且 fingerprint 匹配的 canonical V2 Draft JSON 文本，不遍历调用方对象；返回内存 Candidate Package
+  与可核验 compilation receipt；不读取来源、
+  不接受 caller package bytes，也不发布、分享或运行产物。
 - `agent-package-creator-bridge.ts` 是供 Combo Plugin 携带的单次进程入口。它不接收 Project 路径参数，读取
   一个规范 Creator handoff，返回一个规范 Draft；构建阶段会把该入口及其 JavaScript 依赖打成 Node 24
   单文件模块。进程会在扫描前检查无路径的 Host adapter 启动标记；Project ID 与命令工作目录的权威核对

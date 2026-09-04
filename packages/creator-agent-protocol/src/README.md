@@ -10,8 +10,10 @@
   canonical serializer/parser 和 domain-separated fingerprint。
 - `agent-package.ts`：显式 `./agent-package` 子路径的独立内容寻址智能体包清单。它绑定根 `AGENT.md`、
   Codex 原生技能入口及全部智能体包文件的路径、长度和原始字节 SHA-256 摘要，并定义创作端私有来源
-  回执与 Package 内不披露文件名的 opaque provenance 绑定；它不包含项目、会话或 Worker 运行字段，也不
-  进入旧版 `AgentVersion` 分派器。
+  回执、Package 内不披露来源正文的 opaque provenance，以及 Package 外的 V2 Draft compilation receipt。
+  V1 Project 与 V2 current-conversation receipt/provenance 使用不同协议并互相拒绝；compilation receipt
+  单向绑定 Draft、compiler、provenance file 和 Package digest，不进入 Package 形成摘要循环。它不包含
+  项目、会话或 Worker 运行字段，也不进入旧版 `AgentVersion` 分派器。
 - `knowledge-bundle.ts`：显式 `./knowledge-bundle` 子路径的有界静态知识合同。它固定 Package 内唯一知识
   Skill、三文件 Test profile 与 Bundle 路径，校验排序分片、opaque source ID、不可解引用显示标签和 exact
   UTF-8 内容摘要；它不读取对象存储、不接受 Package 外选择器，也不声称回答已被证据支持。
@@ -19,7 +21,7 @@
   当前 Project 来源、Creator bootstrap handoff、Package Draft 快照与 revision；V2 单独绑定当前对话制作
   要求、`current_conversation` 脱敏来源投影和独立 fingerprint domain。V2 不定义 Host snapshot wire，也不
   接受 task/thread/session/item ID、Project 路径、citation、消息数组或 raw transcript。两版都不把 Draft
-  冒充可运行 Package，现有 Package builder 仍只认 V1。
+  冒充可运行 Package；原 Project builder 仍只认 V1，独立 V2 compiler 显式验证后才能生成 Candidate。
 - `agent-package-release.ts`：显式 `./agent-package-release` 子路径的不可变 Release 引用，只把稳定 Release
   ID 绑定到 exact Package digest，不保存分享链接、发布者资料、Package 内容或运行状态。
 - `agent-package-capability.ts`：显式 `./agent-package-capability` 子路径的严格 V2 迁移投影，只把旧

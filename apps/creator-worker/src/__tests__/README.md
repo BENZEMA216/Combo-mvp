@@ -39,7 +39,8 @@
   Project authorization 的 Fake producer 或未接线 composition。
 - `agent-package-authoring.test.ts` 覆盖 Project 语义结果到 `AGENT.md`、原生技能和规范清单的确定性编译，
   私有摘要目录的原子发布、正式加载器重开、相同内容重放、路径前置拒绝和清理错误可见性。
-  它还锁定现有 Project Package builder 在任何发布或加载前拒绝 current-conversation Draft V2。
+  它还锁定 Project V1 builder 继续拒绝 V2，同时由独立 V2 compiler 从有界 canonical JSON 文本完成 Candidate 构建、正式 loader
+  readback、receipt binding、稳定失败分类、不同 Draft ID 去重和 A→B→A 内容摘要恢复。
 - `agent-package-current-conversation-composition.test.ts` 锁定 production facade 在 Desktop Host capability 缺席时
   只返回固定 source-unavailable 错误，并在任何 Host/source/Project caller 注入前停止。
 - `desktop-current-conversation-evidence.test.ts` 锁定 production protocol subpath 可加载 parse/verify/digest，且

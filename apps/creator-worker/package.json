@@ -27,6 +27,10 @@
     "./agent-package-current-conversation-draft": {
       "types": "./dist/agent-package-current-conversation-draft.d.ts",
       "default": "./dist/agent-package-current-conversation-draft.js"
+    },
+    "./agent-package-compiler": {
+      "types": "./dist/agent-package-compiler.d.ts",
+      "default": "./dist/agent-package-compiler.js"
     }
   },
   "files": [
