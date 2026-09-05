@@ -104,6 +104,7 @@ describe('migrations', () => {
         'agent_package_releases',
         'agent_usage_receipts',
         'pending_usage_recoveries',
+        'agent_draft_revisions',
         // Test already applied 0012-0016. These tables remain a legacy compatibility
         // prefix and do not define the current Agent Package product model.
         'agent_projects',
@@ -210,7 +211,7 @@ describe('migrations', () => {
     const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
 
     expect(firstCurrentIndex).toBeGreaterThan(0);
-    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 13)).toEqual([
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 14)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -224,7 +225,22 @@ describe('migrations', () => {
       '0017_agent_package_registry.sql',
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
+      '0020_private_agent_drafts.sql',
     ]);
+  });
+
+  it('0020 stores private immutable metadata with an exact parent and no public Release', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0020_private_agent_drafts.sql'), 'utf-8');
+    expect(sql).toContain('CREATE TABLE agent_draft_revisions (');
+    expect(sql).toContain('UNIQUE (owner_user_id, request_id)');
+    expect(sql).toContain(
+      'FOREIGN KEY (owner_user_id, draft_id, parent_revision, parent_fingerprint)',
+    );
+    expect(sql).toContain('BEFORE UPDATE OR DELETE OR TRUNCATE');
+    expect(sql).toContain('GRANT SELECT, INSERT ON agent_draft_revisions TO combo_api');
+    expect(sql).not.toMatch(
+      /(?:draft_text|manifest_text|content)\s+text|ALTER TABLE|agent_package_releases/u,
+    );
   });
 
   it('0002 rejects a PostgreSQL event ledger instead of bridging or deleting it', () => {

@@ -8,6 +8,7 @@
   },
   "references": [
     { "path": "../../packages/creator-agent-protocol" },
+    { "path": "../creator-worker" },
     { "path": "../../packages/shared" }
   ],
   "include": ["src/**/*.ts"],
