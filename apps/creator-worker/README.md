@@ -126,7 +126,15 @@ credential 泄漏；只有检查通过，Host 才能在模型输出之外包装�
 extraction candidate digest 的 egress receipt。最终 V2 Draft 使用独立 fingerprint domain，真实 Host receipt 必须再把
 该 candidate 摘要投影绑定到 exact typed Draft fingerprint；二者不得伪装成同一摘要。缺失、拒绝或错绑 receipt
 都不会形成 Draft。lease 还会在提取前后执行
-`assertStillCurrent()` 并在所有路径关闭。返回任务只有 Draft 读取和 exact revision，没有 compile。
+`assertStillCurrent()` 并在所有路径关闭。返回任务本身只有 Draft 读取和 exact revision；独立的
+`agent-package-compiler` 子路径只接受返回的 exact V2 Draft canonical JSON 文本；入口先限制 UTF-8 字节数，
+不遍历调用方传入的任意对象，也不能自行读取或选择来源。
+
+V2 编译器会在内存中确定性生成可由正式 loader 验证的 Candidate Package，并返回一个包外 compilation
+receipt。产品编排应在 Draft 形成后立即编译 Candidate，再把 Draft 与 Candidate 一起交给 Studio 审阅；
+每次修订产生新 Draft revision 并重新编译。用户最终确认时应锁定已经审阅的
+`draftFingerprint + packageDigest + exact bytes`，不得在确认后重新 build。这个切片不保存、发布、分享或
+运行 Candidate，也不把 compilation receipt 冒充 Desktop Host attestation。
 
 这两个 Worker 文件与 `agent-package-current-conversation-draft` public subpath 已进入 production build。当前
 production composition 只绑定一个固定 unavailable Host，所以合法调用也只会得到

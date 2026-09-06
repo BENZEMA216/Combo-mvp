@@ -29,11 +29,12 @@ ID、不可解引用的公开显示标签和每段 UTF-8 内容摘要，整个�
 摘要约束。该合同只绑定内容寻址字节与发布者提供的引用显示声明，不验证来源真实性，也不证明模型回答在
 语义上完整受证据支持；它不提供动态、私有或可变知识库。
 
-创作端可以生成一份含 Project 根摘要、覆盖统计与相对引用的私有来源回执。可分享 Package 不携带这份
-回执、来源文件名或覆盖摘要，只在清单绑定的 `provenance.json` 中保存回执摘要和可选制作要求摘要；
-因此 exact Package 仍绑定确定性的创作来源与意图，而消费者不能从 Package 直接读取创作者的来源清单。
-制作要求摘要只是不可逆的一致性绑定，不是保密或身份认证证明；随机 Draft ID、revision 和 fingerprint
-保留在私有创作状态中，不进入 Package 摘要。
+创作端可以生成一份含 Project 根摘要、覆盖统计与相对引用的 V1 私有来源回执。current-conversation V2
+使用另一份只含 Host HMAC snapshot commitment、可见项计数与脱敏 coverage 的私有来源回执；两种 receipt
+与 provenance 协议互相拒绝。可分享 Package 不携带完整来源回执，只在清单绑定的 `provenance.json` 中保存
+对应回执摘要和制作要求摘要；因此 exact Package 仍绑定确定性的创作来源与意图，而消费者不能从 Package
+直接读取创作者的来源清单。制作要求摘要只是不可逆的一致性绑定，不是保密或身份认证证明；随机 Draft
+ID、revision、fingerprint 和 compiler version 保留在包外 compilation receipt 中，不进入 Package 摘要。
 
 显式 `agent-package-release` 子路径定义 `combo.agent-package-release/1`。一条 Release 只保存不可变
 Release ID 和 exact Package digest，作为 Registry、分享入口与 Receiver 共同使用的最小公开引用。它不
@@ -60,9 +61,17 @@ exact base revision 与 fingerprint，过期编辑会被拒绝。Draft 不能直
 `current_conversation` 来源。V2 request 仍只有固定 intent 与一句制作要求；V2 Draft 的来源投影只保存
 `desktop_attested_active_current_task`、`before_direct_creator_item`、`user_visible_items_only`、完整性字面值、
 per-run Host HMAC snapshot commitment、选中可见 item 数量和脱敏 coverage summary。它不接受 task、thread、session、item 标识、Project 路径、citation、
-消息数组或 raw transcript。V1 与 V2 parser 互相拒绝，fingerprint domain 也彼此独立；现有 Project
-Creator、Bridge、Package builder 与来源回执继续只认 V1，不会因为 V2 合同出现而获得对话读取或编译能力。
-V2 provenance 只证明 Draft 内部字段一致，不证明 Desktop 已提供真实当前任务、快照完整或用户可见边界。
+消息数组或 raw transcript。V1 与 V2 parser 互相拒绝，fingerprint domain 也彼此独立；Project Creator、
+Bridge 与原 V1 builder 继续只认 V1。独立 V2 compiler 只能接收一个有界、canonical、完整且 fingerprint 匹配的 V2 Draft JSON 文本，
+并生成内存 Candidate Package；它不会读取对话、Project、Hook 或调用方提交的 Package bytes。V2 provenance
+与 compilation receipt 只证明 Draft、编译器版本和内容寻址输出之间的一致性，不证明 Desktop 已提供真实
+当前任务、快照完整或用户可见边界。
+
+`combo.agent-package-compilation-receipt/1` 是 Package 外的私有确定性收据。它单向绑定 exact Draft
+protocol/id/revision/fingerprint、固定 compiler version、source/request/provenance digest 和最终 Package
+digest；receipt 自身不进入 Package，Package 也不引用 receipt digest，避免形成摘要循环。相同
+request/source/content 即使来自不同 Draft ID 或后续恢复到同一内容，仍得到相同 Package digest；receipt
+则保留各自的创作 revision。该收据没有签名，不认证作者、Host 或发布者。
 
 同一子路径还定义 `combo.agent-package-creator-bootstrap-handoff/1`。Combo Plugin 先对白名单中的官方
 创建指南地址完成路由，再把地址归一化成固定指南版本；handoff 只携带该版本、已有的制作要求和

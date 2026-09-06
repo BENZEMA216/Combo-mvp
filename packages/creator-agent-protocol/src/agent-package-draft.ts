@@ -261,30 +261,44 @@ const DraftV2FingerprintInputObjectSchema = z
   .strict();
 const DraftV2FingerprintInputSchema = DraftV2FingerprintInputObjectSchema.readonly();
 
-export const CreatorAgentPackageDraftSnapshotV2Schema = DraftV2FingerprintInputObjectSchema.extend({
-  draftFingerprint: Sha256DigestSchema,
-})
-  .strict()
-  .superRefine((draft, context) => {
-    if ((draft.revision === 1) !== (draft.parentDraftFingerprint === null)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['parentDraftFingerprint'],
-        message: 'Only the first Draft revision can omit its parent fingerprint',
-      });
-    }
-    if (draft.draftFingerprint !== fingerprintDraftV2(draft)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['draftFingerprint'],
-        message: 'Draft fingerprint does not match the exact Draft revision',
-      });
-    }
-  })
-  .readonly();
+const CreatorAgentPackageDraftSnapshotV2ShapeObjectSchema =
+  DraftV2FingerprintInputObjectSchema.extend({
+    draftFingerprint: Sha256DigestSchema,
+  }).strict();
+const CreatorAgentPackageDraftSnapshotV2ShapeSchema =
+  CreatorAgentPackageDraftSnapshotV2ShapeObjectSchema.readonly();
+
+export const CreatorAgentPackageDraftSnapshotV2Schema =
+  CreatorAgentPackageDraftSnapshotV2ShapeObjectSchema.strict()
+    .superRefine((draft, context) => {
+      if ((draft.revision === 1) !== (draft.parentDraftFingerprint === null)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['parentDraftFingerprint'],
+          message: 'Only the first Draft revision can omit its parent fingerprint',
+        });
+      }
+      if (draft.draftFingerprint !== fingerprintDraftV2(draft)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['draftFingerprint'],
+          message: 'Draft fingerprint does not match the exact Draft revision',
+        });
+      }
+    })
+    .readonly();
 export type CreatorAgentPackageDraftSnapshotV2 = z.infer<
   typeof CreatorAgentPackageDraftSnapshotV2Schema
 >;
+
+export class CreatorAgentPackageDraftV2FingerprintMismatchError extends TypeError {
+  public readonly code = 'AGENT_PACKAGE_DRAFT_V2_FINGERPRINT_MISMATCH' as const;
+
+  public constructor() {
+    super('Draft fingerprint does not match the exact Draft revision');
+    this.name = 'CreatorAgentPackageDraftV2FingerprintMismatchError';
+  }
+}
 
 const DraftChangesSchema = CreatorAgentPackageDraftContentObjectSchema.partial()
   .strict()
@@ -465,11 +479,18 @@ export function createCreatorAgentPackageDraftSnapshotV2(
 export function verifyCreatorAgentPackageDraftSnapshotV2(
   input: unknown,
 ): CreatorAgentPackageDraftSnapshotV2 {
-  return exactDetached(
-    CreatorAgentPackageDraftSnapshotV2Schema,
+  const draft = exactDetached(
+    CreatorAgentPackageDraftSnapshotV2ShapeSchema,
     input,
     'Conversation Agent Package Draft snapshot',
   );
+  if ((draft.revision === 1) !== (draft.parentDraftFingerprint === null)) {
+    throw new TypeError('Only the first Draft revision can omit its parent fingerprint');
+  }
+  if (draft.draftFingerprint !== fingerprintDraftV2(draft)) {
+    throw new CreatorAgentPackageDraftV2FingerprintMismatchError();
+  }
+  return draft;
 }
 
 export function createCreatorAgentPackageDraftRevisionRequest(
@@ -701,6 +722,21 @@ function snapshotJson(
     throw new TypeError('Draft value must contain only plain JSON values');
   }
   if (Array.isArray(input)) {
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Array.prototype && prototype !== null) {
+      throw new TypeError('Draft value must contain only plain JSON arrays');
+    }
+    if (input.length > 2_048 - budget.nodes) {
+      throw new TypeError('Agent Package Draft exceeds the canonical complexity limit');
+    }
+    let enumerablePropertyCount = 0;
+    for (const key in input) {
+      if (!Object.hasOwn(input, key)) continue;
+      enumerablePropertyCount += 1;
+      if (enumerablePropertyCount > 2_048 - budget.nodes) {
+        throw new TypeError('Agent Package Draft exceeds the canonical complexity limit');
+      }
+    }
     const descriptors = Object.getOwnPropertyDescriptors(input);
     const keys = Reflect.ownKeys(descriptors).filter((key) => key !== 'length');
     if (
@@ -720,6 +756,14 @@ function snapshotJson(
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) {
     throw new TypeError('Draft value must contain only plain JSON objects');
+  }
+  let enumerablePropertyCount = 0;
+  for (const key in input) {
+    if (!Object.hasOwn(input, key)) continue;
+    enumerablePropertyCount += 1;
+    if (enumerablePropertyCount > 2_048 - budget.nodes) {
+      throw new TypeError('Agent Package Draft exceeds the canonical complexity limit');
+    }
   }
   const descriptors = Object.getOwnPropertyDescriptors(input);
   const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;

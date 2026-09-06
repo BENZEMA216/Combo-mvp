@@ -135,6 +135,7 @@ function classify(root: string, path: string): Layer | undefined {
     name === 'agent-package-session.ts' ||
     name === 'agent-package-authoring.ts' ||
     name === 'agent-package-creator.ts' ||
+    name === 'agent-package-compiler.ts' ||
     name === 'agent-package-current-conversation-draft.ts'
   ) {
     return 'public';

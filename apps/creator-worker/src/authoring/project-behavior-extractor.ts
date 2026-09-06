@@ -6,7 +6,7 @@ import { HostStartTurnInputSchema } from '@cb/creator-agent-protocol/host';
 import { containsNonPortableAgentReference } from '@cb/creator-agent-protocol/agent-package-draft';
 import { z } from 'zod';
 
-import { containsUnsafeAgentText } from './agent-text-safety.js';
+import { containsCredentialMaterial, containsUnsafeAgentText } from './agent-text-safety.js';
 import type { StructuredAuthoringHostPort } from './ports.js';
 import {
   ProjectContextIndexError,
@@ -621,9 +621,15 @@ function assertNoSensitiveOutput(
     if (text.includes(literal)) throw compilerError('PROJECT_COMPILER_SECRET_OUTPUT');
   }
   if (
-    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:gh[opsu]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/u.test(
-      text,
-    )
+    [
+      output.name,
+      output.description,
+      output.instructions,
+      ...output.starterPrompts,
+      output.outputDescription,
+      ...output.sourcePaths,
+      output.coverageSummary,
+    ].some(containsCredentialMaterial)
   ) {
     throw compilerError('PROJECT_COMPILER_SECRET_OUTPUT');
   }

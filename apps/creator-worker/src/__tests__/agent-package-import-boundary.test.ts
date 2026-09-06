@@ -29,6 +29,7 @@ describe('Agent Package public import boundary', () => {
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftFromCurrentProject');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftFromCurrentConversation');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftWithHostAuthorization');
+    expect(rootApi).not.toHaveProperty('compileCreatorAgentPackageDraftV2');
   });
 
   it('keeps the source dependency closure outside legacy execution layers', () => {
@@ -148,6 +149,39 @@ describe('Agent Package public import boundary', () => {
       'CreatorAgentPackageCurrentConversationDraftError,createCreatorAgentPackageDraftFromCurrentConversation',
     );
     expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
+  });
+
+  it('exposes the V2 compiler without loading source readers, legacy execution, or publishers', () => {
+    expect(
+      sourceClosureViolations(
+        join(sourceRoot, 'agent-package-compiler.ts'),
+        AUTHORING_FORBIDDEN_SOURCE,
+      ),
+    ).toEqual([]);
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        [
+          "const api = await import('@cb/creator-worker/agent-package-compiler');",
+          'console.log(`${typeof api.compileCreatorAgentPackageDraftV2}:${typeof api.CreatorAgentPackageDraftV2CompilerError}:${api.CREATOR_AGENT_PACKAGE_DRAFT_V2_COMPILER_VERSION}`);',
+        ].join(''),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: { ...process.env, NODE_DEBUG: 'esm' },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      'function:function:combo.creator-worker.agent-package-draft-v2-compiler/1',
+    );
+    expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
+    expect(result.stderr).not.toMatch(/agent-package-(?:publisher|loader)|project-context-index/u);
   });
 
   it('keeps the distributable Creator Bridge outside legacy execution and AgentVersion', () => {

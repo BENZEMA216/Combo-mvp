@@ -1,21 +1,35 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CREATOR_AGENT_PACKAGE_COMPILATION_RECEIPT_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CONVERSATION_PROVENANCE_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CONVERSATION_SOURCE_RECEIPT_PROTOCOL,
   CREATOR_AGENT_PACKAGE_PROVENANCE_PROTOCOL,
   CREATOR_AGENT_PACKAGE_PROTOCOL,
   CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+  createCreatorAgentPackageCompilationReceipt,
+  createCreatorAgentPackageConversationProvenance,
+  createCreatorAgentPackageConversationSourceReceipt,
   createCreatorAgentPackageProvenance,
   createCreatorAgentPackageManifest,
   createCreatorAgentPackageSourceReceipt,
   digestCreatorAgentPackage,
+  digestCreatorAgentPackageConversationSourceReceipt,
   digestCreatorAgentPackageFile,
   digestCreatorAgentPackageSourceReceipt,
   parseCreatorAgentPackageManifest,
+  parseCreatorAgentPackageCompilationReceipt,
+  parseCreatorAgentPackageConversationProvenance,
+  parseCreatorAgentPackageConversationSourceReceipt,
   parseCreatorAgentPackageProvenance,
   parseCreatorAgentPackageSourceReceipt,
+  serializeCreatorAgentPackageCompilationReceipt,
+  serializeCreatorAgentPackageConversationProvenance,
+  serializeCreatorAgentPackageConversationSourceReceipt,
   serializeCreatorAgentPackageManifest,
   serializeCreatorAgentPackageProvenance,
   serializeCreatorAgentPackageSourceReceipt,
+  verifyCreatorAgentPackageCompilationReceiptBinding,
   verifyCreatorAgentPackageManifest,
 } from '../agent-package.js';
 import {
@@ -62,6 +76,24 @@ const SKILL_DIGEST = `sha256:${'b'.repeat(64)}` as const;
 const REFERENCE_DIGEST = `sha256:${'c'.repeat(64)}` as const;
 const ROOT_DIGEST = AGENT_DIGEST;
 const SOURCE_DIGEST = SKILL_DIGEST;
+
+function trackArrayPrototypeTraps(input: readonly unknown[]): () => number {
+  let calls = 0;
+  Object.setPrototypeOf(
+    input,
+    new Proxy(Object.create(null) as object, {
+      ownKeys() {
+        calls += 1;
+        return [];
+      },
+      getPrototypeOf() {
+        calls += 1;
+        return null;
+      },
+    }),
+  );
+  return () => calls;
+}
 
 function manifest() {
   return {
@@ -158,6 +190,198 @@ describe('Creator Agent Package contract', () => {
     }
   });
 
+  it('binds one current-conversation Draft, compiler version, provenance, and Package digest', () => {
+    const compilerVersion = 'combo.creator-worker.agent-package-draft-v2-compiler/1';
+    const draft = createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput());
+    const sourceReceipt = createCreatorAgentPackageConversationSourceReceipt({
+      protocol: CREATOR_AGENT_PACKAGE_CONVERSATION_SOURCE_RECEIPT_PROTOCOL,
+      sourceKind: 'current_conversation',
+      sourceBoundary: draft.source.sourceBoundary,
+      snapshotBoundary: draft.source.snapshotBoundary,
+      visibility: draft.source.visibility,
+      snapshotCompleteness: draft.source.snapshotCompleteness,
+      rawStored: draft.source.rawStored,
+      snapshotCommitmentScheme: draft.source.snapshotCommitmentScheme,
+      snapshotCommitment: draft.source.snapshotCommitment,
+      selectedVisibleItemCount: draft.source.selectedVisibleItemCount,
+      coverageSummary: draft.source.coverageSummary,
+    });
+    const provenance = createCreatorAgentPackageConversationProvenance({
+      protocol: CREATOR_AGENT_PACKAGE_CONVERSATION_PROVENANCE_PROTOCOL,
+      sourceKind: 'current_conversation',
+      sourceReceiptDigest: digestCreatorAgentPackageConversationSourceReceipt(sourceReceipt),
+      creatorRequestDigest: digestCreatorAgentPackageCreatorRequestV2(draft.creatorRequest),
+    });
+    const sourceReceiptText = serializeCreatorAgentPackageConversationSourceReceipt(sourceReceipt);
+    const provenanceText = serializeCreatorAgentPackageConversationProvenance(provenance);
+    const packageManifest = createCreatorAgentPackageManifest({
+      protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+      name: draft.content.name,
+      description: draft.content.description,
+      instructions: 'AGENT.md',
+      skills: ['skills/release-review/SKILL.md'],
+      files: [
+        { path: 'AGENT.md', byteLength: 320, digest: AGENT_DIGEST },
+        {
+          path: 'skills/release-review/SKILL.md',
+          byteLength: 640,
+          digest: SKILL_DIGEST,
+        },
+        {
+          path: 'skills/release-review/provenance.json',
+          byteLength: Buffer.byteLength(provenanceText, 'utf8'),
+          digest: digestCreatorAgentPackageFile(Buffer.from(provenanceText, 'utf8')),
+        },
+      ],
+    });
+    const receipt = createCreatorAgentPackageCompilationReceipt({
+      protocol: CREATOR_AGENT_PACKAGE_COMPILATION_RECEIPT_PROTOCOL,
+      draftProtocol: CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
+      draftId: draft.draftId,
+      draftRevision: draft.revision,
+      draftFingerprint: draft.draftFingerprint,
+      compilerVersion,
+      sourceReceiptDigest: digestCreatorAgentPackageConversationSourceReceipt(sourceReceipt),
+      creatorRequestDigest: digestCreatorAgentPackageCreatorRequestV2(draft.creatorRequest),
+      provenancePath: 'skills/release-review/provenance.json',
+      provenanceFileDigest: digestCreatorAgentPackageFile(Buffer.from(provenanceText, 'utf8')),
+      packageProtocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
+      packageDigest: digestCreatorAgentPackage(packageManifest),
+    });
+
+    const text = serializeCreatorAgentPackageCompilationReceipt(receipt);
+    expect(parseCreatorAgentPackageConversationSourceReceipt(sourceReceiptText)).toEqual(
+      sourceReceipt,
+    );
+    expect(parseCreatorAgentPackageConversationProvenance(provenanceText)).toEqual(provenance);
+    expect(parseCreatorAgentPackageCompilationReceipt(text)).toEqual(receipt);
+    expect(() =>
+      createCreatorAgentPackageCompilationReceipt({
+        ...receipt,
+        provenancePath: 'AGENT.md',
+      }),
+    ).toThrow();
+    expect(
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        receipt,
+        draft,
+        compilerVersion,
+        packageManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toEqual(receipt);
+    expect(text).not.toMatch(/taskId|threadId|sessionId|rawTranscript|messages/u);
+    expect(provenance).not.toHaveProperty('packageDigest');
+    expect(provenance).not.toHaveProperty('receiptDigest');
+
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        { ...receipt, draftRevision: receipt.draftRevision + 1 },
+        draft,
+        compilerVersion,
+        packageManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toThrow(/exact Draft/u);
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        receipt,
+        draft,
+        'combo.creator-worker.agent-package-draft-v2-compiler/2',
+        packageManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toThrow(/compiler version/u);
+
+    const receiptMutations = [
+      { ...receipt, draftId: `draft.agent-package.${'f'.repeat(32)}` },
+      { ...receipt, draftFingerprint: REFERENCE_DIGEST },
+      { ...receipt, sourceReceiptDigest: REFERENCE_DIGEST },
+      { ...receipt, creatorRequestDigest: REFERENCE_DIGEST },
+      { ...receipt, provenancePath: 'skills/release-review/references/rubric.md' },
+      { ...receipt, provenanceFileDigest: REFERENCE_DIGEST },
+      { ...receipt, packageDigest: REFERENCE_DIGEST },
+      { ...receipt, packageProtocol: 'combo.agent-package/2' },
+    ];
+    for (const changedReceipt of receiptMutations) {
+      expect(() =>
+        verifyCreatorAgentPackageCompilationReceiptBinding(
+          changedReceipt,
+          draft,
+          compilerVersion,
+          packageManifest,
+          provenance,
+          sourceReceipt,
+        ),
+      ).toThrow();
+    }
+
+    const detachedManifest = createCreatorAgentPackageManifest({
+      ...packageManifest,
+      files: packageManifest.files.map((file) =>
+        file.path === receipt.provenancePath ? { ...file, digest: REFERENCE_DIGEST } : file,
+      ),
+    });
+    const detachedReceipt = createCreatorAgentPackageCompilationReceipt({
+      ...receipt,
+      provenanceFileDigest: REFERENCE_DIGEST,
+      packageDigest: digestCreatorAgentPackage(detachedManifest),
+    });
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        detachedReceipt,
+        draft,
+        compilerVersion,
+        detachedManifest,
+        provenance,
+        sourceReceipt,
+      ),
+    ).toThrow(/provenance/u);
+
+    const changedSourceReceipt = createCreatorAgentPackageConversationSourceReceipt({
+      ...sourceReceipt,
+      snapshotCommitment: REFERENCE_DIGEST,
+    });
+    expect(() =>
+      verifyCreatorAgentPackageCompilationReceiptBinding(
+        receipt,
+        draft,
+        compilerVersion,
+        packageManifest,
+        provenance,
+        changedSourceReceipt,
+      ),
+    ).toThrow(/conversation source/u);
+
+    expect(() =>
+      createCreatorAgentPackageConversationProvenance({
+        ...provenance,
+        packageDigest: receipt.packageDigest,
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageConversationProvenance({
+        ...provenance,
+        receiptDigest: AGENT_DIGEST,
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageSourceReceipt({
+        ...sourceReceipt,
+        protocol: CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageProvenance({
+        ...provenance,
+        protocol: CREATOR_AGENT_PACKAGE_PROVENANCE_PROTOCOL,
+      }),
+    ).toThrow();
+  });
+
   it('accepts the declared maximum file inventory within the canonical byte budget', () => {
     const files = [manifest().files[0]!, manifest().files[1]!];
     for (let index = 0; index < 254; index += 1) {
@@ -246,6 +470,32 @@ describe('Creator Agent Package contract', () => {
     expect(() =>
       parseCreatorAgentPackageManifest(canonical.replace('"name":', '"extra":true,"name":')),
     ).toThrow();
+  });
+
+  it.each(['root', 'skills', 'files'] as const)(
+    'rejects a Proxy prototype on the %s array without executing traps',
+    (location) => {
+      const input = manifest();
+      const root: unknown[] = [];
+      const calls = trackArrayPrototypeTraps(location === 'root' ? root : input[location]);
+      let rejected = false;
+      try {
+        verifyCreatorAgentPackageManifest(location === 'root' ? root : input);
+      } catch {
+        rejected = true;
+      }
+      expect(calls()).toBe(0);
+      expect(rejected).toBe(true);
+    },
+  );
+
+  it('preserves manifest bytes for null-prototype arrays', () => {
+    const input = manifest();
+    Object.setPrototypeOf(input.skills, null);
+    Object.setPrototypeOf(input.files, null);
+    expect(serializeCreatorAgentPackageManifest(input)).toBe(
+      serializeCreatorAgentPackageManifest(manifest()),
+    );
   });
 
   it('does not execute accessors or Proxy traps and rejects legacy Version values', () => {
@@ -838,6 +1088,35 @@ describe('current-conversation Agent Package request and Draft V2 contract', () 
         }),
       ),
     ).toThrow(/must change/u);
+  });
+
+  it.each(['root', 'starterPrompts'] as const)(
+    'rejects a Proxy prototype on the V2 %s array without executing traps',
+    (location) => {
+      const input = structuredClone(
+        createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()),
+      );
+      const root: unknown[] = [];
+      const calls = trackArrayPrototypeTraps(
+        location === 'root' ? root : input.content.starterPrompts,
+      );
+      let rejected = false;
+      try {
+        verifyCreatorAgentPackageDraftSnapshotV2(location === 'root' ? root : input);
+      } catch {
+        rejected = true;
+      }
+      expect(calls()).toBe(0);
+      expect(rejected).toBe(true);
+    },
+  );
+
+  it('preserves V2 Draft fingerprints for null-prototype arrays', () => {
+    const input = firstConversationDraftInput();
+    Object.setPrototypeOf(input.content.starterPrompts, null);
+    expect(createCreatorAgentPackageDraftSnapshotV2(input)).toEqual(
+      createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()),
+    );
   });
 
   it('does not execute V2 accessors or Proxy traps and rejects non-canonical bytes', () => {

@@ -30,6 +30,9 @@ dispatcher。测试会篡改 cited source 的执行可用性以确认 ledger 进
 current-conversation request/Draft V2 的 strict path-free 来源、互斥解析、独立 fingerprint 和 revision。
 V2 测试拒绝调用方 task/thread/session/item ID、Project 字段、消息数组和 raw transcript；它只证明协议字段
 与规范字节，不证明 Desktop active-task 来源、Studio 展示、Package 编译或 Codex 已激活技能。
+同一文件还锁定互相排斥的 current-conversation source receipt/provenance、包外 compilation receipt 的
+canonical bytes，以及 Draft、compiler、source/request、exact provenance file 和 Package digest 的逐项
+篡改拒绝；这些一致性测试不构成 Host 签名、发布者身份或真实 Studio/UAT 证据。
 
 `knowledge-bundle-contract.test.ts` 锁定静态 Knowledge Bundle 的规范字节、分片内容摘要、排序、深冻结、
 敌意 getter/Proxy 拒绝、500 分片/32 KiB 分片/2 MiB Bundle 的 exact 边界，以及 knowledge Skill 三文件
