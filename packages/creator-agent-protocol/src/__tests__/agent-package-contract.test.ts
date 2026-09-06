@@ -77,6 +77,24 @@ const REFERENCE_DIGEST = `sha256:${'c'.repeat(64)}` as const;
 const ROOT_DIGEST = AGENT_DIGEST;
 const SOURCE_DIGEST = SKILL_DIGEST;
 
+function trackArrayPrototypeTraps(input: readonly unknown[]): () => number {
+  let calls = 0;
+  Object.setPrototypeOf(
+    input,
+    new Proxy(Object.create(null) as object, {
+      ownKeys() {
+        calls += 1;
+        return [];
+      },
+      getPrototypeOf() {
+        calls += 1;
+        return null;
+      },
+    }),
+  );
+  return () => calls;
+}
+
 function manifest() {
   return {
     protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
@@ -452,6 +470,32 @@ describe('Creator Agent Package contract', () => {
     expect(() =>
       parseCreatorAgentPackageManifest(canonical.replace('"name":', '"extra":true,"name":')),
     ).toThrow();
+  });
+
+  it.each(['root', 'skills', 'files'] as const)(
+    'rejects a Proxy prototype on the %s array without executing traps',
+    (location) => {
+      const input = manifest();
+      const root: unknown[] = [];
+      const calls = trackArrayPrototypeTraps(location === 'root' ? root : input[location]);
+      let rejected = false;
+      try {
+        verifyCreatorAgentPackageManifest(location === 'root' ? root : input);
+      } catch {
+        rejected = true;
+      }
+      expect(calls()).toBe(0);
+      expect(rejected).toBe(true);
+    },
+  );
+
+  it('preserves manifest bytes for null-prototype arrays', () => {
+    const input = manifest();
+    Object.setPrototypeOf(input.skills, null);
+    Object.setPrototypeOf(input.files, null);
+    expect(serializeCreatorAgentPackageManifest(input)).toBe(
+      serializeCreatorAgentPackageManifest(manifest()),
+    );
   });
 
   it('does not execute accessors or Proxy traps and rejects legacy Version values', () => {
@@ -1044,6 +1088,35 @@ describe('current-conversation Agent Package request and Draft V2 contract', () 
         }),
       ),
     ).toThrow(/must change/u);
+  });
+
+  it.each(['root', 'starterPrompts'] as const)(
+    'rejects a Proxy prototype on the V2 %s array without executing traps',
+    (location) => {
+      const input = structuredClone(
+        createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()),
+      );
+      const root: unknown[] = [];
+      const calls = trackArrayPrototypeTraps(
+        location === 'root' ? root : input.content.starterPrompts,
+      );
+      let rejected = false;
+      try {
+        verifyCreatorAgentPackageDraftSnapshotV2(location === 'root' ? root : input);
+      } catch {
+        rejected = true;
+      }
+      expect(calls()).toBe(0);
+      expect(rejected).toBe(true);
+    },
+  );
+
+  it('preserves V2 Draft fingerprints for null-prototype arrays', () => {
+    const input = firstConversationDraftInput();
+    Object.setPrototypeOf(input.content.starterPrompts, null);
+    expect(createCreatorAgentPackageDraftSnapshotV2(input)).toEqual(
+      createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()),
+    );
   });
 
   it('does not execute V2 accessors or Proxy traps and rejects non-canonical bytes', () => {

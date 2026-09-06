@@ -652,6 +652,10 @@ function snapshotJson(
     throw new TypeError('Agent Package value must contain only plain JSON values');
   }
   if (Array.isArray(input)) {
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Array.prototype && prototype !== null) {
+      throw new TypeError('Agent Package value must contain only plain JSON arrays');
+    }
     if (input.length > 2_048 - budget.nodes) {
       throw new TypeError('Agent Package value exceeds the canonical complexity limit');
     }
