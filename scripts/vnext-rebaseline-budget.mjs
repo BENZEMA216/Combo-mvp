@@ -50,6 +50,16 @@ export const paymentPlatformScope = Object.freeze({
   ]),
 });
 
+export const privateAgentDraftScopeFiles = Object.freeze([
+  'apps/authoring/src/__tests__/agent-draft-fixture.ts',
+  'apps/authoring/src/__tests__/agent-draft.pg.test.ts',
+  'apps/authoring/src/__tests__/agent-draft.test.ts',
+  'apps/authoring/src/modules/agent-draft/README.md',
+  'apps/authoring/src/modules/agent-draft/routes.ts',
+  'apps/authoring/src/modules/agent-draft/service.ts',
+  'scripts/README.md',
+]);
+
 export const initialTrancheLock = Object.freeze({
   protocol: 'combo.vnext-rebaseline-budget/1',
   scopeId: 'vnext-r1-r3-test-only',
@@ -801,24 +811,7 @@ function verifyPreviousBudget(contract) {
     );
   }
 
-  const expectedAllowedFiles = [
-    ...previousBudget.allowedFiles,
-    ...paymentPlatformScope.allowedFiles,
-  ].sort();
-  const expectedAllowedPathPrefixes = [
-    ...previousBudget.allowedPathPrefixes,
-    ...paymentPlatformScope.allowedPathPrefixes,
-  ].sort();
-  invariant(
-    new Set(expectedAllowedFiles).size === expectedAllowedFiles.length &&
-      JSON.stringify(contract.allowedFiles) === JSON.stringify(expectedAllowedFiles),
-    'v5 allowedFiles must add only the payment platform handoff files',
-  );
-  invariant(
-    new Set(expectedAllowedPathPrefixes).size === expectedAllowedPathPrefixes.length &&
-      JSON.stringify(contract.allowedPathPrefixes) === JSON.stringify(expectedAllowedPathPrefixes),
-    'v5 allowedPathPrefixes must add only the payment platform implementation paths',
-  );
+  verifyV5Scope(contract, previousBudget);
 
   const entries = collectCommittedDiff(receipt.governanceBaseSha, receipt.governanceHeadSha);
   invariant(
@@ -838,6 +831,28 @@ function verifyPreviousBudget(contract) {
     'previous budget governance raw diff receipt changed',
   );
   return { verified: true, governanceHeadSha: receipt.governanceHeadSha };
+}
+
+export function verifyV5Scope(contract, previousBudget) {
+  const expectedAllowedFiles = [
+    ...previousBudget.allowedFiles,
+    ...paymentPlatformScope.allowedFiles,
+    ...privateAgentDraftScopeFiles,
+  ].sort();
+  const expectedAllowedPathPrefixes = [
+    ...previousBudget.allowedPathPrefixes,
+    ...paymentPlatformScope.allowedPathPrefixes,
+  ].sort();
+  invariant(
+    new Set(expectedAllowedFiles).size === expectedAllowedFiles.length &&
+      JSON.stringify(contract.allowedFiles) === JSON.stringify(expectedAllowedFiles),
+    'v5 allowedFiles must add only the payment handoff and exact private Agent Draft files',
+  );
+  invariant(
+    new Set(expectedAllowedPathPrefixes).size === expectedAllowedPathPrefixes.length &&
+      JSON.stringify(contract.allowedPathPrefixes) === JSON.stringify(expectedAllowedPathPrefixes),
+    'v5 allowedPathPrefixes must add only the payment platform implementation paths',
+  );
 }
 
 function verifyPlatformV2Bootstrap(contract) {

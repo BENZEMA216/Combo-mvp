@@ -28,12 +28,14 @@ import {
   previousBudgetPath,
   previousContractPath,
   previousTrancheLock,
+  privateAgentDraftScopeFiles as admittedPrivateAgentDraftFiles,
   productBaselineBootstrap,
   productGoalLock,
   supersededAdmissionLock,
   supersededContractPath,
   supersededPlatformV2BootstrapLock,
   verifyProductBaselineSources,
+  verifyV5Scope,
 } from './vnext-rebaseline-budget.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,6 +60,21 @@ const authoringBillingRecoveryFiles = Object.freeze([
   'apps/authoring/src/modules/billing/routes.ts',
   'apps/authoring/src/modules/billing/service.ts',
   'apps/authoring/src/modules/billing/types.ts',
+]);
+
+// User-approved private persistence scope. This does not attest Desktop sources,
+// authorize public publishing, change migration history, or waive product acceptance.
+const privateAgentDraftAuthoringFiles = Object.freeze([
+  'apps/authoring/src/__tests__/agent-draft-fixture.ts',
+  'apps/authoring/src/__tests__/agent-draft.pg.test.ts',
+  'apps/authoring/src/__tests__/agent-draft.test.ts',
+  'apps/authoring/src/modules/agent-draft/README.md',
+  'apps/authoring/src/modules/agent-draft/routes.ts',
+  'apps/authoring/src/modules/agent-draft/service.ts',
+]);
+const privateAgentDraftScopeFiles = Object.freeze([
+  ...privateAgentDraftAuthoringFiles,
+  'scripts/README.md',
 ]);
 
 const platformV2BootstrapPaths = Object.freeze([
@@ -264,7 +281,11 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.deepEqual(contract.platformV2Bootstrap, previousBudget.platformV2Bootstrap);
   assert.deepEqual(
     contract.allowedFiles,
-    [...previousBudget.allowedFiles, ...paymentPlatformScope.allowedFiles].sort(),
+    [
+      ...previousBudget.allowedFiles,
+      ...paymentPlatformScope.allowedFiles,
+      ...privateAgentDraftScopeFiles,
+    ].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes,
@@ -694,14 +715,22 @@ test('the V2 bootstrap state and merge shape consume the bypass exactly once', (
   assert.equal(isAuthorizedPlatformV2AdmissionContext({ githubActions: undefined }), true);
 });
 
-test('only the payment-serving V2 apps reopen after the bootstrap is consumed', () => {
+test('only payment-serving V2 apps and the exact draft-sync README reopen after bootstrap', () => {
   assert.equal(platformV2BootstrapPaths.length, 72);
   assert.deepEqual(platformV2BootstrapPaths, [...platformV2BootstrapPaths].sort());
   const reopenedPaymentPaths = platformV2BootstrapPaths.filter(
     (path) => path.startsWith('apps/billing/') || path.startsWith('apps/llm-gateway/'),
   );
+  const reopenedDraftSyncPaths = platformV2BootstrapPaths.filter((path) =>
+    privateAgentDraftScopeFiles.includes(path),
+  );
+  assert.deepEqual(reopenedDraftSyncPaths, ['scripts/README.md']);
+  for (const path of reopenedDraftSyncPaths) {
+    assert.equal(contract.allowedFiles.includes(path), true, path);
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
   const closedBootstrapPaths = platformV2BootstrapPaths.filter(
-    (path) => !reopenedPaymentPaths.includes(path),
+    (path) => !reopenedPaymentPaths.includes(path) && !reopenedDraftSyncPaths.includes(path),
   );
   assert.ok(reopenedPaymentPaths.length > 0);
   assert.ok(closedBootstrapPaths.length > 0);
@@ -929,6 +958,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
         ...allowedPublisherAuthoringFiles,
         ...allowedReleaseAuthoringFiles,
         ...authoringBillingRecoveryFiles,
+        ...privateAgentDraftAuthoringFiles,
       ]),
     ].sort(),
   );
@@ -1063,6 +1093,7 @@ test('Agent Package Release scope opens only its named Authoring module and exac
         ...allowedPublisherAuthoringFiles,
         ...allowedReleaseAuthoringFiles,
         ...authoringBillingRecoveryFiles,
+        ...privateAgentDraftAuthoringFiles,
       ]),
     ].sort(),
   );
@@ -1084,6 +1115,137 @@ test('Agent Package Release scope opens only its named Authoring module and exac
       /outside the R1-R3 rebuild scope/,
     );
   }
+});
+
+test('private Agent Draft synchronization opens only seven exact paths', () => {
+  assert.equal(privateAgentDraftScopeFiles.length, 7);
+  assert.deepEqual(admittedPrivateAgentDraftFiles, privateAgentDraftScopeFiles);
+  assert.deepEqual(privateAgentDraftScopeFiles, [...privateAgentDraftScopeFiles].sort());
+  assert.deepEqual(
+    contract.allowedFiles.filter(
+      (path) => path.includes('/agent-draft') || path === 'scripts/README.md',
+    ),
+    privateAgentDraftScopeFiles,
+  );
+  const beforeAdmission = {
+    ...contract,
+    allowedFiles: contract.allowedFiles.filter(
+      (path) => !privateAgentDraftScopeFiles.includes(path),
+    ),
+  };
+  const previousBudget = JSON.parse(readFileSync(join(repo, previousBudgetPath), 'utf8'));
+  assert.doesNotThrow(() => verifyV5Scope(contract, previousBudget));
+  assert.throws(() => verifyV5Scope(beforeAdmission, previousBudget), /v5 allowedFiles/);
+  for (const path of privateAgentDraftScopeFiles) {
+    assert.throws(
+      () =>
+        verifyV5Scope(
+          { ...contract, allowedFiles: contract.allowedFiles.filter((value) => value !== path) },
+          previousBudget,
+        ),
+      /v5 allowedFiles/,
+    );
+  }
+  assert.throws(
+    () =>
+      verifyV5Scope(
+        { ...contract, allowedFiles: [...contract.allowedFiles, 'scripts/unapproved.mjs'].sort() },
+        previousBudget,
+      ),
+    /v5 allowedFiles/,
+  );
+  assert.throws(
+    () =>
+      verifyV5Scope(
+        {
+          ...contract,
+          allowedPathPrefixes: [...contract.allowedPathPrefixes, 'apps/authoring/'].sort(),
+        },
+        previousBudget,
+      ),
+    /v5 allowedPathPrefixes/,
+  );
+  // Removing this admission must reproduce the entire pre-change v5 contract.
+  assert.equal(
+    createHash('sha256')
+      .update(`${JSON.stringify(beforeAdmission, null, 2)}\n`)
+      .digest('hex'),
+    'f5f6f5ece37d33be16802fb516c46c9939f78765a686b217076abe07ea73e125',
+  );
+  for (const path of privateAgentDraftScopeFiles) {
+    assert.equal(contract.allowedFiles.filter((candidate) => candidate === path).length, 1, path);
+    assert.equal(
+      contract.allowedPathPrefixes.some((prefix) => path.startsWith(prefix)),
+      false,
+      path,
+    );
+    assert.throws(
+      () => assessPullRequest(beforeAdmission, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+    assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
+  }
+  assert.equal(
+    assessPullRequest(
+      contract,
+      privateAgentDraftScopeFiles.map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter((path) => path.startsWith('apps/authoring/')),
+    ['apps/authoring/src/modules/agent-package-release/'],
+  );
+
+  for (const path of [
+    ...privateAgentDraftScopeFiles.map((path) => `${path}.bak`),
+    'apps/authoring/src/__tests__/agent-draft-http.test.ts',
+    'apps/authoring/src/__tests__/agent-draft.test.tsx',
+    'apps/authoring/src/modules/agent-draft/index.ts',
+    'apps/authoring/src/modules/agent-draft/submodule/service.ts',
+    'apps/authoring/src/modules/agent-draft-other/service.ts',
+    'apps/authoring/src/modules/Agent-Draft/service.ts',
+    'apps/authoring/src/modules/account/routes.ts',
+    'apps/authoring/src/platform/middleware/auth.ts',
+    'scripts/README-extra.md',
+    'scripts/deploy-env.sh',
+    '.github/workflows/deploy.yml',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+  }
+
+  assert.equal(
+    assessPullRequest(contract, [
+      entry(contractPath),
+      entry('scripts/vnext-rebaseline-budget.test.mjs'),
+    ]).mode,
+    'GOVERNANCE_ONLY',
+  );
+  for (const path of privateAgentDraftScopeFiles) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(contractPath), entry(path)]),
+      /governance-only/,
+    );
+  }
+  assert.deepEqual(contract.limits, {
+    maxChangedFilesPerPullRequest: 30,
+    maxChangedLinesPerFile: 1200,
+    maxChangedLinesPerPullRequest: 5000,
+    maxChangedLinesFromBase: 15000,
+  });
+  assert.throws(
+    () => assessPullRequest(contract, [entry(privateAgentDraftAuthoringFiles[0], 1201)]),
+    /per-file changed-line budget exceeded/,
+  );
+  assert.throws(
+    () => assessCumulative(contract, [entry(privateAgentDraftAuthoringFiles[0], 15001)]),
+    /cumulative changed-line budget exceeded/,
+  );
 });
 
 test('Authoring billing recovery scope opens only its ten exact tracked paths', () => {
