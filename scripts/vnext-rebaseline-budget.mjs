@@ -12,17 +12,23 @@ export const previousBudgetPath = 'scripts/vnext-rebaseline-budget.v4.json';
 export const contractPath = 'scripts/vnext-rebaseline-budget.v5.json';
 export const policyPaths = Object.freeze([
   '.agents/skills/github-collaboration/SKILL.md',
+  '.agents/skills/github-collaboration/references/facts-and-delivery-evidence.md',
   '.agents/skills/github-collaboration/references/governance-and-contributions.md',
   '.agents/skills/github-collaboration/references/quality-and-pull-requests.md',
   '.agents/skills/github-collaboration/references/worktree-lifecycle.md',
+  '.agents/skills/github-collaboration/scripts/test_worktree_guard.py',
+  '.agents/skills/github-collaboration/scripts/worktree_guard.py',
+  '.codex/config.toml',
   '.github/workflows/pr-ci.yml',
   'AGENTS.md',
+  'docs/reliable-development-and-preview.md',
   legacyContractPath,
   'package.json',
   previousContractPath,
   supersededContractPath,
   previousBudgetPath,
   contractPath,
+  'scripts/dev-preflight.sh',
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
 ]);
@@ -141,8 +147,7 @@ export const productGoalLock = Object.freeze({
 
 const requiredProductAgentPrelude = Object.freeze([
   '# 项目级智能体协作约定',
-  '- 开始任何任务前，必须先读取根目录 `PROJECT.md`、`CLAUDE.md`、本文件，以及任务涉及目录中的说明文件。涉及产品设计、工程拆解、路线或验收时，还必须读取 `ENGINEERING.md`。',
-  '- `PROJECT.md` 是用户已经确认的唯一产品基线，定义当前产品目标、目标用户体验和唯一产物模型。除非用户明确要求修改，否则不得改写；需求或实现与其冲突时必须停止并说明冲突，不能自行调整目标。',
+  '- `PROJECT.md` 是用户已经确认的唯一产品基线，定义当前产品目标、目标用户体验和唯一产物模型。除非用户明确要求修改，否则不得改写；其他有效需求或拟采取的实现会改变该基线时，暂停相关改动并说明冲突，不能自行调整目标。',
   '- `ENGINEERING.md` 是从 `PROJECT.md` 推导出的可变工程工作稿，可在开发中验证和修订，但不得反向覆盖 `PROJECT.md`。任务执行期间若 `PROJECT.md` 发生变化，必须重新读取后再继续。',
 ]);
 
@@ -923,6 +928,8 @@ export function verifyProductBaselineSources({
       JSON.stringify(requiredProductAgentPrelude),
     'AGENTS.md must begin with the active product baseline rules',
   );
+  // Only the two authority notices are locked. Reading schedules remain outside
+  // the prelude and refer to those notices without restating product authority.
   for (const line of activeAgentLines.slice(requiredProductAgentPrelude.length)) {
     invariant(
       !line.includes('PROJECT.md') && !line.includes('ENGINEERING.md'),

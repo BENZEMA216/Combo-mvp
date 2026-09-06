@@ -1,0 +1,5 @@
+# Keep generic Mermaid and architecture discussions in the project workflow.
+# Other Figma skills and tools remain available for explicit Figma work.
+[[skills.config]]
+name = "figma:figma-generate-diagram"
+enabled = false

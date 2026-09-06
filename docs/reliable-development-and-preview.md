@@ -2,6 +2,8 @@
 
 本方法把“写了代码”“合入 main”“Preview 正在运行该代码”分成三类独立事实。任何一步缺少 SHA 或验收证据，都不能用下一步的 URL 代替。
 
+按当前任务读取相关章节。首次配置环境使用第 1、2 节，准备 PR 使用第 3 节；第 4 节只适用于本次已经包含 Preview 发布的任务。开发完成、PR 就绪、合并和部署分别报告，不以未授权的后续阶段阻塞本次交付。
+
 ## 1. 固定开发拓扑
 
 - 权威仓库：`dangdang-tech/Combo`。
@@ -18,6 +20,8 @@ git clone https://github.com/dangdang-tech/Combo.git "$HOME/Developer/Combo-cont
 ```
 
 开始任务前先获取 `origin/main`，再通过守卫生成创建计划：
+
+下面示例用于拥有规范仓库写权限的协作者。外部 fork 贡献者使用已核对的 `upstream` 默认分支作为基线、`origin` 作为推送远端；相应替换示例参数。`dev-preflight.sh` 默认沿用守卫的远端解析，也支持显式传入这三个参数，不要求 fork 的 `origin` 指向官方仓库。
 
 ```sh
 git -C "$HOME/Developer/Combo-control" fetch --prune origin
@@ -66,11 +70,13 @@ pnpm typecheck:test
 pnpm test:local
 ```
 
-`test:local` 会运行应用测试、Preview 身份验证器测试和工作树守卫测试，但不运行依赖 Linux/GNU 主机语义的控制面契约；该部分必须由 GitHub Actions 在 Linux 上执行 `pnpm test:fast`。Release build 的 `pnpm test` 也覆盖新增的守卫和验证器。不得为了让 macOS 通过而放宽生产部署脚本。
+测试命令以根 `package.json` 和 `.github/workflows/pr-ci.yml` 为准。目前 `test:local` 与 `test:fast` 是同一条命令：排除 `@cb/scripts` 的工作区测试，再执行 `test:workflow-contracts`，其中包括 Preview 身份验证器和工作树守卫。CI 在 Linux 上设置 `COMBO_RUN_CONTAINER_CONTRACTS=0` 执行 `test:fast`；相同命令不证明不同系统或环境变量下的实际执行范围相同，应报告条件跳过项。Release build 的 `pnpm test` 还执行 `@cb/scripts`。不得为了本地通过而放宽生产部署脚本。
 
 之后运行 `worktree_guard.py check-pr-ready`。工作树不干净、落后 `origin/main`、提交未推送或分支没有正确上游时，不创建 PR。
 
 ## 4. PR、main 与 Preview
+
+本节的执行与完成条件仅适用于用户已经授权 Preview 发布的任务；单独的本地修复、PR 或合并按各自范围交付。
 
 1. 只提交本任务文件，推送任务分支并创建 PR。
 2. 等待 PR checks 全部通过，解决未完成 review，再合入 `main`。
@@ -83,4 +89,4 @@ pnpm test:local
 pnpm release:verify:preview -- --expected-sha <main-merge-sha>
 ```
 
-最终交付必须同时给出：PR、merge SHA、Release build run、Deploy run 和 `version.json` 对齐结果。任一项缺失时，状态只能写“未完成”或“被阻塞”。
+Preview 发布完成时必须同时给出：PR、merge SHA、Release build run、Deploy run 和 `version.json` 对齐结果。缺少任一项时，Preview 发布阶段尚未完成；此前已验证的开发、PR 或合并阶段仍按事实独立报告。

@@ -13,6 +13,7 @@ from typing import Sequence
 
 
 SCRIPT = Path(__file__).with_name("worktree_guard.py")
+PREFLIGHT = SCRIPT.parents[4] / "scripts" / "dev-preflight.sh"
 
 
 def run(command: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -76,6 +77,17 @@ class RepositoryFixture:
         git(self.primary, "fetch", "--prune", "upstream")
         git(self.primary, "remote", "set-head", "origin", "--auto")
         git(self.primary, "remote", "set-head", "upstream", "--auto")
+
+    def install_preflight(self) -> None:
+        for source, destination in (
+            (SCRIPT, self.primary / ".agents/skills/github-collaboration/scripts/worktree_guard.py"),
+            (PREFLIGHT, self.primary / "scripts/dev-preflight.sh"),
+        ):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read_bytes())
+        git(self.primary, "add", ".agents", "scripts")
+        git(self.primary, "commit", "-m", "test: 添加开发检查入口")
+        git(self.primary, "push", "origin", "main")
 
 
 class GitHubCollaborationWorktreeGuardTest(unittest.TestCase):
@@ -271,6 +283,82 @@ class GitHubCollaborationWorktreeGuardTest(unittest.TestCase):
         self.assertEqual(accepted_result.returncode, 0, accepted_result.stdout)
         self.assertTrue(accepted_data["ready"])
         self.assertEqual(accepted_data["repository"], "fixture/Combo")
+
+    def test_preflight_resolves_fork_upstream_without_weakening_repository_check(self) -> None:
+        self.fixture.install_preflight()
+        self.fixture.use_fork_remote_model()
+        worktree, _ = self.fixture.add_task_worktree("preflight-fork")
+        git(worktree, "remote", "set-url", "origin", "https://github.com/contributor/Combo.git")
+        git(worktree, "remote", "set-url", "upstream", "https://github.com/dangdang-tech/Combo.git")
+
+        result = subprocess.run(
+            ("bash", str(worktree / "scripts/dev-preflight.sh"), "--format", "json"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        data = json.loads(result.stdout)
+        self.assertEqual(data["base"], "upstream/main")
+        self.assertEqual(data["push_remote"], "origin")
+        self.assertEqual(data["repository"], "dangdang-tech/Combo")
+        # CI disk capacity is independent of the remote-selection behavior under test.
+        self.assertTrue(all("可用磁盘" in reason for reason in data["blocking_reasons"]), data)
+        self.assertIn(result.returncode, (0, 1))
+
+        git(worktree, "remote", "set-url", "upstream", "https://github.com/unrelated/Combo.git")
+        rejected = subprocess.run(
+            ("bash", str(worktree / "scripts/dev-preflight.sh"), "--format", "json"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(rejected.returncode, 1, rejected.stdout)
+        self.assertIn("预期 GitHub 仓库", "\n".join(json.loads(rejected.stdout)["blocking_reasons"]))
+
+    def test_preflight_accepts_explicit_remote_roles_but_not_safety_overrides(self) -> None:
+        self.fixture.install_preflight()
+        self.fixture.use_fork_remote_model()
+        worktree, _ = self.fixture.add_task_worktree("preflight-explicit")
+        git(worktree, "remote", "rename", "upstream", "canonical")
+        git(worktree, "remote", "set-url", "origin", "https://github.com/contributor/Combo.git")
+        git(worktree, "remote", "set-url", "canonical", "https://github.com/dangdang-tech/Combo.git")
+        command = ("bash", str(worktree / "scripts/dev-preflight.sh"))
+        result = subprocess.run(
+            (*command, "--base", "canonical/main", "--base-remote", "canonical",
+             "--push-remote", "origin", "--format", "json"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        data = json.loads(result.stdout)
+        self.assertEqual(data["base"], "canonical/main")
+        self.assertEqual(data["repository"], "dangdang-tech/Combo")
+        self.assertTrue(all("可用磁盘" in reason for reason in data["blocking_reasons"]), data)
+        for option in ("--expected-repository", "--minimum-free-gib", "--allow-cloud-worktree"):
+            rejected = subprocess.run(
+                (*command, option, "0"), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(rejected.returncode, 2, rejected.stdout)
+
+    def test_preflight_cannot_hide_a_stale_branch_behind_a_local_sha(self) -> None:
+        self.fixture.install_preflight()
+        worktree, branch = self.fixture.add_task_worktree("preflight-stale")
+        self.fixture.primary.joinpath("README.md").write_text("# 基线上已有新提交\n", encoding="utf-8")
+        git(self.fixture.primary, "add", "README.md")
+        git(self.fixture.primary, "commit", "-m", "docs: 更新基线")
+        git(self.fixture.primary, "push", "origin", "main")
+        git(worktree, "remote", "set-url", "origin", "https://github.com/dangdang-tech/Combo.git")
+        command = ("bash", str(worktree / "scripts/dev-preflight.sh"), "--format", "json")
+        for base in ("origin/main", git(worktree, "rev-parse", "HEAD"), branch):
+            result = subprocess.run(
+                (*command, "--base", base), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            data = json.loads(result.stdout)
+            if base == "origin/main":
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(data["behind_base"], 1)
+            elif base == branch:
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("不属于基准远端", data["error"])
+            else:
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("不能使用裸 SHA 或本地引用", "\n".join(data["blocking_reasons"]))
 
     def test_check_dev_ready_rejects_primary_checkout(self) -> None:
         result, data = self.guard(
