@@ -202,4 +202,4 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 
 Test、Preview 与 Production 的环境证据来自 tecent2 K3s 的 `combo-test`、`combo-preview` 与 `combo-prod` namespace。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；每次部署都核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要并验证环境域名返回对应 SHA。源码目录中的普通测试不启动 Docker 或 Docker Compose。
 
-Agent 固定按次计费与乐收赢充值的源码验收、未完成现场证据和后续 Test 人工步骤见 [`docs/leshouying-test-acceptance.md`](docs/leshouying-test-acceptance.md)。
+Agent 固定按次计费与乐收赢充值的历史实现、分阶段 Test 报告、证据边界及后续人工检查步骤见 [`docs/leshouying-test-acceptance.md`](docs/leshouying-test-acceptance.md)。该记录不代表当前部署状态；新版平台托管支付旅程的验收状态见 [`ENGINEERING.md`](ENGINEERING.md)。

@@ -1,19 +1,34 @@
-# 乐收赢充值与 Agent 固定按次计费验收记录
+# 乐收赢充值与 Agent 固定按次计费历史验收记录
 
-日期：2026-08-01
-分支：`codex/agent-billing-leshouying`
+初版标注日期：2026-08-01
+历史分支：`codex/agent-billing-leshouying`
 
-## 当前结论
+## 文档适用范围与证据边界
 
-源码已经形成“每个用户对每个共享 Agent 免费成功使用 3 次，之后从用户全局钱包按成功 Turn 固定扣费；乐收赢只负责钱包充值”的闭环。离线、假网关和进程级自动化验证通过，并已在 Test 环境完成**真实支付闭环**：二维码（C扫B `/v3/prepay`）下单返回真实支付码，支付宝与微信各扫码支付 1 分，乐收赢真实回调到达、验签通过（`signature_valid=true`）、订单 `succeeded→credited`、钱包只加一次、账本只记一条、回调事件 `processed`。
+本文保存旧版 Agent 固定按次计费与乐收赢钱包充值的实现、分阶段测试报告和人工检查步骤。它不代表当前部署状态，也不证明 [`ENGINEERING.md`](../ENGINEERING.md) 中 `J-055` · 余额不足后继续使用的新版平台托管支付五层验收已经通过。
 
-**免费 3 次 + 402 已端到端验证**：播种共享 Agent（MinIO 定义 + 真实 LLM）后，用户 B 成功使用 3 次（每次 turn `completed`，`billing_free_allowances.free_used_count=3`），第 4 次返回 HTTP 402 `rechargeRequired`，且不创建 Turn/Message、不调用模型、钱包与免费额度不变。付费 Turn 扣费由 CI 的 `billing.pg.test.ts` 覆盖。
+初版记录称尚未调用真实支付网关；2026-08-04 至 2026-08-05 的后续提交补充了 Test 下单、支付宝与微信各 1 分真实付款、回调入账及免费三次后返回 402 的成功报告。两者对应不同阶段，不能同时作为当前状态。
 
-**乐收赢测试商户的支付通道限制**（已实测确认，非代码问题）：聚合码 `/v3/qrpay` 返回的 `code_url` 是坏链接（微信扫码 10003 OAuth 未授权、支付宝跳错误页）；H5 渠道微信/支付宝在测试商户均不可用（网关 FAIL）。因此二维码充值改为 C扫B `/v3/prepay`（单渠道，需 `pay_type`），渠道值 `aggregate_qr` 更名为 `qr`（迁移 `0010`，含 `pay_type` 持久化列）。**支付宝与微信两条 prepay 渠道均用真实付款验证通过**（各自 1 分，回调验签通过、订单 credited、钱包只加一次、账本只记一条）。
+本次文档校正核查了下面列出的 Git 提交、PR #162 及其最终候选提交的 CI 元数据。历史现场结果的依据是当时提交和 PR 中的报告；这些记录未附明确绑定部署 SHA 的原始支付收据，本次也没有重跑现场验证。后续源码与环境验收须分别绑定对应候选提交和证据。
 
-**充值体验改造**（Test 反馈后的第二轮）：充值对话框从固定套餐改为手动输入金额（元，最多两位小数）加快捷金额按钮；按次单价从 1 元改为 1 分；H5「手机收银台」渠道从应用层移除，历史 `h5` 订单在迁移 `0011` 中迁到 `qr`，支付方式约束收窄为只允许 `qr`。
+## 历史阶段与来源
 
-## 已实现范围
+下面的日期按提交记录时间转换为 Asia/Shanghai，不作为实际测试发生时间。提交 SHA 标识记录来源，不自动等于当时部署或测试的源码 SHA。
+
+- **初版（原文标注 2026-08-01）**：[提交 `c98aeee8`](https://github.com/dangdang-tech/Combo/commit/c98aeee8960bbcccae7147b6f1baacf900a058e9) 记录免费三次、固定按成功 Turn 收费和钱包充值实现，以及离线、假网关和进程级自动化结果；当时明确尚未调用测试或正式支付网关，现场付款和部署证据待补。该提交的作者时间为 2026-07-28，提交时间为 2026-08-03，不能用任一时间反推测试日期。
+- **2026-08-04 21:15，Test 下单与通道调整**：[提交 `816cd2be`](https://github.com/dangdang-tech/Combo/commit/816cd2bee9f9c03b0d7c8d5f7da05eeaaa9dbeca) 报告真实 Test 网关 `/v3/prepay` 下单返回支付码，合法签名回调验证订单 `succeeded→credited`、钱包只加一次、账本只记一条；该阶段仍写明真实扫码付款待完成。记录还报告当时测试商户的 `/v3/qrpay` 坏链接、微信 OAuth 10003 和 H5 网关 FAIL，因此改用单渠道 C扫B `/v3/prepay`，渠道名改为 `qr`，由迁移 `0010` 保存 `pay_type`。这些通道观察只适用于当时商户配置。
+- **2026-08-05 00:28，支付宝付款报告**：[提交 `e142a82e`](https://github.com/dangdang-tech/Combo/commit/e142a82ebbdb2626e597ea568b7818f6070a804e) 报告用户扫码支付 1 分、真实回调到达、验签通过（`signature_valid=true`）、订单 `credited`、钱包只加一次、账本只记一条、回调事件 `processed`。
+- **2026-08-05 13:22，微信付款报告**：[提交 `c54fd002`](https://github.com/dangdang-tech/Combo/commit/c54fd00222bb1015c4fd0bb61c125bff6f95a7cc) 补充微信 1 分真实付款、回调验签与幂等入账成功报告。此时记录称支付宝和微信两条 prepay 渠道均已通过。
+- **2026-08-05 13:24，免费三次与 402 报告**：[提交 `60e60afa`](https://github.com/dangdang-tech/Combo/commit/60e60afa9b81d6579723381d444c2e1075b366a0) 报告播种共享 Agent（MinIO 定义与真实 LLM）后，用户 B 的三次 Turn 均 `completed`，`billing_free_allowances.free_used_count=3`，第 4 次返回 HTTP 402 `rechargeRequired`，不创建 Turn/Message、不调用模型、钱包与免费额度不变。该提交将付费 Turn 扣费验证指向 CI 的 `billing.pg.test.ts`。
+- **2026-08-05 15:40，充值体验实现调整**：[提交 `daa7e522`](https://github.com/dangdang-tech/Combo/commit/daa7e52285cc26a5c09c81c3c8a28688fff17b63) 将固定套餐改为手动金额与快捷按钮，按次单价从 1 元改为 1 分，移除 H5「手机收银台」，并以迁移 `0011` 把历史 `h5` 订单迁到 `qr`。这是实现变更，不能单独证明修改后的现场体验通过。
+
+[PR #162](https://github.com/dangdang-tech/Combo/pull/162) 汇总上述工作，并另行报告手动输入 `0.01` 元返回真实二维码、`channel: 'h5'` 被 400 拒绝，以及真实 Turn 产生 `charge_source=wallet`、`unit_price_cents=1`、`settled_cents=1` 的 `usage_charges`、余额从 1 变为 0。PR 于 2026-08-08 合并，合并提交为 `d15a985c67c2b9b5e08a5b8bc03a772fb543aecb`。这些仍属于历史 PR 报告，不扩展为新版 `J-055` 或当前环境的完成证据。
+
+2026-08-31 的 [PR #263](https://github.com/dangdang-tech/Combo/pull/263)（提交 `5e00b1e85175edb7ab755bc06a111e30ae4bb8f5`）修订了下文迁移兼容步骤；[PR #286](https://github.com/dangdang-tech/Combo/pull/286)（提交 `23d7628a71d12d012d6b16e73c70109c588fed6a`）修订了原 402 `usageId` 的恢复和重放步骤。它们是检查计划修订，不是新增现场执行证据。
+
+## 2026 年 8 月实现范围记录
+
+以下是该历史分支截至 `daa7e52285cc26a5c09c81c3c8a28688fff17b63` 的实现说明，不能代替当前源码、部署配置或新版支付合同。
 
 ### Agent 使用计费
 
@@ -25,12 +40,12 @@
 - 免费额度耗尽且钱包余额不足时，在创建 Turn 和调用 Agent 前返回 HTTP 402。
 - 不可变 `wallet_ledger` 只追加充值 credit 或使用 debit；应用角色无 UPDATE/DELETE 权限。
 
-当前生产可启用的收费策略是配置化固定按次收费：
+当时源码提供配置化固定按次收费策略；本记录不证明 Production 已启用：
 
 - `RUNTIME_BILLING_FREE_USES`
 - `RUNTIME_BILLING_UNIT_PRICE_CENTS`
 
-“预留最大预算、按模型实际用量结算并释放差额”没有在本轮冒充完成。Runtime 目前没有经过业务合同定义和持久化的可信计费量，也没有总 token/总成本硬上限。数据库为 `settled_cents < reserved_cents` 留有结构空间，但在明确币种、定价版本、舍入、最低收费、超预算处理和崩溃补偿前，不得直接用 Pi 消息中的浮点 cost 扣用户余额。
+该历史分支没有实现“预留最大预算、按模型实际用量结算并释放差额”。当时 Runtime 没有经过业务合同定义和持久化的可信计费量，也没有总 token/总成本硬上限。数据库为 `settled_cents < reserved_cents` 留有结构空间，但在明确币种、定价版本、舍入、最低收费、超预算处理和崩溃补偿前，不得直接用 Pi 消息中的浮点 cost 扣用户余额。
 
 ### 钱包充值
 
@@ -51,9 +66,9 @@
 - 支付配置缺省时网关关闭。启用后缺少机构、商户、密钥或合法 HTTPS 回调地址会拒绝启动。
 - 支付 Secret 只通过 `secretKeyRef` 引用，不进入仓库、ConfigMap、日志或测试输出。
 
-## 自动化证据
+## 历史自动化测试记录
 
-Node.js `v24.18.0`：
+初版 `c98aeee8` 报告在 Node.js `v24.18.0` 下得到以下结果。`daa7e522` 随实现调整了部分说明文字，计数没有变化；这些是当时文档中的测试计数，不是当前提交的重跑结果，也没有在该表绑定独立测试工件。
 
 | 范围              | 本地结果          | 说明                                                                                    |
 | ----------------- | ----------------- | --------------------------------------------------------------------------------------- |
@@ -66,22 +81,26 @@ Node.js `v24.18.0`：
 | release/scripts   | 259 通过          | 发布、回滚、迁移头和证据契约通过                                                        |
 | Test control      | 54 通过，4 跳过   | Test 控制面通过；仅精确镜像/文件系统环境检查按配置跳过                                  |
 
-同时通过：
+初版同时报告通过：
 
 - 四个相关包的 TypeScript 类型检查。
 - `git diff --check`。
 - 乐收赢签名 golden vectors：排除 `sign` 和 `null`、保留空字符串、ASCII 键序、UTF-8 MD5 小写。
 - 固定错误响应、回调 body limit、回调独立限流和日志低敏边界测试。
 
-尚未形成的证据：
+初版当时列出的待补证据：
 
 - PR CI 会在迁移后的临时 PostgreSQL 上强制以 `combo_api` 执行 9 项、以 `combo_runtime` 执行 4 项计费并发与权限测试；最终以对应 CI run 的实际结果为准。
-- 乐收赢 Test 的真实二维码支付、回调和查单响应。
+- 乐收赢 Test 的真实支付、回调和查单响应（初版指 H5 与聚合码，后续文案随渠道调整为二维码）。
 - Test 集群部署、外部 HTTPS 回调可达性和物理隔离数据库证明。
 
-## Test 人工闭环步骤
+后续付款和回调成功报告见上方时间线。主动查单响应、明确绑定部署 SHA 的现场收据及物理隔离证明，不能仅从这些报告推定已经补齐；这里也不据此断言它们从未执行。
 
-以下步骤只能在源码门禁通过、获得后续部署授权并完成专用测试配置后执行：
+PR #162 最终候选 `a6f5a8849c94ce795d96789c13ad96c7f157d05e` 的 [CI / quality](https://github.com/dangdang-tech/Combo/actions/runs/30989911677/job/92253327805) 和 [CI / billing PostgreSQL](https://github.com/dangdang-tech/Combo/actions/runs/30989911677/job/92253327729) 均于 2026-08-05 成功。本次校正已核查这两项 check-run 的候选 SHA 与结果；它们证明该候选的自动化检查结果，不证明真实支付现场或当前版本。
+
+## 后续 Test 人工检查步骤（计划）
+
+以下是经 2026-08-31 修订的检查计划，不是执行记录。迁移 `0016` 仅指该次兼容切片，不能作为当前迁移 head；再次执行前须依据候选源码与 [`deployment-topology.md`](deployment-topology.md) 核对适用步骤，并在源码门禁通过、获得后续部署授权和完成专用测试配置后执行：
 
 1. 先核对已部署 Test 的 `0012`–`0016` 不可变兼容前缀与候选源码字节完全一致，再把物理隔离的 Test 数据库连续迁移到候选 head（本兼容切片为 `0016_project_history_agent_flow.sql`），并用专用应用角色运行 PG 测试。
 2. 仅给 Authoring API 注入乐收赢 Test 配置；确认 worker 和 Runtime 环境中不存在 `LESHOUYING_INSTITUTION_KEY`。
@@ -107,7 +126,9 @@ Node.js `v24.18.0`：
 
 不得保存或输出机构密钥、完整回调、完整签名串、完整收银台 URL、付款码或 openid。
 
-## Test 联调前需服务商书面确认
+## 初版提出的服务商确认清单
+
+本文没有保存下列事项的逐项书面确认状态；后续支付成功报告不能替代全部确认。渠道名称随 2026-08-04 至 2026-08-05 的实现调整，再次联调前应核对当前商户合同。
 
 - 二维码支付（C扫B `/v3/prepay`）的 `pay_type` 枚举与 `qrcode` 响应字段在当前商户配置下的准确值。
 - 所有下单和查单响应是否必定带 `sign`，以及签名字段是否与请求规则完全相同。
@@ -119,7 +140,9 @@ Node.js `v24.18.0`：
 - 回调源地址范围和峰值速率，确认每 IP 每分钟 600 次的初始限流不会误伤。
 - 平台订单号的唯一性范围，以及跨测试/正式环境是否可能重复。
 
-## 本轮明确未做
+## 初版明确未执行的操作
+
+以下仅描述初版 `c98aeee8` 的执行范围，不覆盖后续 Test 联调，也不代表当前项目的完成状态：
 
 - 没有调用乐收赢测试或正式网关。
 - 没有部署 K3s、修改路由、读取或写入集群 Secret。
