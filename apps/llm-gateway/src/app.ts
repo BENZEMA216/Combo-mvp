@@ -4,6 +4,11 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { PaymentApiErrorResponseSchema, PaymentRequiredResponseSchema } from '@cb/payment-protocol';
 import { admitPaymentCall, type PaymentAdmissionClient } from './payment-admission.js';
+import {
+  GatewayIdentityError,
+  type GatewayIdentityVerifier,
+  type VerifiedGatewayIdentity,
+} from './identity.js';
 import type { BillingClient } from './billing.js';
 import { priceFor, type PricingTable, type TokenUsage } from './pricing.js';
 import { isProviderJsonSuccessPayload, type ProviderClient } from './provider.js';
@@ -21,7 +26,8 @@ export interface GatewayAppDependencies {
   billing: BillingClient;
   paymentAdmission?: PaymentAdmissionClient;
   provider: ProviderClient;
-  gatewayToken: string;
+  gatewayToken?: string;
+  identityVerifier?: GatewayIdentityVerifier;
   pricing: PricingTable;
   holdFixedCostCents: number;
   defaultMaxTokens: number;
@@ -55,6 +61,8 @@ function sendError(
 ): FastifyReply {
   const messages: Record<string, string> = {
     unauthorized: '请验证身份后再试。',
+    identity_unavailable: '身份服务暂时不可用，请稍后重试。',
+    forbidden: '此 Agent 没有调用模型的权限。',
     invalid_request: '请求格式不正确，请检查后重试。',
     payment_required: '余额不足，请完成支付后继续。',
     conflict: '本次调用已处理或与原请求冲突，请查询业务状态。',
@@ -121,6 +129,8 @@ async function pumpProviderStream(
 }
 
 export async function buildApp(deps: GatewayAppDependencies): Promise<FastifyInstance> {
+  if (Boolean(deps.gatewayToken) === Boolean(deps.identityVerifier))
+    throw new Error('select exactly one Gateway identity mode');
   const app = Fastify({ logger: deps.logger ?? false });
   app.decorate('gatewayDeps', deps);
   app.setErrorHandler((error, req, reply) => {
@@ -144,12 +154,30 @@ export async function buildApp(deps: GatewayAppDependencies): Promise<FastifyIns
   app.get('/ready', async (_req, reply) => reply.send({ status: 'ok', ready: true }));
 
   app.post('/v1/chat/completions', async (req, reply) => {
-    if (!tokenMatches(bearerToken(req), deps.gatewayToken)) {
+    let identity: VerifiedGatewayIdentity | undefined;
+    if (deps.identityVerifier) {
+      try {
+        identity = await deps.identityVerifier.verify(
+          req.headers.authorization,
+          typeof req.headers['x-combo-assertion'] === 'string'
+            ? req.headers['x-combo-assertion']
+            : undefined,
+        );
+      } catch (error) {
+        const status = error instanceof GatewayIdentityError ? error.status : 503;
+        return sendError(
+          req,
+          reply,
+          status,
+          status === 503 ? 'identity_unavailable' : status === 403 ? 'forbidden' : 'unauthorized',
+        );
+      }
+    } else if (!tokenMatches(bearerToken(req), deps.gatewayToken!)) {
       return sendError(req, reply, 401, 'unauthorized');
     }
     reply.header('cache-control', 'no-store');
 
-    const parsed = parseChatRequest(req.body, deps.defaultMaxTokens);
+    const parsed = parseChatRequest(req.body, deps.defaultMaxTokens, identity);
     if (!parsed) return sendError(req, reply, 400, 'invalid_request');
 
     const log = loggerOf(req);

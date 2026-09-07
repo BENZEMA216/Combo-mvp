@@ -5,8 +5,11 @@ export interface GatewayEnv {
   NODE_ENV: string;
   PORT: number;
   HOST: string;
-  /** 平台内部 token：Agent 调网关入口的 Bearer 凭据。 */
-  GATEWAY_INTERNAL_TOKEN: string;
+  /** 仅供非 production 旧验证栈使用的入口凭据。 */
+  GATEWAY_INTERNAL_TOKEN?: string;
+  AUTH_MODE: 'agent' | 'legacy-test';
+  AUTHZ_JWKS_URL?: string;
+  AUTHZ_ISSUER?: string;
   BILLING_BASE_URL: string;
   /** 网关调 billing 三个接口的 Bearer 凭据。 */
   BILLING_INTERNAL_TOKEN: string;
@@ -63,12 +66,44 @@ function parseNonNegativeInt(name: string, fallback: number): number {
 }
 
 export function loadEnv(): GatewayEnv {
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  if (!['development', 'test', 'production'].includes(nodeEnv))
+    throw new Error('NODE_ENV must be development, test, or production');
+  const authMode =
+    process.env.LLM_GATEWAY_AUTH_MODE ?? (nodeEnv === 'production' ? 'agent' : 'legacy-test');
+  if (authMode !== 'agent' && authMode !== 'legacy-test')
+    throw new Error('LLM_GATEWAY_AUTH_MODE must be agent or legacy-test');
+  if (nodeEnv === 'production' && authMode === 'legacy-test')
+    throw new Error('legacy Gateway identity is not allowed in production');
+  if (authMode === 'agent' && process.env.LLM_GATEWAY_INTERNAL_TOKEN)
+    throw new Error('remove the legacy Gateway token when selecting Agent identity');
+  const jwksUrl = authMode === 'agent' ? required('AUTHZ_JWKS_URL') : undefined;
+  if (jwksUrl) {
+    try {
+      const url = new URL(jwksUrl);
+      if (
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        (url.protocol !== 'https:' && !(nodeEnv !== 'production' && url.protocol === 'http:'))
+      )
+        throw new Error('invalid URL');
+    } catch {
+      throw new Error('AUTHZ_JWKS_URL must use trusted HTTPS in production');
+    }
+  }
   const paymentMode = process.env.LLM_GATEWAY_PAYMENT_ADMISSION ?? 'false';
   if (paymentMode !== 'true' && paymentMode !== 'false')
     throw new Error('LLM_GATEWAY_PAYMENT_ADMISSION must be true or false');
   const paymentToken =
     paymentMode === 'true' ? requiredToken('BILLING_PAYMENT_GATEWAY_TOKEN') : undefined;
-  if (paymentToken && paymentToken === process.env.LLM_GATEWAY_INTERNAL_TOKEN)
+  if (
+    paymentToken &&
+    [process.env.LLM_GATEWAY_INTERNAL_TOKEN, process.env.BILLING_INTERNAL_TOKEN].includes(
+      paymentToken,
+    )
+  )
     throw new Error('payment admission requires a separate Gateway-to-Billing credential');
   const pricing = parsePricingTable(required('LLM_GATEWAY_PRICING_JSON'));
   const fixedCostCents = parseNonNegativeInt('LLM_GATEWAY_HOLD_FIXED_COST_CENTS', 1);
@@ -80,10 +115,14 @@ export function loadEnv(): GatewayEnv {
     }
   }
   return {
-    NODE_ENV: process.env.NODE_ENV ?? 'development',
+    NODE_ENV: nodeEnv,
+    AUTH_MODE: authMode,
+    AUTHZ_JWKS_URL: jwksUrl,
+    AUTHZ_ISSUER: authMode === 'agent' ? required('AUTHZ_ASSERTION_ISSUER') : undefined,
     PORT: parsePort(process.env.PORT),
     HOST: process.env.HOST ?? '0.0.0.0',
-    GATEWAY_INTERNAL_TOKEN: requiredToken('LLM_GATEWAY_INTERNAL_TOKEN'),
+    GATEWAY_INTERNAL_TOKEN:
+      authMode === 'legacy-test' ? requiredToken('LLM_GATEWAY_INTERNAL_TOKEN') : undefined,
     BILLING_BASE_URL: required('BILLING_BASE_URL'),
     BILLING_INTERNAL_TOKEN: requiredToken('BILLING_INTERNAL_TOKEN'),
     ...(paymentToken ? { PAYMENT_ADMISSION_TOKEN: paymentToken } : {}),

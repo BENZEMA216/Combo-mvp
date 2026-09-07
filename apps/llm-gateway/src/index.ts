@@ -5,6 +5,7 @@ import { createFetchBillingClient } from './billing.js';
 import { loadEnv } from './env.js';
 import { createFetchProviderClient } from './provider.js';
 import { createPaymentAdmissionClient } from './payment-admission.js';
+import { createGatewayIdentityVerifier } from './identity.js';
 
 const env = loadEnv();
 
@@ -27,7 +28,15 @@ const app = await buildApp({
     baseUrl: env.PROVIDER_BASE_URL,
     apiKey: env.PROVIDER_API_KEY,
   }),
-  gatewayToken: env.GATEWAY_INTERNAL_TOKEN,
+  ...(env.AUTH_MODE === 'agent'
+    ? {
+        identityVerifier: createGatewayIdentityVerifier({
+          issuer: env.AUTHZ_ISSUER!,
+          jwksUrl: env.AUTHZ_JWKS_URL!,
+          allowHttpForTest: env.NODE_ENV !== 'production',
+        }),
+      }
+    : { gatewayToken: env.GATEWAY_INTERNAL_TOKEN! }),
   pricing: env.PRICING,
   holdFixedCostCents: env.HOLD_FIXED_COST_CENTS,
   defaultMaxTokens: env.DEFAULT_MAX_TOKENS,
