@@ -10,7 +10,9 @@ export interface GatewayEnv {
   BILLING_BASE_URL: string;
   /** 网关调 billing 三个接口的 Bearer 凭据。 */
   BILLING_INTERNAL_TOKEN: string;
-  /** hold 调用超时（毫秒）；超时与 5xx 一样触发 chat 维度 fail-open。 */
+  /** New payment admission is enabled only with a dedicated Gateway-to-Billing credential. */
+  PAYMENT_ADMISSION_TOKEN?: string;
+  /** 计费调用超时（毫秒）；超时和 5xx 均停止模型调用。 */
   BILLING_TIMEOUT_MS: number;
   PROVIDER_BASE_URL: string;
   /** provider key 的唯一存放点，只在本进程内存中使用。 */
@@ -61,6 +63,13 @@ function parseNonNegativeInt(name: string, fallback: number): number {
 }
 
 export function loadEnv(): GatewayEnv {
+  const paymentMode = process.env.LLM_GATEWAY_PAYMENT_ADMISSION ?? 'false';
+  if (paymentMode !== 'true' && paymentMode !== 'false')
+    throw new Error('LLM_GATEWAY_PAYMENT_ADMISSION must be true or false');
+  const paymentToken =
+    paymentMode === 'true' ? requiredToken('BILLING_PAYMENT_GATEWAY_TOKEN') : undefined;
+  if (paymentToken && paymentToken === process.env.LLM_GATEWAY_INTERNAL_TOKEN)
+    throw new Error('payment admission requires a separate Gateway-to-Billing credential');
   const pricing = parsePricingTable(required('LLM_GATEWAY_PRICING_JSON'));
   const fixedCostCents = parseNonNegativeInt('LLM_GATEWAY_HOLD_FIXED_COST_CENTS', 1);
   for (const price of Object.values(pricing)) {
@@ -77,6 +86,7 @@ export function loadEnv(): GatewayEnv {
     GATEWAY_INTERNAL_TOKEN: requiredToken('LLM_GATEWAY_INTERNAL_TOKEN'),
     BILLING_BASE_URL: required('BILLING_BASE_URL'),
     BILLING_INTERNAL_TOKEN: requiredToken('BILLING_INTERNAL_TOKEN'),
+    ...(paymentToken ? { PAYMENT_ADMISSION_TOKEN: paymentToken } : {}),
     BILLING_TIMEOUT_MS: parsePositiveInt('BILLING_TIMEOUT_MS', 2_000),
     PROVIDER_BASE_URL: required('PROVIDER_BASE_URL'),
     PROVIDER_API_KEY: required('PROVIDER_API_KEY'),

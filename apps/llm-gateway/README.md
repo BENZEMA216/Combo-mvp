@@ -1,24 +1,57 @@
 # apps/llm-gateway — V2 模型网关
 
-这个服务是所有模型调用的唯一出口，只做三件事：编排计费的 check-and-hold、向 provider 流式转发、产出 usage 计量事件。协议面是 OpenAI 兼容子集，本期只代理文本对话（chat 维度）。provider key 只存在于本服务的配置中，Agent 使用平台内部 token 调用。服务无状态，不直接连接数据库，usage 事件经计费服务落库。
+模型网关在调用模型前向 Billing 申请准入，转发模型响应，并提交使用量和结算。服务不直接保存业务请求或连接数据库，模型供应商密钥仅在网关内使用。
+
+计费超时、网络错误、5xx、畸形响应和重复准入都会在模型调用前停止。网关不会因计费不可用而放行收费调用。
 
 ## 文件
 
-- `src/index.ts` 是进程入口，加载配置、装配 billing 与 provider 客户端，启动 HTTP 监听并处理优雅停机。
-- `src/env.ts` 解析并校验全部环境变量，进程其余部分只读结构化配置。
-- `src/pricing.ts` 是单价表（分 / 百万 token，按模型匹配、缺省回落 default）与金额折算：用 BigInt 做中间乘加，只有最终值仍为 safe integer 才收窄；预授权估算按 max_tokens 乘输出单价加固定成本（宁高勿低），结算按真实 token 用量折算。
-- `src/billing.ts` 是计费服务客户端：hold、settle、usage 推账，以及把非零真实用量展开成带稳定幂等键的计量事件。网络错误与 5xx 抛 BillingUnavailableError；4xx、hold replay 与畸形成功响应明确 fail-closed。
-- `src/provider.ts` 是 provider 客户端：非流式返回 JSON，流式返回原始字节流，不整段缓冲。
-- `src/usage.ts` 从 provider SSE 字节流里增量提取末帧 usage，按行切分、跨 chunk 缓冲半行。
-- `src/service.ts` 是编排核心：请求解析（剥离 x_combo 平台扩展字段、流式强制 include_usage）、check-and-hold（确定性错误与任何 turn replay 在 provider 前停止，只有网络或 5xx 按 chat 维度 fail-open）、turn 收尾（完整推完全部计量事实才按实结算，部分失败保留 hold 供幂等重试/过期清扫）、provider 失败时按零用量结算等价释放冻结。
-- `src/app.ts` 装配 Fastify 路由与入口 token 鉴权；流式响应 hijack 后逐 chunk 透传 provider 字节。
-- `src/__tests__/` 是不依赖外部进程的 vitest 测试，`fakes.ts` 提供记录调用参数的内存假客户端。
+- `src/index.ts` 加载配置，装配 Billing、支付准入和模型供应商客户端。
+- `src/env.ts` 解析配置。开启新支付准入时必须配置独立的 Gateway 到 Billing 凭据。
+- `src/pricing.ts` 读取模型价格并以整数分估算和结算，使用 BigInt 中间计算避免精度丢失。
+- `src/billing.ts` 保留旧 hold、结算和计量客户端，请求拒绝重定向。
+- `src/payment-admission.ts` 调用统一收费准入接口，计算规范请求摘要和价格版本，严格检查支付 402、hold 与重放状态。响应读取最多 64 KiB，超时即停止。
+- `src/service.ts` 解析新旧调用编号、剥离平台字段并处理用量结算。旧 hold 入口也在计费故障时停止模型调用。
+- `src/provider.ts` 调用模型供应商，成功响应保持 JSON 或流式字节。
+- `src/usage.ts` 增量提取流末尾的使用量。
+- `src/app.ts` 装配 HTTP 入口。支付 402 使用网关当前 traceId；普通错误使用统一人话错误信封，不原样转发 Billing 或供应商错误正文。
+- `src/__tests__/` 覆盖准入顺序、支付前零模型调用、并发重放、错误与协议边界。
 
-## 接口与行为
+## 请求编号
 
-- `POST /v1/chat/completions`（Bearer `LLM_GATEWAY_INTERNAL_TOKEN`）是 OpenAI 兼容子集，支持 stream 为 true 或 false。请求体必须带平台扩展字段 `x_combo: {user_id, agent_id, turn_id}`，转发给 provider 前剥离；其余字段原样透传。转发前先调 billing 创建预授权；所有 4xx 原样返回，任何 replay 都返回 409 且不调用 provider，畸形 2xx、非法 hold ID 与金额溢出也 fail-closed。只有 billing 网络错误或 5xx 才按 chat 维度 fail-open。流式请求自动补 `stream_options.include_usage`。流结束后按真实非零用量生成带稳定身份幂等键的计量事件；全部事件成功后才按实结算，部分推账失败不结算，留待幂等重试或 hold 过期清扫。usage 缺失时按估算结算，由 billing 补 exact hold 的 estimated 行。provider 返回非 2xx 时按零用量结算以释放冻结。
-- `GET /health` 与 `GET /ready` 是健康与就绪探针。
+新格式为：
+
+```json
+{
+  "x_combo": {
+    "user_id": "当前用户 UUID",
+    "agent_id": "agent-a",
+    "operation_id": "operation-1",
+    "call_id": "call-1"
+  }
+}
+```
+
+旧格式 `user_id + agent_id + turn_id` 保留兼容。turn_id 只映射为收费 callId；网关另外生成稳定的内部 legacy 业务引用，不把 turnId 定义为业务 operationId。新旧字段混用会返回 400。
+
+两种格式在转发给模型前都会剥离 x_combo。请求顶层的 operationId、paymentToken、requestKey、裸身份等保留字段会被拒绝。
+
+## 支付准入
+
+设置 `LLM_GATEWAY_PAYMENT_ADMISSION=true` 并提供独立 `BILLING_PAYMENT_GATEWAY_TOKEN` 后，网关调用 `POST /billing/call-admissions`。该凭据不能与 Agent 调网关的凭据相同。
+
+Billing 返回新 hold 后，网关才调用模型；返回 replay 时停止并返回 409；余额不足时严格验证标准 402，再以网关当前 traceId 返回。流式请求的 402 也在 SSE 开始前返回普通 JSON。供应商自己的 402 不会被当成 Combo 支付要求。
+
+新开关默认关闭，以便单独更新 Billing 认证与入口接线。关闭时沿用旧 hold 接口，但计费故障仍停止；旧余额不足响应只返回一般 402，没有可供 Host 支付的新凭证。
+
+当前入口身份仍是受控验证的共享 token 和请求体身份。正式每 Agent 凭据、用户断言重验与实际 Billing 认证接线尚未完成，不能将本次网关代码描述为完整外部支付接入。
+
+## 收尾
+
+成功响应后，真实用量全部提交成功才进行结算；部分提交失败保留 hold。缺少真实用量时按估算结算。供应商失败时按零用量释放 hold。
+
+同一次收费调用的准入响应丢失时，重试可能得到 replay，网关不会再次调用模型。业务必须保留结果不确定状态，不能换 callId 自动重试。
 
 ## 上下游
 
-上游是各 Agent（经 SDK 的 llm client，持平台内部 token）。下游是 apps/billing（hold / settle / usage 三个接口，Bearer `BILLING_INTERNAL_TOKEN`，`BILLING_BASE_URL` 指向它）和 OpenAI 兼容的模型 provider（`PROVIDER_BASE_URL` + `PROVIDER_API_KEY`，key 的唯一持有者）。单价表走 `LLM_GATEWAY_PRICING_JSON`（必须含 default 条目）。
+上游是 Agent SDK，模型请求使用 `LLM_GATEWAY_INTERNAL_TOKEN`。下游包括 Billing 的准入、hold、settle 和 metering 接口，以及由 `PROVIDER_BASE_URL` 配置的模型供应商。价格来自 `LLM_GATEWAY_PRICING_JSON`，必须包含 default 条目。新支付准入与旧计量凭据分别配置，均不进入日志。

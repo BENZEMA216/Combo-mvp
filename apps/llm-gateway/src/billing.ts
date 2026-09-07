@@ -139,10 +139,11 @@ async function postJson(
         authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(body),
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch (error) {
-    throw new BillingUnavailableError(`billing request failed: ${(error as Error).message}`);
+  } catch {
+    throw new BillingUnavailableError('billing request failed');
   }
   return response;
 }
