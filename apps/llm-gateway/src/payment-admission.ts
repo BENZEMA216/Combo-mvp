@@ -109,17 +109,20 @@ export function createPaymentAdmissionClient(options: {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.timeoutMs);
       try {
-        const response = await fetchImpl(url, {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${options.token}`,
-            'content-type': 'application/json',
-            accept: 'application/json',
-          },
-          redirect: 'error',
-          signal: controller.signal,
-          body: JSON.stringify(input),
-        });
+        const response = await boundedResponse(
+          fetchImpl(url, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${options.token}`,
+              'content-type': 'application/json',
+              accept: 'application/json',
+            },
+            redirect: 'error',
+            signal: controller.signal,
+            body: JSON.stringify(input),
+          }),
+          controller.signal,
+        );
         if (response.status >= 500) {
           void response.body?.cancel().catch(() => undefined);
           throw new Error('billing admission unavailable');
@@ -145,6 +148,27 @@ export function createPaymentAdmissionClient(options: {
       }
     },
   };
+}
+
+async function boundedResponse(pending: Promise<Response>, signal: AbortSignal): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new Error('admission request timed out'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    pending.then(
+      (response) => {
+        signal.removeEventListener('abort', onAbort);
+        if (signal.aborted) {
+          void response.body?.cancel().catch(() => undefined);
+          onAbort();
+        } else resolve(response);
+      },
+      () => {
+        signal.removeEventListener('abort', onAbort);
+        reject(new Error('admission request failed'));
+      },
+    );
+  });
 }
 
 async function readAdmissionJson(response: Response, signal: AbortSignal): Promise<unknown> {

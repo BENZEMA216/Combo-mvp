@@ -182,6 +182,25 @@ describe('Gateway payment admission', () => {
 });
 
 describe('admission HTTP client', () => {
+  it('stops even when a transport adapter does not respect cancellation', async () => {
+    const client = createPaymentAdmissionClient({
+      baseUrl: 'https://billing.combo.test',
+      token: 'test-dedicated-credential',
+      timeoutMs: 10,
+      fetchImpl: async () => new Promise<Response>(() => {}),
+    });
+    await expect(
+      client.admit({
+        userId,
+        agentId: 'agent-a',
+        operationId: 'operation-1',
+        callId: 'call-1',
+        requestFingerprint: 'a'.repeat(64),
+        pricingPolicyId: 'price-v1',
+        estimatedAmount: 2,
+      }),
+    ).rejects.toThrow('could not be confirmed');
+  });
   it('bounds and cancels a stalled response body', async () => {
     let cancelled = false;
     const client = createPaymentAdmissionClient({
