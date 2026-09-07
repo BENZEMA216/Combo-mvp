@@ -1,5 +1,13 @@
 # @cb/creator-agent-protocol
 
+显式 `agent-context` 子路径提供轻量 `combo.agent-context-request/1` 和 `combo.agent-context-draft/1`。
+Draft serializer 只返回本模块 create/parse 签发对象的已缓存规范文本，不遍历调用方对象；跨进程使用者先解析 exact Draft 文本。
+它只接收有界 JSON 整理结果，固定来源为 `codex_available_context / not_verified / partial_or_unknown`，
+不接收完整对话、来源选择器或调用方认证声明。Draft fingerprint 绑定规范的 request、content 与固定来源，
+不冒充 V2 Draft 或 Host attestation。输入 JSON 可包含普通空白，输出 Draft 必须以 canonical bytes 回读。
+公共内容上限与插件展示一致：名称 80、描述 500、方法字符串 8000、至多 5 条各 1000 的示例、输出和覆盖各 1000。
+敏感内容筛查在 Worker 编译入口执行，协议校验本身不提供保密或来源证明。
+
 这个包是 Creator-hosted Agent 重建链路的严格协议合约。根出口保持 R1 最小 Host 边界；显式
 `broker-transport` 子路径提供 R2C Worker 与 Broker 之间的 canonical wire frame；显式 `agent` 子路径提供
 Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact source ledger。本包不承载
