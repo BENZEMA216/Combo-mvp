@@ -9,6 +9,10 @@ import { startHoldSweeper } from './sweep.js';
 import { createPgPaymentStore } from './payment-repo.js';
 import { createPaymentTokenCodec } from './payment-service.js';
 import { createPaymentUserAuthenticator, paymentGatewayAuthenticated } from './payment-auth.js';
+import { createPgChannelOrderStore, clearExpiredChannelActions } from './channel-repo.js';
+import { createPaymentChannelService } from './channel-service.js';
+import { LeshouyingPaymentGateway } from './channel/index.js';
+import { startChannelReconciler, withChannelPaymentState } from './checkout-service.js';
 
 const env = loadEnv();
 
@@ -24,10 +28,30 @@ pool.on('error', () => {
 
 const store = createPgBillingStore(pool);
 const paymentConfig = env.PAYMENTS;
-const paymentStore = paymentConfig
+const rawPayments = paymentConfig
   ? createPgPaymentStore(pool, {
       tokens: createPaymentTokenCodec(paymentConfig.tokenKey),
       checkoutBaseUrl: paymentConfig.checkoutBaseUrl,
+    })
+  : undefined;
+const channelStore = paymentConfig ? createPgChannelOrderStore(pool) : undefined;
+const paymentStore =
+  rawPayments && channelStore ? withChannelPaymentState(rawPayments, channelStore) : undefined;
+const channel =
+  paymentConfig && paymentStore && channelStore
+    ? createPaymentChannelService({
+        store: channelStore,
+        payments: paymentStore,
+        gateway: new LeshouyingPaymentGateway(paymentConfig.channel),
+      })
+    : undefined;
+const authenticateUser = paymentConfig
+  ? createPaymentUserAuthenticator({
+      authzBaseUrl: paymentConfig.authzBaseUrl,
+      jwksUrl: paymentConfig.jwksUrl,
+      issuer: paymentConfig.issuer,
+      trustedOrigins: paymentConfig.trustedOrigins,
+      allowHttpForTest: env.NODE_ENV !== 'production',
     })
   : undefined;
 const sweeper = startHoldSweeper({
@@ -39,20 +63,20 @@ const sweeper = startHoldSweeper({
 
 const app = await buildApp({
   store,
-  ...(paymentConfig && paymentStore
+  ...(paymentConfig && paymentStore && channel && authenticateUser
     ? {
         payments: {
           store: paymentStore,
           trustedOrigins: paymentConfig.trustedOrigins,
-          authenticateUser: createPaymentUserAuthenticator({
-            authzBaseUrl: paymentConfig.authzBaseUrl,
-            jwksUrl: paymentConfig.jwksUrl,
-            issuer: paymentConfig.issuer,
-            trustedOrigins: paymentConfig.trustedOrigins,
-            allowHttpForTest: env.NODE_ENV !== 'production',
-          }),
+          authenticateUser,
           authenticateGateway: async (request: FastifyRequest) =>
             paymentGatewayAuthenticated(request.headers.authorization, paymentConfig.gatewayToken),
+        },
+        checkout: {
+          payments: paymentStore,
+          channel,
+          authenticateUser,
+          testMode: paymentConfig.channel.environment === 'TEST',
         },
       }
     : {}),
@@ -62,6 +86,12 @@ const app = await buildApp({
   readiness: async () => {
     try {
       await pool.query('SELECT 1');
+      if (paymentConfig) {
+        const result = await pool.query<{ ready: boolean }>(
+          "SELECT to_regclass('public.v2_payment_channel_orders') IS NOT NULL AND to_regclass('public.v2_payment_channel_events') IS NOT NULL AS ready",
+        );
+        if (!result.rows[0]?.ready) return false;
+      }
       return true;
     } catch {
       return false;
@@ -69,11 +99,20 @@ const app = await buildApp({
   },
   logger: true,
 });
+const channelReconciler = channel
+  ? startChannelReconciler({
+      channel,
+      purge: () => clearExpiredChannelActions(pool, 100),
+      log: app.log,
+    })
+  : undefined;
 
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
   sweeper.stop();
+  const channelStopped = channelReconciler?.stop();
   await app.close().catch(() => undefined);
+  await channelStopped;
   await pool.end().catch(() => undefined);
   process.exit(0);
 }
