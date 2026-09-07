@@ -23,7 +23,7 @@
 
 ## V2 独立验证链
 
-`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0015_v2_billing_idempotency.sql`。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
+`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0016_v2_payment_admission.sql`。`0016` 追加收费调用、支付请求、请求编号别名与原调用资金预留。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
 
 V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenges` 与 `v2_sessions`，和创作者域的 `auth_` 表互不引用。V2 计费域使用 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events`；流水和计量事件只允许追加。
 
@@ -79,4 +79,4 @@ pnpm -F @cb/db test
 
 `MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0019`、从 live `0018` 账本只追加 pending recovery `0019` 且历史订单保留 `NULL`、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
 
-V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0015_v2_billing_idempotency.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。
+V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0016_v2_payment_admission.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。
