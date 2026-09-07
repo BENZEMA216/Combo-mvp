@@ -890,7 +890,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   ];
   const allowedControlFiles = [
     ...allowedKnowledgeControlFiles,
-    ...paymentPlatformScope.allowedFiles,
+    ...paymentPlatformScope.allowedFiles.filter((path) => path.startsWith('docs/')),
   ].sort();
   const allowedKnowledgeAuthoringFiles = [
     'apps/authoring/src/__tests__/README.md',
@@ -1178,10 +1178,17 @@ test('private Agent Draft synchronization opens only seven exact paths', () => {
       ),
     /v5 allowedPathPrefixes/,
   );
-  // Removing this admission must reproduce the entire pre-change v5 contract.
+  // Remove this admission and the separately approved payment identity/image files to
+  // retain the immutable historical checkpoint from before private Draft synchronization.
+  const historicalBeforeAdmission = {
+    ...beforeAdmission,
+    allowedFiles: beforeAdmission.allowedFiles.filter(
+      (path) => !path.startsWith('apps/authz/') && path !== 'infra/Dockerfile.v2',
+    ),
+  };
   assert.equal(
     createHash('sha256')
-      .update(`${JSON.stringify(beforeAdmission, null, 2)}\n`)
+      .update(`${JSON.stringify(historicalBeforeAdmission, null, 2)}\n`)
       .digest('hex'),
     'f5f6f5ece37d33be16802fb516c46c9939f78765a686b217076abe07ea73e125',
   );
