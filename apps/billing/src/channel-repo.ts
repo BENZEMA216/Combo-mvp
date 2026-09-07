@@ -24,6 +24,23 @@ interface Row {
   completed: boolean;
 }
 const SELECT = `SELECT o.*, (p.state = 'completed') AS completed FROM v2_payment_channel_orders o JOIN v2_payment_requests p ON p.id=o.payment_id`;
+
+/** Remove expired/consumed bearer-like QR content in bounded batches, without deleting order facts. */
+export function clearExpiredChannelActions(pool: Pool, limit: number): Promise<number> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new ChannelConflictError();
+  return withTransaction(pool, async (tx) => {
+    const result = await tx.query(
+      `WITH expired AS (
+      SELECT o.payment_id FROM v2_payment_channel_orders o JOIN v2_payment_requests p ON p.id=o.payment_id
+      WHERE o.qr_content IS NOT NULL AND (o.action_expires_at<=statement_timestamp() OR p.state='completed')
+      LIMIT $1 FOR UPDATE OF o SKIP LOCKED
+    ) UPDATE v2_payment_channel_orders o SET qr_content=NULL,action_expires_at=NULL
+      FROM expired WHERE o.payment_id=expired.payment_id`,
+      [limit],
+    );
+    return result.rowCount ?? 0;
+  });
+}
 function order(row: Row): ChannelOrder {
   const amountCents = Number(row.amount);
   if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 999_999_999_999_999)

@@ -1,4 +1,5 @@
 // 启动配置：所有环境变量在这里解析与校验，进程其余部分只读结构化结果。
+import type { LeshouyingGatewayConfig } from './channel/index.js';
 
 export interface BillingEnv {
   PAYMENTS?: {
@@ -9,6 +10,7 @@ export interface BillingEnv {
     jwksUrl: string;
     issuer: string;
     trustedOrigins: string[];
+    channel: LeshouyingGatewayConfig;
   };
   NODE_ENV: string;
   PORT: number;
@@ -96,6 +98,8 @@ export function loadEnv(): BillingEnv {
       }
     });
     const checkoutBaseUrl = urls[0]!;
+    if (checkoutBaseUrl !== new URL(checkoutBaseUrl).origin)
+      throw new Error('BILLING_PAYMENT_CHECKOUT_BASE_URL must be an origin without a path');
     const trustedOrigins = (
       process.env.BILLING_PAYMENT_HOST_ORIGINS ?? new URL(checkoutBaseUrl).origin
     )
@@ -113,6 +117,29 @@ export function loadEnv(): BillingEnv {
           throw new Error('BILLING_PAYMENT_HOST_ORIGINS must contain exact trusted origins');
         }
       });
+    const channelEnvironment = required('BILLING_LESHOUYING_ENVIRONMENT');
+    if (channelEnvironment !== 'TEST' && channelEnvironment !== 'PRODUCTION')
+      throw new Error('BILLING_LESHOUYING_ENVIRONMENT must be TEST or PRODUCTION');
+    const institutionNo = required('BILLING_LESHOUYING_INSTITUTION_NO');
+    const merchantNo = required('BILLING_LESHOUYING_MERCHANT_NO');
+    if (!/^[\x21-\x7e]{1,32}$/.test(institutionNo) || !/^[\x21-\x7e]{1,64}$/.test(merchantNo))
+      throw new Error('invalid payment channel institution or merchant');
+    const institutionKey = requiredToken('BILLING_LESHOUYING_INSTITUTION_KEY');
+    if (
+      [
+        tokenKey,
+        gatewayToken,
+        process.env.BILLING_INTERNAL_TOKEN,
+        process.env.BILLING_ADMIN_TOKEN,
+      ].includes(institutionKey)
+    )
+      throw new Error('payment channel key must be independent of platform credentials');
+    const channelTimeout = parsePositiveInt('BILLING_LESHOUYING_TIMEOUT_MS', 2000);
+    if (channelTimeout < 100 || channelTimeout > 5000)
+      throw new Error('BILLING_LESHOUYING_TIMEOUT_MS must be within 100..5000');
+    // A real channel must notify the same trusted platform origin that serves the checkout.
+    if (new URL(checkoutBaseUrl).protocol !== 'https:')
+      throw new Error('channel checkout requires HTTPS');
     payments = {
       tokenKey,
       gatewayToken,
@@ -121,6 +148,14 @@ export function loadEnv(): BillingEnv {
       jwksUrl: urls[2]!,
       issuer: required('AUTHZ_ASSERTION_ISSUER'),
       trustedOrigins,
+      channel: {
+        environment: channelEnvironment,
+        institutionNo,
+        merchantNo,
+        institutionKey,
+        notifyUrl: `${checkoutBaseUrl}/billing/leshouying/payment-notify`,
+        timeoutMs: channelTimeout,
+      },
     };
   }
   return {

@@ -178,6 +178,9 @@ importers:
       pg:
         specifier: ^8.13.1
         version: 8.21.0
+      qrcode:
+        specifier: ^1.5.4
+        version: 1.5.4
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -188,6 +191,9 @@ importers:
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.0
+      '@types/qrcode':
+        specifier: ^1.5.6
+        version: 1.5.6
       typescript:
         specifier: ^5.7.3
         version: 5.9.3

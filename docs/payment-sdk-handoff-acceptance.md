@@ -59,9 +59,9 @@
 
 ## 当前缺口
 
-- 支付 SDK 已按锁定的 Combo 协议实现并完成合同测试。Billing 的支付路由、PostgreSQL 支付基础和当前会话认证已通过开关接入进程入口，但真实渠道和收银台页面尚未实现，也未部署。
+- 支付 SDK 已按锁定的 Combo 协议实现并完成合同测试。Billing 已接入支付路由、PostgreSQL 支付基础、当前会话认证、托管收银台、乐收赢通知与查单；尚未部署或完成真实渠道验证。
 - 标准 402 的服务端生成、到账后入账和原调用资金预留已有模块实现，仍缺完整环境验收。
-- Authz 已提供每 Agent 短期身份，Gateway 正式模式已重新验证用户身份；SDK 取令牌和代理 Cookie 隔离尚未接入，当前不能标记安全验收通过。
+- Authz 已提供每 Agent 短期身份，Gateway 与 SDK 已完成正式身份接入；实际环境的代理 Cookie 隔离尚未完成，当前不能标记完整安全验收通过。
 - Combo Host 支付凭证解析尚未接入。
 - Sandbox、Fake Payment、conformance 和真实 Test 支付尚未运行。
 - SDK 仍未发布正式 Tag、Release 与锁定工件。
