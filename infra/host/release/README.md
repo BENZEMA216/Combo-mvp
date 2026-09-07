@@ -19,8 +19,8 @@
 | --------------------------------------- | -------- | --------------------------- |
 | `combo-v2-authz-forward.service`        | `18091`  | `combo-v2` / `authz`        |
 | `combo-v2-restart-life-forward.service` | `18092`  | `combo-v2` / `restart-life` |
-| `combo-v2-billing-forward.service` | `18093` | `combo-v2` / `billing` |
-| `combo-v2-llm-gateway-forward.service` | `18094` | `combo-v2` / `llm-gateway` |
+| `combo-v2-billing-forward.service`      | `18093`  | `combo-v2` / `billing`      |
+| `combo-v2-llm-gateway-forward.service`  | `18094`  | `combo-v2` / `llm-gateway`  |
 
 V2 的 Billing 只经 Nginx 公开支付路径，不公开内部计费与管理接口。Agent 收到的是当前用户断言，代理不转发 Cookie 或 Authorization。
 
