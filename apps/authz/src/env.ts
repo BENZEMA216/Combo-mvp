@@ -1,8 +1,10 @@
 // 启动配置：所有环境变量在这里解析与校验，进程其余部分只读结构化结果。
 import { ASSERTION_DEFAULT_TTL_SECONDS, ASSERTION_MAX_TTL_SECONDS } from './assertion.js';
 import { OTP_CODE_PATTERN } from './crypto.js';
+import { parseAgentCredentials, type AgentCredential } from './agent-access.js';
 
 export interface AuthzEnv {
+  AGENT_CREDENTIALS: readonly AgentCredential[];
   NODE_ENV: string;
   PORT: number;
   HOST: string;
@@ -117,6 +119,7 @@ export function loadEnv(): AuthzEnv {
     throw new Error('RESEND_FROM_EMAIL must be a mailbox or `Display <mailbox>` form');
   }
   return {
+    AGENT_CREDENTIALS: parseAgentCredentials(process.env.AUTHZ_AGENT_CREDENTIALS_JSON),
     NODE_ENV: nodeEnv,
     PORT: parsePort(process.env.PORT),
     HOST: process.env.HOST ?? '0.0.0.0',

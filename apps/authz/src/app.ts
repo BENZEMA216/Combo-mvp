@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import fastifyCookie from '@fastify/cookie';
 import { z } from 'zod';
 import type { AssertionSigner } from './assertion.js';
+import { registerAgentAccessRoutes, type AgentAccessRoutes } from './agent-access-routes.js';
 import {
   OTP_CHALLENGE_TTL_SECONDS,
   V2_SESSION_COOKIE_NAME,
@@ -29,6 +30,7 @@ import {
 } from './service.js';
 
 export interface AuthzAppDependencies {
+  agentAccess?: AgentAccessRoutes;
   store: AuthzStore;
   cache: SessionCache;
   signer: AssertionSigner;
@@ -95,6 +97,7 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
     trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
   });
   await app.register(fastifyCookie);
+  if (deps.agentAccess) registerAgentAccessRoutes(app, deps.agentAccess);
 
   const serviceDeps = {
     store: deps.store,

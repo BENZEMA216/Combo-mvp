@@ -9,6 +9,8 @@ import { loadEnv } from './env.js';
 import { createRedisOtpRateLimiter } from './rate-limit.js';
 import { createPgAuthzStore } from './repo.js';
 import { createResendMailer } from './resend.js';
+import { createAgentAccessIssuer } from './agent-access.js';
+import { createAgentAccessRateLimiter } from './agent-access-routes.js';
 
 const env = loadEnv();
 
@@ -36,6 +38,19 @@ pool.on('error', () => {
 const redis = new Redis(env.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
 
 const app = await buildApp({
+  ...(env.AGENT_CREDENTIALS.length
+    ? {
+        agentAccess: {
+          issuer: createAgentAccessIssuer({
+            credentials: env.AGENT_CREDENTIALS,
+            privateKey: env.ASSERTION_PRIVATE_KEY,
+            kid: env.ASSERTION_KEY_ID,
+            issuer: env.ASSERTION_ISSUER,
+          }),
+          allowRequest: createAgentAccessRateLimiter(redis, env.HMAC_SECRET),
+        },
+      }
+    : {}),
   store: createPgAuthzStore(pool),
   cache: createRedisSessionCache(redis),
   signer: createAssertionSigner({

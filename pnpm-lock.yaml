@@ -129,6 +129,9 @@ importers:
 
   apps/authz:
     dependencies:
+      '@cb/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
