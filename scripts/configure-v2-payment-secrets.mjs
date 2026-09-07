@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // 仅在 tecent2 内存中配置获授权的 V2 TEST 凭据；不打印或落盘 Secret。
 import { execFileSync } from 'node:child_process';
+import { Buffer } from 'node:buffer';
+import console from 'node:console';
 import { createHash, randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
