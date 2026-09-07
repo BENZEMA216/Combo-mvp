@@ -794,6 +794,19 @@ test('Issue 308 opens only the platform payment contract and handoff surface', (
       'docs/payment-sdk-integration.md',
       'docs/research-development-issues-audit.md',
       'infra/Dockerfile.v2',
+      'infra/host/combo-v2-test.conf',
+      'infra/host/release/README.md',
+      'infra/host/release/combo-v2-billing-forward.service',
+      'infra/host/release/combo-v2-llm-gateway-forward.service',
+      'infra/k8s/v2/authz.yaml',
+      'infra/k8s/v2/billing.yaml',
+      'infra/k8s/v2/job-migrate.yaml',
+      'infra/k8s/v2/llm-gateway.yaml',
+      'infra/k8s/v2/restart-life.yaml',
+      'scripts/configure-v2-payment-secrets.mjs',
+      'scripts/configure-v2-payment-secrets.test.mjs',
+      'scripts/render-v2.mjs',
+      'scripts/render-v2.test.mjs',
     ],
     allowedPathPrefixes: [
       'apps/billing/',
@@ -977,7 +990,11 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles, 'infra/Dockerfile.v2'].sort(),
+    [
+      ...allowedKnowledgeInfraFiles,
+      ...allowedPublisherInfraFiles,
+      ...paymentPlatformScope.allowedFiles.filter((path) => path.startsWith('infra/')),
+    ].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
@@ -1183,7 +1200,10 @@ test('private Agent Draft synchronization opens only seven exact paths', () => {
   const historicalBeforeAdmission = {
     ...beforeAdmission,
     allowedFiles: beforeAdmission.allowedFiles.filter(
-      (path) => !path.startsWith('apps/authz/') && path !== 'infra/Dockerfile.v2',
+      (path) =>
+        !paymentPlatformScope.allowedFiles
+          .filter((value) => !value.startsWith('docs/'))
+          .includes(path),
     ),
   };
   assert.equal(
@@ -1378,6 +1398,7 @@ test('Agent Package Publisher Test scope opens only exact config and render wiri
     contract.allowedFiles.filter((path) => path.startsWith('infra/k8s/')),
     [
       ...allowedPublisherInfraFiles,
+      ...paymentPlatformScope.allowedFiles.filter((path) => path.startsWith('infra/k8s/')),
       'infra/k8s/overlays/sandbox-tools/runtime-base.yaml',
       'infra/k8s/runtime.yaml',
     ].sort(),
