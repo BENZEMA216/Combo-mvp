@@ -229,11 +229,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
               stringData,
             }),
           );
-        else
-          kubectl(
-            ['-n', ns, 'patch', 'secret', name, '--type=merge', '--patch-file=/dev/stdin'],
-            JSON.stringify({ stringData }),
-          );
+        else {
+          // resourceVersion prevents a concurrent update from being overwritten. The entire
+          // document stays in memory; kubectl consumes stdin directly, not a /dev/stdin file.
+          const current = JSON.parse(kubectl(['-n', ns, 'get', 'secret', name, '-o', 'json']));
+          current.data = {
+            ...current.data,
+            ...Object.fromEntries(
+              Object.entries(stringData).map(([key, value]) => [
+                key,
+                Buffer.from(value).toString('base64'),
+              ]),
+            ),
+          };
+          kubectl(['replace', '-f', '-'], JSON.stringify(current));
+        }
       },
     })
       .then((result) => console.log(JSON.stringify(result)))
