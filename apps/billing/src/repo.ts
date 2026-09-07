@@ -26,7 +26,10 @@ export interface Queryable {
   query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<QueryResultLike<R>>;
 }
 
-async function withTransaction<T>(pool: Pool, fn: (tx: Queryable) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  pool: Pool,
+  fn: (tx: Queryable) => Promise<T>,
+): Promise<T> {
   const client: PoolClient = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -93,7 +96,7 @@ function safeDatabaseInteger(value: string, field: string): number {
   return Number(parsed);
 }
 
-function walletStateIsSafe(principal: bigint, bonus: bigint, held: bigint): boolean {
+export function walletStateIsSafe(principal: bigint, bonus: bigint, held: bigint): boolean {
   const net = principal + bonus;
   const available = net - held;
   return (
@@ -134,7 +137,7 @@ function toHold(row: HoldRow): HoldView {
   };
 }
 
-async function lockWallet(tx: Queryable, userId: string): Promise<WalletView> {
+export async function lockWallet(tx: Queryable, userId: string): Promise<WalletView> {
   // 首次计费动作时建行；ON CONFLICT 并发安全，随后行锁串行化本用户的钱包变更。
   await tx.query(`INSERT INTO v2_wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [
     userId,
@@ -158,7 +161,7 @@ async function readWalletIn(tx: Queryable, userId: string): Promise<WalletView |
   return found.rows[0] ? toWallet(found.rows[0]) : null;
 }
 
-async function userExists(tx: Queryable, userId: string): Promise<boolean> {
+export async function userExists(tx: Queryable, userId: string): Promise<boolean> {
   const found = await tx.query('SELECT 1 FROM v2_users WHERE id = $1', [userId]);
   return found.rowCount === 1;
 }
@@ -239,6 +242,16 @@ export function createPgBillingStore(pool: Pool): BillingStore {
       try {
         return await withTransaction(pool, async (tx): Promise<HoldOutcome> => {
           await lockIdempotencyKey(tx, 'v2-hold', `${agentId}:${turnId}`);
+          const paymentSchema = await tx.query<{ present: boolean }>(
+            "SELECT to_regclass('public.v2_billable_calls') IS NOT NULL AS present",
+          );
+          if (paymentSchema.rows[0]?.present) {
+            const paymentCall = await tx.query(
+              'SELECT 1 FROM v2_billable_calls WHERE agent_id = $1 AND call_id = $2',
+              [agentId, turnId],
+            );
+            if (paymentCall.rowCount) return { kind: 'conflict', reason: 'idempotency_mismatch' };
+          }
           const existing = await findHoldByTurn(tx, agentId, turnId, true);
           if (existing) return replayHold(tx, existing, { userId, estimatedAmount });
           if (!(await userExists(tx, userId))) return { kind: 'invalid_user' };
