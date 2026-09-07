@@ -95,6 +95,10 @@ describe('payment current-user authentication', () => {
       BILLING_AUTHZ_JWKS_URL: 'https://authz.combo.test/.well-known/jwks.json',
       AUTHZ_ASSERTION_ISSUER: 'combo-authz',
       BILLING_PAYMENT_HOST_ORIGINS: origin,
+      BILLING_LESHOUYING_ENVIRONMENT: 'TEST',
+      BILLING_LESHOUYING_INSTITUTION_NO: 'TEST_INST',
+      BILLING_LESHOUYING_MERCHANT_NO: 'TEST_MERCHANT',
+      BILLING_LESHOUYING_INSTITUTION_KEY: 'test-only-channel-credential',
     }))
       vi.stubEnv(name, value);
     expect(loadEnv().PAYMENTS?.trustedOrigins).toEqual([origin]);

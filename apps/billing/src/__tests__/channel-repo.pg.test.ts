@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Client, Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createPgChannelOrderStore } from '../channel-repo.js';
+import { createPgChannelOrderStore, clearExpiredChannelActions } from '../channel-repo.js';
 import {
   ChannelConflictError,
   createPaymentChannelService,
@@ -145,6 +145,14 @@ suite('channel orders and accounting PostgreSQL invariants', () => {
   it('verifies callbacks and accounts once despite duplicates, while rejecting a reused channel trade', async () => {
     const input = await payment();
     const prepared = (await store.prepare(input))!;
+    await store.recordSubmission(prepared.order, {
+      status: 'pending',
+      action: {
+        kind: 'code_url',
+        value: 'private-test-qr',
+        expiresAt: new Date(Date.now() + 60000),
+      },
+    });
     const gateway = new LeshouyingPaymentGateway(
       {
         environment: 'TEST',
@@ -189,6 +197,11 @@ suite('channel orders and accounting PostgreSQL invariants', () => {
     expect(
       await payments.getPayment({ userId: input.userId, paymentRequestId: input.paymentId }),
     ).toMatchObject({ status: 'completed' });
+    await clearExpiredChannelActions(pool, 100);
+    expect((await store.get(input.paymentId, input.userId))?.qrContent).toBeUndefined();
+    expect((await store.get(input.paymentId, input.userId))?.payTraceNo).toBe(
+      prepared.order.payTraceNo,
+    );
     expect(
       (
         await admin.query<{ count: string }>(
