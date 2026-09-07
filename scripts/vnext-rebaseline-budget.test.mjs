@@ -730,7 +730,10 @@ test('only payment-serving V2 apps and the exact draft-sync README reopen after 
     assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
   }
   const closedBootstrapPaths = platformV2BootstrapPaths.filter(
-    (path) => !reopenedPaymentPaths.includes(path) && !reopenedDraftSyncPaths.includes(path),
+    (path) =>
+      !reopenedPaymentPaths.includes(path) &&
+      !reopenedDraftSyncPaths.includes(path) &&
+      !paymentPlatformScope.allowedFiles.includes(path),
   );
   assert.ok(reopenedPaymentPaths.length > 0);
   assert.ok(closedBootstrapPaths.length > 0);
@@ -778,9 +781,19 @@ test('only payment-serving V2 apps and the exact draft-sync README reopen after 
 test('Issue 308 opens only the platform payment contract and handoff surface', () => {
   assert.deepEqual(paymentPlatformScope, {
     allowedFiles: [
+      'apps/authz/README.md',
+      'apps/authz/package.json',
+      'apps/authz/src/__tests__/agent-access-routes.test.ts',
+      'apps/authz/src/__tests__/agent-access.test.ts',
+      'apps/authz/src/agent-access-routes.ts',
+      'apps/authz/src/agent-access.ts',
+      'apps/authz/src/app.ts',
+      'apps/authz/src/env.ts',
+      'apps/authz/src/index.ts',
       'docs/payment-sdk-handoff-acceptance.md',
       'docs/payment-sdk-integration.md',
       'docs/research-development-issues-audit.md',
+      'infra/Dockerfile.v2',
     ],
     allowedPathPrefixes: [
       'apps/billing/',
@@ -964,7 +977,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
+    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles, 'infra/Dockerfile.v2'].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
