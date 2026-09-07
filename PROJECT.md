@@ -30,7 +30,7 @@ Combo 的唯一交付物是不可变、可验证、可分享和可加载的 **Ag
                 │
                 ▼
             Agent Studio
-    自动读取来源、提取方法并编译 Agent Package
+    由 Codex 整理方法并编译 Agent Package
     展示 Agent 的身份、能力、来源和真实试跑结果
                 │
                 ▼
@@ -42,10 +42,15 @@ Combo 的唯一交付物是不可变、可验证、可分享和可加载的 **Ag
 
 创建动作由一句自然语言直接发起，不要求用户理解文件路径、Manifest、Digest、Draft 或冻结命令。Agent Studio 是创作者查看、修订和试跑 Agent 的产品界面，可在codex中被使用。
 
-当前对话是默认创作来源：用户在 Codex Desktop 当前任务发出上述指令时，只同意使用该任务中用户可见的对话，
-不授权读取 Project。系统必须绑定用户正在操作的当前任务，不接受业务调用方、Plugin 或 MCP 通过 task、thread、
-session 标识或 raw transcript 选择其他来源。普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，
-也不需要复制内部协议。Project 或工作旅程只能由用户另行明确选择，不能作为当前对话失败后的自动回退。
+当前对话是默认创作来源。用户于 2026-09-07 确认首版采用轻量提取：Codex 根据当前可用上下文整理方法，
+向 Combo 提交结构化内容；Combo 校验内容并编译，再展示 Draft 和已编译的 Agent、Skill 供用户审阅。
+不要求先取得完整对话快照、Desktop 来源证明或 Host 签名。页面必须明确说明来源未经独立验证、覆盖可能不完整，
+不得宣称提取了全部历史对话，也不得把编译完成当成真实推理成功。
+
+这句制作指令不授权读取 Project、其他任务、原始会话文件或凭据；不得为补齐上下文而主动读取未授权来源。
+Combo 只接收整理后的方法，不接受 task、thread、session 标识、来源选择器或 raw transcript。
+普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，也不需要复制内部协议。
+Project 或工作旅程只能由用户另行明确选择，不能作为当前上下文不足时的自动回退。敏感信息和原始对话不应进入可分享 Package。
 
 ### 使用者
 
