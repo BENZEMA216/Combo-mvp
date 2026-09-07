@@ -231,6 +231,9 @@ importers:
 
   apps/llm-gateway:
     dependencies:
+      '@cb/payment-protocol':
+        specifier: workspace:*
+        version: link:../../packages/payment-protocol
       fastify:
         specifier: ^5.2.1
         version: 5.8.5

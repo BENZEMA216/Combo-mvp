@@ -129,7 +129,7 @@ describe('checkAndHold', () => {
     expect(records.warnings).toHaveLength(0);
   });
 
-  it('fails open for chat when billing times out or 5xxs', async () => {
+  it('fails closed when billing times out or 5xxs', async () => {
     const { client, state } = createFakeBillingClient();
     const { log, records } = createRecordingLog();
     state.failNextHold = true;
@@ -139,7 +139,7 @@ describe('checkAndHold', () => {
       { platform: PLATFORM, price: PRICE, maxTokens: 100, fixedCostCents: 1 },
       log,
     );
-    expect(outcome.kind).toBe('fail_open');
+    expect(outcome).toEqual({ kind: 'rejected', status: 503, body: null });
     expect(records.warnings).toHaveLength(1);
     expect(records.warnings[0]).toMatchObject({ agent_id: 'agent-a', turn_id: 'turn-1' });
   });

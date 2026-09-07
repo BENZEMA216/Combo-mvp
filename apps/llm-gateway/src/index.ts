@@ -4,10 +4,20 @@ import { buildApp } from './app.js';
 import { createFetchBillingClient } from './billing.js';
 import { loadEnv } from './env.js';
 import { createFetchProviderClient } from './provider.js';
+import { createPaymentAdmissionClient } from './payment-admission.js';
 
 const env = loadEnv();
 
 const app = await buildApp({
+  ...(env.PAYMENT_ADMISSION_TOKEN
+    ? {
+        paymentAdmission: createPaymentAdmissionClient({
+          baseUrl: env.BILLING_BASE_URL,
+          token: env.PAYMENT_ADMISSION_TOKEN,
+          timeoutMs: env.BILLING_TIMEOUT_MS,
+        }),
+      }
+    : {}),
   billing: createFetchBillingClient({
     baseUrl: env.BILLING_BASE_URL,
     token: env.BILLING_INTERNAL_TOKEN,

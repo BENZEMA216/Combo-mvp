@@ -92,7 +92,7 @@ describe('non-stream chat completions', () => {
     expect(billing.settlements).toEqual([{ holdId: 'hold-1', actualAmount: 2 }]);
   });
 
-  it('passes billing 402 through with the billing body', async () => {
+  it('returns a safe legacy 402 without forwarding billing details', async () => {
     const { app: instance, billing, provider } = await makeApp();
     billing.rejectNextHold = {
       status: 402,
@@ -101,11 +101,14 @@ describe('non-stream chat completions', () => {
 
     const response = await call(instance, chatBody());
     expect(response.statusCode).toBe(402);
-    expect(response.json()).toMatchObject({ data: { reason: 'insufficient' } });
+    expect(response.json()).toMatchObject({
+      error: { userMessage: '余额不足，请完成支付后继续。' },
+    });
+    expect(response.json()).not.toHaveProperty('data');
     expect(provider.requests).toHaveLength(0);
   });
 
-  it('passes billing idempotency conflicts through without invoking the provider', async () => {
+  it('returns a safe conflict without invoking the provider', async () => {
     const { app: instance, billing, provider } = await makeApp();
     billing.rejectNextHold = {
       status: 409,
@@ -114,7 +117,7 @@ describe('non-stream chat completions', () => {
 
     const response = await call(instance, chatBody());
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toMatchObject({ data: { reason: 'idempotency_mismatch' } });
+    expect(response.json()).not.toHaveProperty('data');
     expect(provider.requests).toHaveLength(0);
     expect(billing.usageReports).toHaveLength(0);
     expect(billing.settlements).toHaveLength(0);
@@ -145,32 +148,25 @@ describe('non-stream chat completions', () => {
     expect(billing.settlements).toHaveLength(0);
   });
 
-  it('fails open when billing is unavailable: forwards, reports usage without hold, skips settle', async () => {
+  it('fails closed when billing is unavailable and performs no provider or metering action', async () => {
     const { app: instance, billing, provider } = await makeApp();
     billing.failNextHold = true;
-    provider.jsonResponse = {
-      status: 200,
-      json: {
-        choices: [{ message: { role: 'assistant', content: 'ok' } }],
-        usage: { prompt_tokens: 10, completion_tokens: 20 },
-      },
-    };
-
     const response = await call(instance, chatBody());
-    expect(response.statusCode).toBe(200);
-    expect(provider.requests).toHaveLength(1);
-    expect(billing.usageReports).toHaveLength(1);
-    expect(billing.usageReports[0]![0]).not.toHaveProperty('holdId');
+    expect(response.statusCode).toBe(503);
+    expect(provider.requests).toHaveLength(0);
+    expect(billing.usageReports).toHaveLength(0);
     expect(billing.settlements).toHaveLength(0);
   });
 
-  it('passes provider errors through and releases the hold with a zero settle', async () => {
+  it('returns a safe provider error and releases the hold with a zero settle', async () => {
     const { app: instance, billing, provider } = await makeApp();
     provider.jsonResponse = { status: 429, json: { error: { message: 'rate limited' } } };
 
     const response = await call(instance, chatBody());
-    expect(response.statusCode).toBe(429);
-    expect(response.json()).toMatchObject({ error: { message: 'rate limited' } });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({
+      error: { userMessage: '模型服务暂时不可用，请稍后重试。' },
+    });
     expect(billing.settlements).toEqual([{ holdId: 'hold-1', actualAmount: 0 }]);
     expect(billing.usageReports).toHaveLength(0);
   });
@@ -190,7 +186,9 @@ describe('non-stream chat completions', () => {
 
       const response = await call(instance, chatBody());
       expect(response.statusCode).toBe(502);
-      expect(response.json()).toMatchObject({ error: { code: 'provider_unavailable' } });
+      expect(response.json()).toMatchObject({
+        error: { userMessage: '模型服务暂时不可用，请稍后重试。' },
+      });
       expect(billing.settlements).toEqual([{ holdId: 'hold-1', actualAmount: 0 }]);
       expect(billing.usageReports).toHaveLength(0);
     },
@@ -206,7 +204,9 @@ it.each([false, true])(
     const response = await call(instance, chatBody({ stream }));
 
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toMatchObject({ data: { reason: 'turn_already_admitted' } });
+    expect(response.json()).toMatchObject({
+      error: { userMessage: '本次调用已处理或与原请求冲突，请查询业务状态。' },
+    });
     expect(provider.requests).toHaveLength(0);
     expect(billing.usageReports).toHaveLength(0);
     expect(billing.settlements).toHaveLength(0);
@@ -276,8 +276,8 @@ describe('stream chat completions', () => {
     provider.streamResponse = { status: 500, stream: null, errorBody: '{"error":"upstream"}' };
 
     const response = await call(instance, chatBody({ stream: true }));
-    expect(response.statusCode).toBe(500);
-    expect(response.body).toBe('{"error":"upstream"}');
+    expect(response.statusCode).toBe(502);
+    expect(response.body).not.toContain('upstream');
     expect(billing.settlements).toEqual([{ holdId: 'hold-1', actualAmount: 0 }]);
   });
 });
