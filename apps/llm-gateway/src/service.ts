@@ -2,6 +2,7 @@
 // 与 HTTP 层分离：app.ts 只负责 provider 字节搬运，编排全部在这里，可注桩单测。
 import { z } from 'zod';
 import { PaymentIdentifierSchema } from '@cb/payment-protocol';
+import type { VerifiedGatewayIdentity } from './identity.js';
 import {
   BillingUnavailableError,
   usageToMeteringEvents,
@@ -51,6 +52,12 @@ const ChatBodySchema = z
   })
   .passthrough();
 
+const SignedChatBodySchema = ChatBodySchema.extend({
+  x_combo: z
+    .object({ operation_id: PaymentIdentifierSchema, call_id: PaymentIdentifierSchema })
+    .strict(),
+});
+
 export interface PlatformContext {
   userId: string;
   agentId: string;
@@ -70,8 +77,9 @@ export interface ParsedChatRequest {
 export function parseChatRequest(
   body: unknown,
   defaultMaxTokens: number,
+  verifiedIdentity?: VerifiedGatewayIdentity,
 ): ParsedChatRequest | null {
-  const parsed = ChatBodySchema.safeParse(body);
+  const parsed = (verifiedIdentity ? SignedChatBodySchema : ChatBodySchema).safeParse(body);
   if (!parsed.success) return null;
   const reserved = new Set([
     'operationid',
@@ -107,13 +115,21 @@ export function parseChatRequest(
     forwardBody.stream_options = streamOptions;
   }
 
-  return {
-    platform: {
+  let context: PlatformContext;
+  if (verifiedIdentity) {
+    if (!('call_id' in platform) || !('operation_id' in platform)) return null;
+    context = { ...verifiedIdentity, turnId: platform.call_id, operationId: platform.operation_id };
+  } else {
+    if (!('user_id' in platform) || !('agent_id' in platform)) return null;
+    context = {
       userId: platform.user_id,
       agentId: platform.agent_id,
       turnId: 'call_id' in platform ? platform.call_id : platform.turn_id,
       ...('operation_id' in platform ? { operationId: platform.operation_id } : {}),
-    },
+    };
+  }
+  return {
+    platform: context,
     model: parsed.data.model,
     stream: isStream,
     maxTokens: resolvedMaxTokens,

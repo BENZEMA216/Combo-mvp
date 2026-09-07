@@ -15,6 +15,8 @@
 - `src/assertion.ts` 签发 JWT(EdDSA) 断言并导出 JWKS 公钥。断言只带身份（sub 是用户主键、aud 是 agent_id、iss、exp），不带权益。
 - `src/login-page.ts` 是最简登录页：自包含 HTML（内联 CSS/JS，无框架无构建），以及 `next` 参数的站内路径收敛（防开放跳转）。
 - `src/app.ts` 装配 Fastify 路由与 Cookie，进程入口和测试共用同一份装配。
+- `src/agent-access.ts` 验证每个 Agent 独立的引导凭据，只保存配置中的 SHA-256 摘要，并签发固定五分钟、只允许模型调用的访问令牌。
+- `src/agent-access-routes.ts` 提供限流保护的令牌接口，使用实际连接地址的 HMAC 摘要作为 Redis key，不信任调用方提供的转发地址头。
 - `src/__tests__/` 是不依赖外部服务的 vitest 测试，`fakes.ts` 提供复刻持久层、缓存与发信端口语义的内存假实现；`resend.test.ts` 用 fetch 桩断言发信请求形态与错误映射。
 
 ## 接口
@@ -27,6 +29,18 @@
 - `GET /.well-known/jwks.json` 暴露 Ed25519 验签公钥（含 kid），各 Agent 的 SDK 用它验签并强制 audience 等于自己的 agent_id。
 - `GET /health` 与 `GET /ready` 是健康与就绪探针，就绪探针实际检查 PostgreSQL 与 Redis 可达性。
 
-## 上下游
+## 每 Agent 的短期访问令牌
+
+配置 `AUTHZ_AGENT_CREDENTIALS_JSON` 后才注册 `POST /authz/agent-tokens`。配置为数组，每项只包含 `credentialId`、`agentId`、`secretSha256`；credentialId 与密钥摘要都不能重复。平台应为每个 Agent 生成独立随机密钥，将原值只交给该 Agent 服务端，Authz 仅配置凭据文本的 UTF-8 SHA-256 摘要。不得复用平台全局 token。
+
+Agent 使用标准 `Authorization: Basic base64(credentialId:secret)` 发送空 JSON 对象。请求不能指定 Agent、用户、scope 或有效期；这些属性只来自已经匹配的服务端配置。成功响应为 `{ data: { accessToken, tokenType: "Bearer", expiresInSeconds: 300 }, meta: { traceId } }`，禁止缓存。
+
+访问令牌使用现有 Authz Ed25519 签名密钥和 JWKS，固定 `token_use=agent_access`、`aud=combo-llm-gateway`、`scope=llm:invoke`；`sub` 和 `agent_id` 均为已认证 Agent。该令牌不代表用户身份，也不能作为 Billing 内部或管理凭据。Gateway 还必须重新验证当前用户断言，并核对其 audience 与 Agent 一致。
+
+接口每个实际连接地址一分钟最多 60 次，Redis 故障时停止签发；原始地址、凭据和令牌不进入 Redis key 或错误响应。轮换时更换对应凭据记录；删除记录后不能再签发新令牌，已签发令牌最长保留五分钟。
+
+Gateway 的正式身份模式会独立验证上述 Agent 令牌和当前用户断言；Billing 则向 Authz 重新核对 Host 当前的会话 Cookie。SDK 自动取令牌和真实部署仍在后续变更中完成。用户 Cookie 只交给平台，代理转发到 Agent 服务前必须删除 Cookie，只注入当前用户断言。
+
+## 服务依赖
 
 上游是 Traefik 的 ForwardAuth 与浏览器直连。下游是 PostgreSQL（`v2_users`、`v2_identities`、`v2_auth_challenges`、`v2_sessions`，使用专用角色 `combo_authz`）、Redis（session 缓存与 OTP 限流，key 分别使用 `authz:v2:session:` 与 `authz:v2:otp-rate:` 前缀）和 Resend（登录码邮件投递）。断言私钥从环境变量 `AUTHZ_ASSERTION_PRIVATE_KEY` 读入（PEM 或 base64 DER 的 Ed25519），固定开发码从 `AUTHZ_DEV_OTP_CODE` 读入（六位数字，production 明确拒绝），共享域从 `AUTHZ_SESSION_COOKIE_DOMAIN` 读入。Resend 配置与 V1 同名：`RESEND_API_KEY` 与 `RESEND_FROM_EMAIL` 必须同时配置；production 缺失时启动失败，`RESEND_API_BASE_URL` 缺省为官方端点 `https://api.resend.com`。

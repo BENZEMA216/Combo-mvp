@@ -125,7 +125,11 @@ Host 不能直接使用 Agent 返回的金额、支付方式、二维码或网�
 - Agent 不接触支付渠道、商户、回调或平台全局密钥。
 - `paymentToken`、完整收银台地址和原始错误对象不得进入日志。
 
-当前 V2 验证栈仍使用共享内部凭据，所以上述正式身份为 `NOT_IMPLEMENTED`。在身份边界完成前，不能把 SDK 描述为可对外安全使用。
+服务端现已提供每 Agent 独立凭据换取五分钟令牌的接口。Gateway 正式模式同时验证 Agent 令牌与当前用户断言；请求体只接受 `operation_id` 和 `call_id`，用户和 Agent 来自签名。Authz 配置和 Gateway 接入参数分别见两个服务的 README。
+
+Billing 的 Host 支付接口每次都会用 `cb_v2_session` Cookie 向 Authz 核对当前会话，POST 还须携带配置允许的 Origin。当前只实现 Cookie 接入，支付专用 Bearer 接入尚未实现。Cookie 不得转发给 Agent 服务，Agent 只能得到限定给自己的短期用户断言。
+
+现有 V2 环境仍是旧共享凭据配置，SDK 正式取令牌、代理 Cookie 隔离与真实环境验证尚未完成。当前只证明服务端模块行为，不能把 SDK 描述为可对外安全使用。
 
 ## 第一版不做
 

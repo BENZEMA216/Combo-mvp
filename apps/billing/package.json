@@ -15,6 +15,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "jose": "^5.10.0",
     "@cb/payment-protocol": "workspace:*",
     "fastify": "^5.2.1",
     "pg": "^8.13.1",
