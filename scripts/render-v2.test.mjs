@@ -11,6 +11,72 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sourceDirectory = join(repo, 'infra', 'k8s', 'v2');
 const renderScript = join(repo, 'scripts', 'render-v2.mjs');
 
+test('payment manifests use scoped identity, TEST channel and isolated durable Agent state', () => {
+  const source = (name) => readFileSync(join(sourceDirectory, name + '.yaml'), 'utf8');
+  const deployment = (name) =>
+    parseAllDocuments(source(name))
+      .map((doc) => doc.toJSON())
+      .find((doc) => doc.kind === 'Deployment');
+  const agent = deployment('restart-life');
+  assert.equal(agent.spec.strategy.type, 'Recreate');
+  assert.equal(agent.spec.replicas, 1);
+  assert.equal(agent.spec.template.spec.containers.length, 2);
+  const coordinator = agent.spec.template.spec.containers[1];
+  assert.deepEqual(coordinator.args, [
+    'redis-server',
+    '--bind',
+    '127.0.0.1',
+    '--appendonly',
+    'yes',
+    '--appendfsync',
+    'always',
+    '--save',
+    '',
+  ]);
+  assert.equal(coordinator.volumeMounts[0].mountPath, '/data');
+  const agentEnv = agent.spec.template.spec.containers[0].env;
+  assert.equal(
+    agentEnv.find((e) => e.name === 'COMBO_AGENT_CREDENTIAL_SECRET').valueFrom.secretKeyRef.name,
+    'restart-life-credentials',
+  );
+  assert.doesNotMatch(
+    source('restart-life'),
+    /COMBO_PLATFORM_INTERNAL_TOKEN|PROVIDER_API_KEY|BILLING_INTERNAL_TOKEN|COMBO_BILLING_URL/,
+  );
+  assert.doesNotMatch(source('llm-gateway'), /LLM_GATEWAY_INTERNAL_TOKEN/);
+  assert.match(source('llm-gateway'), /LLM_GATEWAY_PAYMENT_ADMISSION\s+value: 'true'/);
+  assert.match(source('billing'), /BILLING_LESHOUYING_ENVIRONMENT\s+value: TEST/);
+  assert.match(source('job-migrate'), /0017_v2_payment_channel.sql/);
+  for (const entry of agentEnv.filter((e) =>
+    ['COMBO_AUTHZ_URL', 'COMBO_LLM_GATEWAY_URL', 'COMBO_JWKS_URL'].includes(e.name),
+  ))
+    assert.equal(new URL(entry.value).protocol, 'https:');
+});
+
+test('public proxy strips Host cookies and credentials before forwarding to the Agent', () => {
+  const nginx = readFileSync(join(repo, 'infra/host/combo-v2-test.conf'), 'utf8');
+  const agentLocation = nginx.slice(nginx.indexOf('    proxy_pass http://127.0.0.1:18092;'));
+  assert.match(agentLocation, /proxy_set_header Cookie '';/);
+  assert.match(agentLocation, /proxy_set_header Authorization '';/);
+  assert.match(agentLocation, /proxy_set_header x-combo-assertion \$combo_assertion;/);
+  assert.match(nginx, /location \/billing\/ \{ return 404; \}/);
+  assert.match(nginx, /location = \/billing\/leshouying\/payment-notify/);
+  for (const [service, port] of [
+    ['billing', 18093],
+    ['llm-gateway', 18094],
+  ]) {
+    const unit = readFileSync(
+      join(repo, `infra/host/release/combo-v2-${service}-forward.service`),
+      'utf8',
+    );
+    assert.ok(
+      unit.includes(
+        `--namespace=combo-v2 port-forward --address=127.0.0.1 service/${service} ${port}:80`,
+      ),
+    );
+  }
+});
+
 test('every V2 namespaced resource is explicitly pinned to combo-v2', () => {
   for (const file of readdirSync(sourceDirectory).filter((name) => name.endsWith('.yaml'))) {
     const source = readFileSync(join(sourceDirectory, file), 'utf8');
@@ -54,6 +120,8 @@ test('V2 rendering resolves every digest and rejects a reused output directory',
         `sha256:${'a'.repeat(64)}`,
         '--restart-life',
         `sha256:${'b'.repeat(64)}`,
+        '--state-redis',
+        `sha256:${'c'.repeat(64)}`,
         '--out',
         output,
       ],
@@ -79,6 +147,8 @@ test('V2 rendering resolves every digest and rejects a reused output directory',
             `sha256:${'a'.repeat(64)}`,
             '--restart-life',
             `sha256:${'b'.repeat(64)}`,
+            '--state-redis',
+            `sha256:${'c'.repeat(64)}`,
             '--out',
             output,
           ],

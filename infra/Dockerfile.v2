@@ -18,6 +18,8 @@ RUN pnpm -F @cb/shared build \
   && pnpm -F @cb/llm-gateway build
 
 FROM node:24-slim AS runtime
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.revision=$SOURCE_SHA
 WORKDIR /app
 ENV NODE_ENV=production
 # PROCESS 决定本容器跑哪个进程入口（authz 为默认）；migrate Job 用显式 command 覆盖。
