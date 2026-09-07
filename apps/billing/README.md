@@ -1,6 +1,6 @@
 # apps/billing — V2 计费服务
 
-这个服务管理用户钱包、资金流水、预授权与结算、计量事件。支付模块提供收费调用准入、支付创建与查询、可信到账确认和原调用资金预留。配置支付开关后，进程入口会注册带身份校验的支付路由；真实渠道和收银台页面尚未接入。
+这个服务管理用户钱包、资金流水、预授权与结算、计量事件。配置支付开关和渠道参数后，进程入口会注册支付 API、Combo 收银台、渠道回调和查单任务。只有可信渠道结果通过核验并完成入账后，支付才成为 completed。当前代码尚未部署或完成真实支付验收。
 
 核心记账纪律：资金流水与计量事件只允许追加（数据库触发器连所有者也不许改删）；只消费赠送桶的正余额，再扣本金；hold 按 Agent 与 turn 幂等并绑定原用户、估算金额和活动状态，settle 按 hold 与实际金额幂等，充值与计量键也绑定完整原请求；任何同键异载荷都返回冲突。调用方键进入各自哈希域，不能预占系统 hold/settle/estimated 键。金额一律是 JavaScript safe integer 范围内的整数分，数据库同时约束钱包各桶、净额与可用额；净余额低于负五元时拒绝新 hold。
 
@@ -19,6 +19,9 @@
 - `src/channel/` 提供乐收赢下单、查单和通知验签，不依赖旧 Hosted 钱包，也不读写业务请求。
 - `src/channel-service.ts` 只提交已保存的原渠道订单；超时后仅查询该订单，可信成功才调用唯一入账入口。支付渠道成功与 Combo 入账仍分开处理。
 - `src/channel-repo.ts` 保存每支付唯一的渠道订单、已核验的低敏事件以及查单次数和租约；商户、金额、付款方式和原支付流水固定，渠道交易号只允许首次绑定。
+- `src/checkout-routes.ts` 注册已认证的收银台与付款码接口，以及独立验签的渠道通知接口。二维码由本机生成，不请求外部图片服务。
+- `src/checkout-page.ts` 展示权威金额、付款码和入账状态，不修改订单金额或直接标记付款成功；页面有严格内容安全策略，不发送来源地址。
+- `src/checkout-service.ts` 将明确失败的渠道单投影为 closed，定期查单并清除过期或已完成的付款码；关闭服务时等待当前查询完成。
 - `src/__tests__/` 是不依赖外部服务的 vitest 测试，`fakes.ts` 提供复刻事务语义的内存假实现。
 
 ## 接口
@@ -30,7 +33,7 @@
 - `POST /billing/settlements` 按 `{hold_id, actual_amount}` 结算（200）：先赠后本扣减、解冻全部冻结额、hold 落定 settled；该 hold 没有真实计量事件时补一条 source 为 estimated 的兜底行。同一实际金额重放返回原扣减明细，换金额返回 409。未知 hold 404，已释放或已过期 409。
 - `POST /metering/events` 接收带必填 `idempotency_key` 的网关推账。新事实返回 201，同键同载荷返回相同事件 ID 与 200/replayed，同键异载荷返回 409。带 hold 的事件必须与其 user、Agent、turn exact 匹配且 hold 仍为 held；source 只接受 gateway 与 agent_report，estimated 行只能由 settle 兜底写入。
 - `POST /billing/admin/recharges` 按 `{user_id, amount, idempotency_key, ref_id?}` 手工充值到本金桶（201）。同键只有用户、金额与引用完全一致时返回当前钱包（200/replayed），任一字段变化或累计余额越过安全数值范围返回 409，未知用户返回 404。
-- `GET /health` 与 `GET /ready` 是健康与就绪探针，就绪探针实际检查 PostgreSQL 可达性。
+- `GET /health` 与 `GET /ready` 是健康与就绪探针。就绪探针检查 PostgreSQL 可达性，开启支付时还要求渠道订单和事件表已经存在。
 
 ## 上下游
 
@@ -38,12 +41,18 @@
 
 开启时须配置 `BILLING_PAYMENT_TOKEN_KEY`（至少 32 字符）、`BILLING_PAYMENT_GATEWAY_TOKEN`、`BILLING_PAYMENT_CHECKOUT_BASE_URL`、`BILLING_AUTHZ_BASE_URL`、`BILLING_AUTHZ_JWKS_URL` 与 `AUTHZ_ASSERTION_ISSUER`。支付凭证密钥、Gateway 准入凭据、原记账凭据和管理凭据四者必须不同；production 的三个地址必须为 HTTPS。
 
+支付开关同时要求 `BILLING_LESHOUYING_ENVIRONMENT`（TEST 或 PRODUCTION）、`BILLING_LESHOUYING_INSTITUTION_NO`、`BILLING_LESHOUYING_MERCHANT_NO` 和 `BILLING_LESHOUYING_INSTITUTION_KEY`。渠道密钥须与以上四份平台凭据不同。`BILLING_LESHOUYING_TIMEOUT_MS` 默认 2000，允许 100 至 5000 毫秒。缺项会在启动时失败，不启用半接通的支付入口。
+
+收银台地址必须是没有路径的 HTTPS 来源。通知地址固定为该来源下的 `/billing/leshouying/payment-notify`；同来源需要提供 Authz 登录入口。公开入口还须转发 `/payments/`、`/v1/payments` 和 `/v1/payment-checkouts/`。这里只说明接线要求，不修改现网路由或部署配置。
+
+收银台按当前用户读取支付，并提供 `GET /v1/payment-checkouts/:paymentId` 查询与 `POST /v1/payment-checkouts/:paymentId` 生成付款码；POST 只接受微信或支付宝选择，不接受金额和身份。生成后付款方式固定。平台通知不使用 Cookie，而是完整验签；按实际连接地址每分钟最多 120 次，超限返回 429。Billing 关闭自动请求日志，避免收银台地址进入日志，错误仍保留固定说明与 traceId。
+
 Host 支付接口当前只接受 `cb_v2_session` Cookie，每次请求都向 Authz 查询当前会话；注销或撤销后不能继续查询支付。POST 必须携带允许的 Origin。`BILLING_PAYMENT_HOST_ORIGINS` 可配置逗号分隔的完整来源，默认仅允许收银台地址的来源；跨域仅放行配置值且允许 Cookie，不支持通配来源。当前不支持支付专用 Bearer 模式，不能拿用户断言或 Agent 令牌替代 Cookie。
 
 支付模块使用 `0016_v2_payment_admission.sql` 的四张新增表：收费调用、支付请求、Host 请求编号和原调用资金预留。余额不足时充值金额固定为这次调用的估算额；现有余额保留在用户钱包。到账后新增额度先为原调用预留，七天未认领可以释放为普通余额。创建支付有效期为十五分钟；有效期只限制用户创建/打开动作，可信渠道晚到的成功通知仍可按原金额入账一次。
 
-`confirmPayment()` 只能由已经核验渠道通知的适配器调用。当前未配置真实渠道或收银台页面，也没有部署这条支付链路，不能将模块测试描述为真实支付上线。
+`confirmPayment()` 只能由已经核验渠道通知或查单结果的适配器调用。页面上的“刷新支付状态”只读平台状态，不会产生入账。
 
-渠道模块使用追加迁移 `0017_v2_payment_channel.sql`。下单前先保存订单，进程中断、响应丢失或保存响应失败都不能再次提交新单。查单最多 120 次且只自动查询创建后 24 小时内的订单，多副本领取两分钟租约；可信晚到成功通知仍可完成原支付。二维码内容只供已认证 Combo 收银台读取，过期或已入账后不再提供。当前渠道服务仍是独立模块，尚未接入公开回调、页面和进程调度。
+渠道模块使用追加迁移 `0017_v2_payment_channel.sql`。下单前先保存订单，进程中断、响应丢失或保存响应失败都不能再次提交新单。查单最多 120 次且只自动查询创建后 24 小时内的订单，多副本领取两分钟租约；可信晚到成功通知仍可完成原支付。调度器每三十秒最多领取二十笔，单进程不重叠。二维码只供已认证收银台读取，过期或入账后停止提供，并在后续清扫中清除内容，订单和事件事实保留。
 
 上游是模型网关（hold / settle / usage 上报）与各 Agent 的 SDK（余额查询），以及验证期的运营手工充值。下游是 PostgreSQL 的 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events` 六张表，使用专用角色 `combo_billing`。`v2_orders` 与 `v2_packages` 本期只建表不暴露接口。
