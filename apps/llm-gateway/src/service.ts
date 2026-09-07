@@ -1,6 +1,7 @@
 // 编排核心：请求解析、check-and-hold、usage 折算与 metering/settle 收尾。
 // 与 HTTP 层分离：app.ts 只负责 provider 字节搬运，编排全部在这里，可注桩单测。
 import { z } from 'zod';
+import { PaymentIdentifierSchema } from '@cb/payment-protocol';
 import {
   BillingUnavailableError,
   usageToMeteringEvents,
@@ -19,13 +20,25 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const CONTROL_FREE_PATTERN = /^[^\p{Cc}\p{Cs}]+$/u;
 
 /** 平台扩展字段：Agent 经 SDK 携带，转发给 provider 前剥离。 */
-const PlatformSchema = z
+const LegacyPlatformSchema = z
   .object({
     user_id: z.string().regex(UUID_PATTERN),
     agent_id: z.string().regex(AGENT_ID_PATTERN),
-    turn_id: z.string().min(1).max(128).regex(CONTROL_FREE_PATTERN),
+    turn_id: PaymentIdentifierSchema,
   })
   .strict();
+
+const PlatformSchema = z.union([
+  LegacyPlatformSchema,
+  z
+    .object({
+      user_id: z.string().regex(UUID_PATTERN),
+      agent_id: z.string().regex(AGENT_ID_PATTERN),
+      operation_id: PaymentIdentifierSchema,
+      call_id: PaymentIdentifierSchema,
+    })
+    .strict(),
+]);
 
 const ChatBodySchema = z
   .object({
@@ -42,6 +55,7 @@ export interface PlatformContext {
   userId: string;
   agentId: string;
   turnId: string;
+  operationId?: string;
 }
 
 export interface ParsedChatRequest {
@@ -59,6 +73,17 @@ export function parseChatRequest(
 ): ParsedChatRequest | null {
   const parsed = ChatBodySchema.safeParse(body);
   if (!parsed.success) return null;
+  const reserved = new Set([
+    'operationid',
+    'paymenttoken',
+    'requestkey',
+    'callid',
+    'turnid',
+    'userid',
+    'agentid',
+  ]);
+  if (Object.keys(parsed.data).some((key) => reserved.has(key.replace(/[_-]/g, '').toLowerCase())))
+    return null;
 
   const {
     x_combo: platform,
@@ -86,7 +111,8 @@ export function parseChatRequest(
     platform: {
       userId: platform.user_id,
       agentId: platform.agent_id,
-      turnId: platform.turn_id,
+      turnId: 'call_id' in platform ? platform.call_id : platform.turn_id,
+      ...('operation_id' in platform ? { operationId: platform.operation_id } : {}),
     },
     model: parsed.data.model,
     stream: isStream,
@@ -106,8 +132,7 @@ export interface GatewayLogger {
 }
 
 /**
- * check-and-hold：402 明确拒绝原样透传；超时 / 5xx / 网络错误按维度降级——
- * 本期只有 chat 维度，fail-open 放行（billing 侧负五元硬停是兜底）。
+ * Legacy check-and-hold also fails closed on timeout / 5xx / network errors.
  */
 export async function checkAndHold(
   billing: BillingClient,
@@ -173,11 +198,11 @@ export async function checkAndHold(
         agent_id: input.platform.agentId,
         turn_id: input.platform.turnId,
         err: error,
-        fail_open: true,
+        fail_open: false,
       },
-      'billing hold unavailable; failing open for chat dimension',
+      'billing hold unavailable; failing closed',
     );
-    return { kind: 'fail_open', estimatedAmount };
+    return { kind: 'rejected', status: 503, body: null };
   }
   if (result.kind === 'rejected') {
     return { kind: 'rejected', status: result.status, body: result.body };
