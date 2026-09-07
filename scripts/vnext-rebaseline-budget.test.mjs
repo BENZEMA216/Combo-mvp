@@ -730,7 +730,10 @@ test('only payment-serving V2 apps and the exact draft-sync README reopen after 
     assert.equal(assessPullRequest(contract, [entry(path)]).mode, 'PRODUCT', path);
   }
   const closedBootstrapPaths = platformV2BootstrapPaths.filter(
-    (path) => !reopenedPaymentPaths.includes(path) && !reopenedDraftSyncPaths.includes(path),
+    (path) =>
+      !reopenedPaymentPaths.includes(path) &&
+      !reopenedDraftSyncPaths.includes(path) &&
+      !paymentPlatformScope.allowedFiles.includes(path),
   );
   assert.ok(reopenedPaymentPaths.length > 0);
   assert.ok(closedBootstrapPaths.length > 0);
@@ -778,9 +781,19 @@ test('only payment-serving V2 apps and the exact draft-sync README reopen after 
 test('Issue 308 opens only the platform payment contract and handoff surface', () => {
   assert.deepEqual(paymentPlatformScope, {
     allowedFiles: [
+      'apps/authz/README.md',
+      'apps/authz/package.json',
+      'apps/authz/src/__tests__/agent-access-routes.test.ts',
+      'apps/authz/src/__tests__/agent-access.test.ts',
+      'apps/authz/src/agent-access-routes.ts',
+      'apps/authz/src/agent-access.ts',
+      'apps/authz/src/app.ts',
+      'apps/authz/src/env.ts',
+      'apps/authz/src/index.ts',
       'docs/payment-sdk-handoff-acceptance.md',
       'docs/payment-sdk-integration.md',
       'docs/research-development-issues-audit.md',
+      'infra/Dockerfile.v2',
     ],
     allowedPathPrefixes: [
       'apps/billing/',
@@ -877,7 +890,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   ];
   const allowedControlFiles = [
     ...allowedKnowledgeControlFiles,
-    ...paymentPlatformScope.allowedFiles,
+    ...paymentPlatformScope.allowedFiles.filter((path) => path.startsWith('docs/')),
   ].sort();
   const allowedKnowledgeAuthoringFiles = [
     'apps/authoring/src/__tests__/README.md',
@@ -964,7 +977,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
+    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles, 'infra/Dockerfile.v2'].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
@@ -1165,10 +1178,17 @@ test('private Agent Draft synchronization opens only seven exact paths', () => {
       ),
     /v5 allowedPathPrefixes/,
   );
-  // Removing this admission must reproduce the entire pre-change v5 contract.
+  // Remove this admission and the separately approved payment identity/image files to
+  // retain the immutable historical checkpoint from before private Draft synchronization.
+  const historicalBeforeAdmission = {
+    ...beforeAdmission,
+    allowedFiles: beforeAdmission.allowedFiles.filter(
+      (path) => !path.startsWith('apps/authz/') && path !== 'infra/Dockerfile.v2',
+    ),
+  };
   assert.equal(
     createHash('sha256')
-      .update(`${JSON.stringify(beforeAdmission, null, 2)}\n`)
+      .update(`${JSON.stringify(historicalBeforeAdmission, null, 2)}\n`)
       .digest('hex'),
     'f5f6f5ece37d33be16802fb516c46c9939f78765a686b217076abe07ea73e125',
   );

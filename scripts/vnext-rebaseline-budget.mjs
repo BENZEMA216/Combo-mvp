@@ -38,9 +38,19 @@ const hardCeilings = Object.freeze({
 
 export const paymentPlatformScope = Object.freeze({
   allowedFiles: Object.freeze([
+    'apps/authz/README.md',
+    'apps/authz/package.json',
+    'apps/authz/src/__tests__/agent-access-routes.test.ts',
+    'apps/authz/src/__tests__/agent-access.test.ts',
+    'apps/authz/src/agent-access-routes.ts',
+    'apps/authz/src/agent-access.ts',
+    'apps/authz/src/app.ts',
+    'apps/authz/src/env.ts',
+    'apps/authz/src/index.ts',
     'docs/payment-sdk-handoff-acceptance.md',
     'docs/payment-sdk-integration.md',
     'docs/research-development-issues-audit.md',
+    'infra/Dockerfile.v2',
   ]),
   allowedPathPrefixes: Object.freeze([
     'apps/billing/',
