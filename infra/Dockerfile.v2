@@ -9,7 +9,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfi
 COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 # 先构建支付协议依赖，再构建三个 V2 服务。
 RUN pnpm -F @cb/shared build \
   && pnpm -F @cb/payment-protocol build \
@@ -32,7 +32,7 @@ COPY --from=build /app/apps/authz/package.json ./apps/authz/package.json
 COPY --from=build /app/apps/billing/package.json ./apps/billing/package.json
 COPY --from=build /app/apps/llm-gateway/package.json ./apps/llm-gateway/package.json
 COPY --from=build /app/db/package.json ./db/package.json
-RUN pnpm install --prod --frozen-lockfile=false
+RUN pnpm install --prod --frozen-lockfile
 # 产物：三个服务 dist + 迁移运行时白名单（migrate 容器用 --experimental-strip-types 直跑 TS）。
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/packages/payment-protocol/dist ./packages/payment-protocol/dist
