@@ -20,7 +20,13 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## combo-v2 验证命名空间
 
-`v2/` 子目录是 V2 架构验证（authz / billing / llm-gateway / restart-life 四进程 + 迁移 Job）的手工部署清单，独立于三环境晋级链，不进 `render-env.mjs` 与 `deploy-env.sh`。每个 namespaced 对象都显式声明 `combo-v2`，三个 PostgreSQL 客户端还把 `PGDATABASE` 固定为 `combo_v2`；渲染测试会拒绝遗漏。镜像为 `combo-v2/platform` 与 `combo-v2/restart-life`，在主机上构建后经 `k3s ctr images import` 进集群，清单用 `repository@sha256` 摘要引用，摘要由 `scripts/render-v2.mjs` 在服务器的新空目录中渲染。`combo-v2` 的 `combo-env` Secret 包含 PostgreSQL 管理密码、五份应用角色密码、断言私钥、内部 token 与 provider key，不负责选择数据库；公开 production-mode authz 不配置开发 OTP。V2 升级先将四个 V2 Deployment 缩到 0，只能由 `scripts/migrate-v2-host.sh` 在主机持 shared-foundation 正式锁迁移，成功后再应用同候选的新应用清单。验证期采用单内部 token 策略：`LLM_GATEWAY_INTERNAL_TOKEN` 与 `BILLING_INTERNAL_TOKEN` 在 Secret 里同值，Agent 注入的 `COMBO_PLATFORM_INTERNAL_TOKEN` 引用同一凭据。数据落在共享 PostgreSQL 实例的独立 `combo_v2` 库。验证结束后整个命名空间连同新建配置一起拆除。
+`v2/` 保存四个 V2 服务、Agent 自有 Redis 状态容器与持久卷、迁移 Job 的手工部署清单。它独立于三环境晋级链，不进 `render-env.mjs` 与 `deploy-env.sh`。所有对象固定到 `combo-v2`，PostgreSQL 客户端固定使用独立 `combo_v2` 数据库。
+
+平台、Agent 与 Redis 的镜像都按摘要渲染，平台与 Agent 镜像标注源码 SHA。Agent 自有 Redis 只监听同 Pod 的回环地址，使用 1Gi 独立持久卷、AOF 每次落盘和单实例替换，不接生产存储，不保存对话正文。
+
+`combo-env` 保存平台凭据；`restart-life-credentials` 只保存 Agent 独立身份。Authz 保存 Agent 密钥摘要，公开登录使用随机验证码。旧共享入口凭据不再注入；升级同时轮换旧 Billing 内部密钥。V2 Billing 只启用 TEST 支付渠道。
+
+升级前须停下四个 V2 服务，由 `scripts/migrate-v2-host.sh` 持共享基础设施锁执行至 0017 的迁移并核验共享角色与三环境健康。成功后应用同候选清单。服务器部署须有独立授权，不得从代码合入推导授权；拆除或删除持久卷也须单独确认。
 
 ## 可选 Sandbox Tools
 

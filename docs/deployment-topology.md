@@ -89,12 +89,14 @@
 `combo-v2` 是 V2 平台架构验证的独立命名空间，与三环境晋级链完全无关：
 
 - 手工部署：代码从本地 rsync 到主机构建，镜像经 `docker save` 加 `k3s ctr images import` 进集群，不经过 GitHub CI/CD，不产生 `combo-build-<SHA>` 构建清单；验证结束后整个命名空间拆除。
-- 纯增量：不得修改、重启或删除三环境与 `combo-foundation`、`kol-agents`、`observability` 的任何现有资源；系统 Nginx 与 systemd 只新增配置，不改既有文件。
+- 不得修改、重启或删除三环境与 `combo-foundation`、`kol-agents`、`observability` 的现有资源。经用户明确授权的 V2 升级可以更新 V2 自有 Nginx 文件和 systemd 单元；其他主机配置保持不变。
 - 数据按「实例共享、逻辑隔离」：在 `combo-foundation` 的共享 PostgreSQL 实例上新建独立 database `combo_v2`（不动现有 `combo` 库），三个 V2 PostgreSQL 客户端清单把非敏感 `PGDATABASE` 固定为 `combo_v2`，不从 Secret 选择数据库。Redis 复用 `redis-hot` 并用 `authz:v2:` 等 v2 前缀隔离键。正式迁移链保持 `db/migrations/0000` 至当前主线头；V2 runner 只复用其中 `0000` 至 `0011`，再执行 `db/v2-migrations/0012` 至 `0017`，两条 `schema_migrations` 序列互不混用。V2 runner 对迁移前已存在的 canonical API/worker/runtime 三角色只恢复 LOGIN 并保留原密码；V2 自有 `combo_authz`、`combo_billing` 角色绑定 V2 Secret。
 - V2 迁移属于停机人工维护操作，只能通过主机侧 `scripts/migrate-v2-host.sh` 执行。先将 V2 四个 Deployment 缩到 0 并确认 Pod 消失，迁移成功后再应用同候选的新应用清单。该入口持有与 Preview/Production 正式迁移相同的 `$HOME/data/combo-foundation-shared.lock`，在锁内清理遗留 Job、确认 V2 writer 已停、以内存比较核对 V2/Preview/Production 三份共享角色 Secret、执行并等待 Job、核对五角色 LOGIN、从 Preview/Production 当前 Pod 建立六条新数据库连接并检查三环境 rollout。Job 超时或进程中断时，入口持续持锁直到 Job/Pod 已删除；任一步失败都不能把无人监护的迁移留在锁外。
-- 入口：`https://v2-test.43-160-242-46.sslip.io`，系统 Nginx 反代到 systemd forwarder 维护的 loopback 端口（authz 18091、restart-life 18092）；billing 与 llm-gateway 只出 ClusterIP，不出集群。
-- 清单在 `infra/k8s/v2/`，所有 namespaced 对象都显式固定到 `combo-v2`。Dockerfile 为 `infra/Dockerfile.v2`（单镜像按 PROCESS 分叉）与 restart-life 自带 Dockerfile；密钥只存在于 `combo-v2` 的 `combo-env` Secret，在主机上生成或从现有 `combo-env` 读取，不落本地盘、不进 Git。公开 production-mode authz 只使用 Resend 随机码，清单不接受开发 OTP。验证期采用单内部 token 策略：`LLM_GATEWAY_INTERNAL_TOKEN` 与 `BILLING_INTERNAL_TOKEN` 同值，Agent 侧的 `COMBO_PLATFORM_INTERNAL_TOKEN` 引用同一凭据。
-- V2 镜像先构建 `@cb/shared` 与 `@cb/payment-protocol`，再构建服务；运行层同时包含这两个工作区包的清单和产物。新 Gateway 支付准入开关默认关闭，只有配置独立 `BILLING_PAYMENT_GATEWAY_TOKEN` 并完成 Billing 认证接线后才可开启；本次源码变更不修改环境清单或部署现有服务。
-- 源码中的新 Gateway production 入口只接受 Authz 签名的每 Agent 短期令牌和当前用户断言，拒绝旧共享入口 token；上面的单 token 策略仅描述尚未迁移的历史环境，不能作为新入口的正式配置。替换前须完成每 Agent 凭据配置、SDK 接入，并在代理转发到 Agent 前删除用户 Cookie、只注入用户断言。共享给旧 Agent 的平台凭据必须轮换；不能仅删除 Gateway 环境变量后继续复用旧 Billing 密钥。相关清单修改和部署须单独获得授权。
-- Billing 的 `BILLING_PAYMENTS_ENABLED` 默认关闭。开启时须同时配置独立支付凭证密钥、Gateway 准入凭据、受信 Authz 地址、Host 来源及乐收赢 Test/Production、机构、商户和独立机构密钥。当前 Host 只实现 Cookie 认证，尚未提供支付专用 Bearer。收银台与回调、查单已在源码接线，但未部署或完成真实支付验收。
-- 新收银台使用无路径的 HTTPS 来源。该来源须提供 `/authz/` 登录、`/payments/` 页面、`/v1/payments`、`/v1/payment-checkouts/` 和 `/billing/leshouying/payment-notify`；通知地址从收银台来源固定推导。启用前须通过既有停机维护流程完成 V2 0017 迁移，支付就绪检查要求渠道表存在。本次源码变更不增加公开端口，不修改 V2 路由、清单或现有运行服务。
+- 入口为 `https://v2-test.43-160-242-46.sslip.io`。主机回环端口固定为 Authz 18091、Agent 18092、Billing 18093、Gateway 18094，集群 Service 仍为 ClusterIP。Billing 只公开支付、收银台和指定回调路径，管理入账及内部计费接口不出公网。
+- 清单在 `infra/k8s/v2/`，所有对象固定到 `combo-v2`。平台与 Agent 镜像标注源码 SHA，清单只接受镜像摘要。Authz 使用 Resend 随机验证码，不允许开发固定码。平台密钥保留在 `combo-env`，Agent 凭据保存在独立的 `restart-life-credentials` Secret；Agent 不持有模型供应商密钥或平台内部密钥。
+- V2 镜像先构建 `@cb/shared` 与 `@cb/payment-protocol`，再构建服务；运行层同时包含两个包的清单和产物。V2 清单启用独立支付准入凭据；服务的代码默认开关仍为关闭。
+- Gateway 只接受 Authz 签名的 Agent 短期令牌和当前用户断言，拒绝旧共享入口凭据。代理转发给 Agent 前删除 Cookie 和 Authorization，只注入当前用户断言。升级时必须轮换曾交给旧 Agent 的 Billing 内部密钥。
+- V2 Billing 仅启用乐收赢 TEST 渠道。经用户明确授权，`configure-v2-payment-secrets.mjs` 可在 V2 四服务停机后，于服务器内存中读取 `combo-test` 已有 TEST 商户配置并写入 V2 Secret；源环境必须启用 TEST 且关闭生产支付。脚本不输出或落盘凭据，不改源 Secret；重复执行复用已生成的 Agent 凭据，遇到不一致即停止。
+- 收银台与 Host 共用该 HTTPS 来源，使用 Cookie 认证，尚未提供支付专用 Bearer。通知地址固定从该来源推导。启用前必须通过现有停机维护入口完成 V2 0017 迁移；支付就绪检查要求渠道表存在。
+- 最新重启人生使用自己的 Redis 状态容器，只监听同 Pod 的 `127.0.0.1:6379`，使用独立 1Gi 持久卷、AOF 每次同步落盘及单实例替换。它不是共享 foundation，不接生产 Redis 或 Blob，仅保存会话协调元数据，不保存对话与地图正文。`render-v2.mjs` 还要求该 Redis 镜像的摘要。
+- 配置合入、服务部署、渠道下单和用户真实付款分别记录验证结果。TEST 下单或模拟通知不得表述为用户真实付款成功。
