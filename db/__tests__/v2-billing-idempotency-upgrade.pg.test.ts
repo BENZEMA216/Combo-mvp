@@ -61,7 +61,10 @@ pgDescribe('0014 to 0015 V2 billing upgrade', () => {
         applied_at timestamptz NOT NULL DEFAULT now()
       )
     `);
-    for (const file of listMigrations('v2').slice(0, -1)) {
+    // This fixture is permanently the 0014 database, even after new migration tails are added.
+    const legacyFiles = listMigrations('v2').filter((file) => Number(file.slice(0, 4)) <= 14);
+    expect(legacyFiles.at(-1)).toBe('0014_v2_email_login.sql');
+    for (const file of legacyFiles) {
       await applyMigrationFile(client, file, migrationSource(file), () =>
         restoreV2RoleLoginsWithinMigration(client, file, preexistingRoles),
       );
