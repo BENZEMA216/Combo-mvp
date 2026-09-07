@@ -764,11 +764,11 @@ test('only payment-serving V2 apps and the exact draft-sync README reopen after 
     'apps/authz/src/new-route.ts',
     'infra/Dockerfile.v2-debug',
     'infra/host/combo-v2-preview.conf',
-    'infra/host/release/combo-v2-billing-forward.service',
+    'infra/host/release/combo-v2-billing-debug-forward.service',
     'infra/k8s/v2/ingress.yaml',
     'scripts/migrate-v2-host.sh',
     'scripts/migrate-v2-host.test.mjs',
-    'scripts/render-v2.test.mjs',
+    'scripts/render-v2-debug.test.mjs',
   ]) {
     assert.throws(
       () => assessPullRequest(contract, [entry(path)]),
