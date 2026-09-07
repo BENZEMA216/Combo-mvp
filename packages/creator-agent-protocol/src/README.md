@@ -1,5 +1,8 @@
 # 源码职责
 
+- `agent-context.ts` 定义独立轻量内容请求和 Draft，接受有界 JSON、固定未验证来源声明、计算确定性 fingerprint，
+  并验证 Draft 的规范往返；不读取来源、不提供 Host 签名，也不进入旧 V1/V2 分派器。
+
 - `primitives.ts`：Host 合约内部使用的最小、名义隔离值域。
 - `canonical.ts`：内部 consistency fingerprint；拒绝循环、getter、稀疏数组、非有限数字和 malformed Unicode。
 - `broker-transport.ts`：显式子路径的 canonical Worker/Broker wire frame、方向规则、语义 fingerprint 与完整 wire fingerprint。

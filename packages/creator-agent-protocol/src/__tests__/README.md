@@ -1,5 +1,8 @@
 # Tests
 
+`agent-context.test.ts` 验证轻量内容的固定未验证来源、严格字段与字节上限、非法 Unicode 和路径拒绝、
+V1/V2 协议互斥、无对象 getter 副作用、确定性 fingerprint 与规范 Draft 回读；不证明完整历史或 Host 来源。
+
 `host-contract.test.ts` 锁定 canonical fingerprint、完整 Host thread、名义 ID、单一原子
 outcome、跨 handle 拒绝、first-sent interrupt lineage、generation/turn binding 和
 `CreatorHost` 的结构兼容。
