@@ -13,8 +13,10 @@ import {
   PaymentSuccessResponseSchema,
 } from '@cb/payment-protocol';
 import { CallAdmissionInputSchema, type PaymentStore } from './payment-service.js';
+import { PaymentAuthenticationError } from './payment-auth.js';
 
 export interface PaymentRouteDependencies {
+  trustedOrigins?: readonly string[];
   store: PaymentStore;
   /** Must verify the current request's platform session/scoped credential. No body identity. */
   authenticateUser(request: FastifyRequest): Promise<string | null>;
@@ -27,6 +29,7 @@ function fail(req: FastifyRequest, reply: FastifyReply, status: number) {
   const messages: Record<number, string> = {
     400: '请求格式不正确，请检查后重试。',
     401: '请先登录后再继续。',
+    403: '没有访问此支付接口的权限。',
     404: '未找到可访问的支付记录。',
     409: '请求与已有记录冲突，请查询原记录。',
     503: '支付服务暂时不可用，请稍后重试。',
@@ -46,6 +49,25 @@ function fail(req: FastifyRequest, reply: FastifyReply, status: number) {
 /** Registered only when trusted user and Gateway authentication adapters have been supplied. */
 export function registerPaymentRoutes(app: FastifyInstance, deps: PaymentRouteDependencies): void {
   app.register(async (app) => {
+    app.addHook('onRequest', async (req, reply) => {
+      const origin = req.headers.origin;
+      if (origin && deps.trustedOrigins?.includes(origin))
+        reply
+          .header('access-control-allow-origin', origin)
+          .header('access-control-allow-credentials', 'true')
+          .header('vary', 'Origin');
+    });
+    const preflight = async (req: FastifyRequest, reply: FastifyReply) => {
+      if (!req.headers.origin || !deps.trustedOrigins?.includes(req.headers.origin))
+        return fail(req, reply, 403);
+      return reply
+        .header('access-control-allow-methods', 'GET, POST, OPTIONS')
+        .header('access-control-allow-headers', 'content-type, cache-control')
+        .code(204)
+        .send();
+    };
+    app.options('/v1/payments', preflight);
+    app.options('/v1/payments/*', preflight);
     app.setErrorHandler((error, req, reply) => {
       const status =
         typeof error === 'object' &&
@@ -67,8 +89,8 @@ export function registerPaymentRoutes(app: FastifyInstance, deps: PaymentRouteDe
         )
           return fail(req, reply, 401);
         users.set(req, userId);
-      } catch {
-        return fail(req, reply, 503);
+      } catch (error) {
+        return fail(req, reply, error instanceof PaymentAuthenticationError ? error.status : 503);
       }
     };
     const success = (reply: FastifyReply, req: FastifyRequest, data: unknown, status = 200) =>
