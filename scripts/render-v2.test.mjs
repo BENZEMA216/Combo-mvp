@@ -6,6 +6,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath, URL } from 'node:url';
 import { parseAllDocuments } from 'yaml';
+// V2 渲染是既有 CI 入口；凭据合同也必须随每次部署变更执行。
+import './configure-v2-payment-secrets.test.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sourceDirectory = join(repo, 'infra', 'k8s', 'v2');
