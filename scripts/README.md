@@ -43,6 +43,10 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## 其他脚本
 
+`configure-v2-payment-secrets.mjs` 只在 tecent2 执行获授权的 V2 TEST 支付配置，要求四个 V2 服务和写入 Pod 已停止。它在内存中核对源 Test 渠道，生成独立 Agent 凭据并轮换旧共享 Billing 密钥；只写 V2 Secret，不打印或落盘凭据。运行参数必须为 `--apply-v2-test --reuse-test-channel`。对应测试核验隔离、幂等和失败前不写入。
+
+V2 渲染要求 `--platform`、`--restart-life`、`--state-redis` 三个镜像摘要。Agent 自有 Redis 仅监听同 Pod 回环地址，使用独立持久卷；它不属于共享 foundation。
+
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
 - `scripts/integration/`：CI 集成测试脚本。

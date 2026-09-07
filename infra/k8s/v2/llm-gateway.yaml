@@ -43,9 +43,17 @@ spec:
               value: 0.0.0.0
             - name: PORT
               value: '3000'
-            - name: LLM_GATEWAY_INTERNAL_TOKEN
+            - name: LLM_GATEWAY_AUTH_MODE
+              value: agent
+            - name: AUTHZ_JWKS_URL
+              value: https://v2-test.43-160-242-46.sslip.io/.well-known/jwks.json
+            - name: AUTHZ_ASSERTION_ISSUER
+              value: combo-authz
+            - name: LLM_GATEWAY_PAYMENT_ADMISSION
+              value: 'true'
+            - name: BILLING_PAYMENT_GATEWAY_TOKEN
               valueFrom:
-                secretKeyRef: { name: combo-env, key: LLM_GATEWAY_INTERNAL_TOKEN }
+                secretKeyRef: { name: combo-env, key: BILLING_PAYMENT_GATEWAY_TOKEN }
             - name: BILLING_BASE_URL
               value: http://billing
             - name: BILLING_INTERNAL_TOKEN

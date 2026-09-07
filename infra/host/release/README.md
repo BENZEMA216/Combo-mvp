@@ -13,12 +13,16 @@
 | `combo-prod-web-forward.service`      | `18082`  | `combo-prod` / `web`         |
 | `combo-prod-minio-forward.service`    | `19002`  | `combo-foundation` / `minio` |
 
-另有 combo-v2 验证命名空间的两个单元（手工部署，随验证结束拆除）：
+另有 combo-v2 验证命名空间的四个单元（手工部署，随验证结束拆除）：
 
 | 单元                                    | 监听端口 | 目标 namespace / Service    |
 | --------------------------------------- | -------- | --------------------------- |
 | `combo-v2-authz-forward.service`        | `18091`  | `combo-v2` / `authz`        |
 | `combo-v2-restart-life-forward.service` | `18092`  | `combo-v2` / `restart-life` |
+| `combo-v2-billing-forward.service`      | `18093`  | `combo-v2` / `billing`      |
+| `combo-v2-llm-gateway-forward.service`  | `18094`  | `combo-v2` / `llm-gateway`  |
+
+V2 的 Billing 只经 Nginx 公开支付路径，不公开内部计费与管理接口。Agent 收到的是当前用户断言，代理不转发 Cookie 或 Authorization。
 
 Preview 与 Production 的 MinIO forwarder 都指向共享 foundation（`combo-foundation`）的 `minio` Service，因为两者共用同一套 MinIO。
 

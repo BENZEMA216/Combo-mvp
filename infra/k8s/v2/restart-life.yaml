@@ -23,6 +23,8 @@ metadata:
     app: restart-life
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: restart-life
@@ -46,15 +48,22 @@ spec:
                 secretKeyRef: { name: combo-env, key: RESTART_STATE_SECRET }
             - name: COMBO_AGENT_ID
               value: restart-life
-            - name: COMBO_PLATFORM_INTERNAL_TOKEN
+            - name: COMBO_AGENT_CREDENTIAL_ID
               valueFrom:
-                secretKeyRef: { name: combo-env, key: LLM_GATEWAY_INTERNAL_TOKEN }
+                secretKeyRef: { name: restart-life-credentials, key: COMBO_AGENT_CREDENTIAL_ID }
+            - name: COMBO_AGENT_CREDENTIAL_SECRET
+              valueFrom:
+                secretKeyRef: { name: restart-life-credentials, key: COMBO_AGENT_CREDENTIAL_SECRET }
+            - name: COMBO_AUTHZ_URL
+              value: https://v2-test.43-160-242-46.sslip.io
             - name: COMBO_LLM_GATEWAY_URL
-              value: http://llm-gateway
-            - name: COMBO_BILLING_URL
-              value: http://billing
+              value: https://v2-test.43-160-242-46.sslip.io
             - name: COMBO_JWKS_URL
-              value: http://authz/.well-known/jwks.json
+              value: https://v2-test.43-160-242-46.sslip.io/.well-known/jwks.json
+            - name: COMBO_ASSERTION_ISSUER
+              value: combo-authz
+            - name: RESTART_STATE_V2_SIDECAR
+              value: 'true'
             - name: COMBO_LLM_MODEL
               value: deepseek/deepseek-v4-flash
             # 浏览器 Origin 与反代后内部地址 scheme 不一致，显式放行验证站域名（非密钥）。
@@ -63,13 +72,59 @@ spec:
           ports:
             - containerPort: 3000
           readinessProbe:
-            httpGet: { path: /api/status, port: 3000 }
+            exec:
+              command:
+                [
+                  'node',
+                  '-e',
+                  "fetch('http://127.0.0.1:3000/api/status',{signal:AbortSignal.timeout(4000)}).then(r=>r.json()).then(v=>{if(v.ready!==true)process.exitCode=1}).catch(()=>{process.exitCode=1})",
+                ]
+            timeoutSeconds: 5
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /api/status, port: 3000 }
+            tcpSocket: { port: 3000 }
             initialDelaySeconds: 10
             periodSeconds: 20
           resources:
             requests: { cpu: 250m, memory: 256Mi }
             limits: { cpu: 500m, memory: 512Mi }
+        - name: state-coordinator
+          image: docker.io/library/redis@COMBO_V2_STATE_REDIS_DIGEST
+          args:
+            [
+              'redis-server',
+              '--bind',
+              '127.0.0.1',
+              '--appendonly',
+              'yes',
+              '--appendfsync',
+              'always',
+              '--save',
+              '',
+            ]
+          volumeMounts:
+            - name: state-data
+              mountPath: /data
+          readinessProbe:
+            exec: { command: ['redis-cli', 'ping'] }
+          livenessProbe:
+            exec: { command: ['redis-cli', 'ping'] }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+      volumes:
+        - name: state-data
+          persistentVolumeClaim:
+            claimName: restart-life-state
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restart-life-state
+  namespace: combo-v2
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
