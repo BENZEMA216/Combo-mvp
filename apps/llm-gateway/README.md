@@ -8,6 +8,7 @@
 
 - `src/index.ts` 加载配置，装配 Billing、支付准入和模型供应商客户端。
 - `src/env.ts` 解析配置。开启新支付准入时必须配置独立的 Gateway 到 Billing 凭据。
+- `src/identity.ts` 分别验证 Authz 签名的短期 Agent 令牌和当前用户断言，从签名内容获得用户与 Agent，不接受请求体自报身份。
 - `src/pricing.ts` 读取模型价格并以整数分估算和结算，使用 BigInt 中间计算避免精度丢失。
 - `src/billing.ts` 保留旧 hold、结算和计量客户端，请求拒绝重定向。
 - `src/payment-admission.ts` 调用统一收费准入接口，计算规范请求摘要和价格版本，严格检查支付 402、hold 与重放状态。响应读取最多 64 KiB，超时即停止。
@@ -19,20 +20,18 @@
 
 ## 请求编号
 
-新格式为：
+正式身份模式使用 `Authorization: Bearer <Agent 短期令牌>` 和 `x-combo-assertion: <当前用户断言>`。请求体只传业务拥有的两个编号：
 
 ```json
 {
   "x_combo": {
-    "user_id": "当前用户 UUID",
-    "agent_id": "agent-a",
     "operation_id": "operation-1",
     "call_id": "call-1"
   }
 }
 ```
 
-旧格式 `user_id + agent_id + turn_id` 保留兼容。turn_id 只映射为收费 callId；网关另外生成稳定的内部 legacy 业务引用，不把 turnId 定义为业务 operationId。新旧字段混用会返回 400。
+仅非 production 的 `legacy-test` 模式兼容 `user_id + agent_id + turn_id` 或 `user_id + agent_id + operation_id + call_id`。turn_id 只映射为收费 callId；网关另外生成稳定的旧业务引用。新旧字段混用返回 400；正式身份模式即使请求体身份与签名一致也返回 400。
 
 两种格式在转发给模型前都会剥离 x_combo。请求顶层的 operationId、paymentToken、requestKey、裸身份等保留字段会被拒绝。
 
@@ -44,7 +43,13 @@ Billing 返回新 hold 后，网关才调用模型；返回 replay 时停止并�
 
 新开关默认关闭，以便单独更新 Billing 认证与入口接线。关闭时沿用旧 hold 接口，但计费故障仍停止；旧余额不足响应只返回一般 402，没有可供 Host 支付的新凭证。
 
-当前入口身份仍是受控验证的共享 token 和请求体身份。正式每 Agent 凭据、用户断言重验与实际 Billing 认证接线尚未完成，不能将本次网关代码描述为完整外部支付接入。
+## 身份配置
+
+`NODE_ENV=production` 默认使用 `LLM_GATEWAY_AUTH_MODE=agent`，并拒绝 `legacy-test`。正式模式必须配置 `AUTHZ_JWKS_URL` 与 `AUTHZ_ASSERTION_ISSUER`，且删除旧的 `LLM_GATEWAY_INTERNAL_TOKEN`；production 的 JWKS 必须使用 HTTPS。非 production 默认保留旧验证模式，可显式选择 agent 模式验证新接入。
+
+Agent 令牌只接受 Authz 的 Ed25519 签名，最长五分钟，接收方必须是 `combo-llm-gateway`，权限必须是 `llm:invoke`。用户断言必须由同一受信 Authz 签发、尚未过期且接收方等于当前 Agent。任一校验失败都不会请求 Billing 或模型；签名服务不可用返回 503。
+
+现有 V2 环境仍是旧配置，不能直接用新 production 入口替换。先完成 SDK、每 Agent 配置及代理 Cookie 隔离，再在获授权的环境中验证。当前代码测试不表示完整外部支付链路可用。
 
 ## 收尾
 
@@ -54,4 +59,4 @@ Billing 返回新 hold 后，网关才调用模型；返回 replay 时停止并�
 
 ## 上下游
 
-上游是 Agent SDK，模型请求使用 `LLM_GATEWAY_INTERNAL_TOKEN`。下游包括 Billing 的准入、hold、settle 和 metering 接口，以及由 `PROVIDER_BASE_URL` 配置的模型供应商。价格来自 `LLM_GATEWAY_PRICING_JSON`，必须包含 default 条目。新支付准入与旧计量凭据分别配置，均不进入日志。
+上游是 Agent SDK，正式模型请求使用每 Agent 短期令牌和当前用户断言。下游包括 Billing 的准入、hold、settle 和 metering 接口，以及由 `PROVIDER_BASE_URL` 配置的模型供应商。价格来自 `LLM_GATEWAY_PRICING_JSON`，必须包含 default 条目。新支付准入与旧计量凭据必须不同，只保存在网关内。

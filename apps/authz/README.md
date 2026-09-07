@@ -39,7 +39,7 @@ Agent 使用标准 `Authorization: Basic base64(credentialId:secret)` 发送空 
 
 接口每个实际连接地址一分钟最多 60 次，Redis 故障时停止签发；原始地址、凭据和令牌不进入 Redis key 或错误响应。轮换时更换对应凭据记录；删除记录后不能再签发新令牌，已签发令牌最长保留五分钟。
 
-本模块只交付身份签发与接线，Gateway 的正式验证、SDK 取令牌和真实部署仍在后续变更中完成。
+Gateway 的正式身份模式会独立验证上述 Agent 令牌和当前用户断言；Billing 则向 Authz 重新核对 Host 当前的会话 Cookie。SDK 自动取令牌和真实部署仍在后续变更中完成。用户 Cookie 只交给平台，代理转发到 Agent 服务前必须删除 Cookie，只注入当前用户断言。
 
 ## 服务依赖
 
