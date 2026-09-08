@@ -8,7 +8,7 @@ import {
   type ReceiverInput,
   type VerifiedPackage,
 } from './contract.js';
-import { ProjectFiles, expectedInventory } from './filesystem.js';
+import { expectedInventory, type ProjectFiles } from './filesystem.js';
 
 const lockPath = '.combo/receiver-install.lock';
 function assertLockState(fs: ProjectFiles, owned?: Stats): void {

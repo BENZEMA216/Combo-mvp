@@ -13,7 +13,7 @@ import {
   type Stats,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
+import { dirname, isAbsolute, parse, resolve } from 'node:path';
 
 import { ReceiverError } from './contract.js';
 
