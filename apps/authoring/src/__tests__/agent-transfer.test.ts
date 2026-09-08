@@ -127,14 +127,21 @@ describe('Agent transfer HTTP and immutable Package boundaries (no real DB or st
     },
   );
   it('rejects browser and alternative credentials before parsing Desktop bodies', async () => {
-    const { instance, queries } = await app();
     const create = vi.spyOn(AgentTransferService.prototype, 'create');
     for (const extra of [
       { origin: 'http://localhost' },
       { cookie: browserCookie },
       { authorization: 'Bearer PRIVATE_CANARY' },
       { 'sec-fetch-site': 'none' },
+      { 'sec-fetch-dest': 'empty' },
+      { 'sec-fetch-user': '?1' },
+      { 'sec-fetch-mode': 'navigate' },
+      { 'sec-fetch-mode': 'no-cors' },
+      { 'sec-fetch-mode': 'same-origin' },
+      { 'sec-fetch-mode': 'cors, navigate' },
+      { 'sec-fetch-mode': '' },
     ]) {
+      const { instance, queries } = await app();
       const response = await instance.inject({
         method: 'POST',
         url: '/api/v1/agent-package-transfers',
@@ -144,9 +151,69 @@ describe('Agent transfer HTTP and immutable Package boundaries (no real DB or st
       expect(response.statusCode).toBe(403);
       expect(response.headers['cache-control']).toBe('no-store');
       expect(response.body).not.toContain('PRIVATE_CANARY');
+      expect(queries).toEqual([]);
     }
     expect(create).not.toHaveBeenCalled();
-    expect(queries).toEqual([]);
+  });
+  it('accepts actual Node fetch transport while rejecting browser metadata combined with cors', async () => {
+    const { instance } = await app();
+    const f = transferFixture();
+    const observed: { mode: unknown; site: unknown; origin: unknown; cookie: unknown }[] = [];
+    instance.server.on('request', (req) => {
+      observed.push({
+        mode: req.headers['sec-fetch-mode'],
+        site: req.headers['sec-fetch-site'],
+        origin: req.headers.origin,
+        cookie: req.headers.cookie,
+      });
+    });
+    const create = vi.spyOn(AgentTransferService.prototype, 'create').mockResolvedValue(f.receipt);
+    vi.spyOn(AgentTransferService.prototype, 'status').mockResolvedValue(f.receipt);
+    vi.spyOn(AgentTransferService.prototype, 'upload').mockResolvedValue(f.receipt);
+    const origin = await instance.listen({ host: '127.0.0.1', port: 0 });
+    for (const [path, body, authorization] of [
+      ['/agent-package-transfers', f.request, undefined],
+      [`/agent-package-transfers/${f.request.requestId}/status`, {}, `Bearer ${f.secret}`],
+      [`/agent-package-transfers/${f.request.requestId}/upload`, f.upload, `Bearer ${f.secret}`],
+    ] as const) {
+      const response = await globalThis.fetch(`${origin}/api/v1${path}`, {
+        method: 'POST',
+        credentials: 'omit',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          ...(authorization ? { authorization } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ data: f.receipt });
+    }
+    expect(observed).toEqual(
+      Array.from({ length: 3 }, () => ({
+        mode: 'cors',
+        site: undefined,
+        origin: undefined,
+        cookie: undefined,
+      })),
+    );
+    const browserMetadata: Record<string, string>[] = [
+      { cookie: browserCookie },
+      { origin: 'http://localhost' },
+      { 'sec-fetch-site': 'none' },
+      { 'sec-fetch-dest': 'empty' },
+      { 'sec-fetch-user': '?1' },
+    ];
+    for (const extra of browserMetadata) {
+      const response = await globalThis.fetch(`${origin}/api/v1/agent-package-transfers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...extra },
+        body: '{',
+      });
+      expect(response.status).toBe(403);
+      await response.arrayBuffer();
+    }
+    expect(create).toHaveBeenCalledTimes(1);
   });
   it('authenticates upload before malformed or oversized bodies and never accepts query secrets', async () => {
     const { instance } = await app();

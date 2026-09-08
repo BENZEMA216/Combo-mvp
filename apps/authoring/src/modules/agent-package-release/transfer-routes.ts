@@ -99,7 +99,11 @@ function desktopOnly(withSecret: boolean): onRequestHookHandler {
       req.headers.cookie !== undefined ||
       req.headers.origin !== undefined ||
       req.headers['sec-fetch-site'] !== undefined ||
-      req.headers['sec-fetch-mode'] !== undefined ||
+      req.headers['sec-fetch-dest'] !== undefined ||
+      req.headers['sec-fetch-user'] !== undefined ||
+      // Node's native fetch adds mode=cors, without browser Site/Dest/Origin metadata.
+      // This is transport compatibility, never authentication or an Origin exemption.
+      (req.headers['sec-fetch-mode'] !== undefined && req.headers['sec-fetch-mode'] !== 'cors') ||
       (!withSecret && req.headers.authorization !== undefined)
     )
       return sendError(req, reply, ErrorCode.FORBIDDEN);

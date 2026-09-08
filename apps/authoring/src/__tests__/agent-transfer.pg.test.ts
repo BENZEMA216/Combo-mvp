@@ -209,6 +209,48 @@ pgDescribe('browser-approved Agent transfer (real PostgreSQL16, synthetic object
     const restarted = new AgentPublicationService(asTxPool(api), api, objects, 'http://localhost');
     expect((await restarted.read(receipt.release.releaseId)).package).toEqual(f.upload.candidate);
   });
+  it('round-trips native Node fetch create, status and upload over a real socket and PostgreSQL', async () => {
+    const f = transferFixture();
+    const base = `/api/v1/agent-package-transfers/${f.request.requestId}`;
+    const origin = await app.listen({ host: '127.0.0.1', port: 0 });
+    const post = (path: string, body: unknown, authenticated = false) =>
+      globalThis.fetch(`${origin}${path}`, {
+        method: 'POST',
+        credentials: 'omit',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          ...(authenticated ? { authorization: `Bearer ${f.secret}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const createdResponse = await post('/api/v1/agent-package-transfers', f.request);
+    expect(createdResponse.status).toBe(200);
+    const pending = (await createdResponse.json()) as { data: { verificationCode: string } };
+    const status = await post(`${base}/status`, {}, true);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({ data: { phase: 'pending_approval' } });
+    const approval = await app.inject({
+      method: 'POST',
+      url: `${base}/approval`,
+      headers: headers(),
+      payload: { ...f.approval, verificationCode: pending.data.verificationCode },
+    });
+    expect(approval.statusCode).toBe(200);
+    const saved = await post(`${base}/upload`, f.upload, true);
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({
+      data: {
+        phase: 'uploaded',
+        saved: {
+          draftFingerprint: f.request.draftFingerprint,
+          packageDigest: f.request.packageDigest,
+        },
+      },
+    });
+    const review = await app.inject({ url: base, headers: headers() });
+    expect(review.json().data.review).toEqual(f.upload.candidate);
+  });
   it('binds the first approving account atomically and rejects swapped fingerprints and ids', async () => {
     const f = transferFixture();
     const pending = await transfer.create(f.request);

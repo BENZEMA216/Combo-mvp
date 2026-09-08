@@ -18,8 +18,10 @@
   公共 GET 仅返回未撤销的 `public_link` Release 与完整核验后的 Package，下载是裸 Package JSON；不含私有 Draft、
   creator request、账户邮箱、上传 secret 或原对话。公开请求不解析会话，不安装、不试跑，来源固定 `not_verified`。
 
-所有新接口返回安全错误与 `no-store`。Desktop 请求拒绝 Cookie、Origin、Fetch Metadata 和查询参数凭据；浏览器写入
-在解析正文前检查 Cookie 与精确来源。元数据/确认体 4 KiB，上传体 1 MiB，均有独立速率限制。GET 不推进状态。
+所有新接口返回安全错误与 `no-store`。Desktop 请求拒绝 Cookie、Origin、Fetch Metadata 的 Site、Dest、User
+和查询参数凭据；Mode 只允许缺失或 Node 原生 fetch 固定附加的 `cors`，它不提供认证，也不豁免其他浏览器信号。
+浏览器写入在解析正文前检查 Cookie 与精确来源。元数据/确认体 4 KiB，上传体 1 MiB，均有独立速率限制。GET 不推进状态。
+当前轻量 Test 客户端和页面只使用配置中的同一个规范公开 origin，不支持把第二个登录 allowlist origin 当作分享入口。
 错误或超时不得换 request ID 自动发布；应先 GET 原意图确认事实，再由用户明确重试相同请求。
 数据库依赖主线 `0020` 私有快照与 `0021` claims、revocations、transfer 状态机；不在请求中建表或修改旧数据。
 这些是实现与测试边界，不等同真实对象存储、部署、浏览器 UAT 或使用者实际加载验收已通过。
