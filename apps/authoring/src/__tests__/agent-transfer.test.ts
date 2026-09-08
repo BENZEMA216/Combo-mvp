@@ -217,14 +217,12 @@ describe('Agent transfer HTTP and immutable Package boundaries (no real DB or st
   it('keeps browser GET readonly and publication Cookie plus exact-Origin only', async () => {
     const { instance } = await app();
     const f = transferFixture();
-    const review = vi
-      .spyOn(AgentTransferService.prototype, 'review')
-      .mockResolvedValue({
-        transfer: f.receipt,
-        name: f.request.name,
-        draftFingerprint: f.request.draftFingerprint,
-        packageDigest: f.request.packageDigest,
-      });
+    const review = vi.spyOn(AgentTransferService.prototype, 'review').mockResolvedValue({
+      transfer: f.receipt,
+      name: f.request.name,
+      draftFingerprint: f.request.draftFingerprint,
+      packageDigest: f.request.packageDigest,
+    });
     const approve = vi.spyOn(AgentTransferService.prototype, 'approve');
     const publish = vi
       .spyOn(AgentPublicationService.prototype, 'publish')

@@ -15,9 +15,7 @@ export const TransferRequest = z
       .min(1)
       .max(100)
       .refine(
-        (value) =>
-          value.trim() === value &&
-          !/[\p{Cc}\u2028-\u202e\u2066-\u2069]/u.test(value),
+        (value) => value.trim() === value && !/[\p{Cc}\u2028-\u202e\u2066-\u2069]/u.test(value),
       ),
     draftFingerprint: TransferDigest,
     packageDigest: TransferDigest,
