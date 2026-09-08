@@ -3,14 +3,24 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  archivedBudgetPath,
+  legacyV5Lock,
+  parseTrancheContract,
+  trancheContractPath,
+  verifyLegacyV5Receipt,
+  verifyMainlineTrancheBase,
+} from './vnext-rebaseline-budget-tranche.mjs';
+
+export { archivedBudgetPath } from './vnext-rebaseline-budget-tranche.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const legacyContractPath = 'scripts/vnext-rebaseline-budget.v1.json';
 export const previousContractPath = 'scripts/vnext-rebaseline-budget.v2.json';
 export const supersededContractPath = 'scripts/vnext-rebaseline-budget.v3.json';
 export const previousBudgetPath = 'scripts/vnext-rebaseline-budget.v4.json';
-export const contractPath = 'scripts/vnext-rebaseline-budget.v5.json';
-export const policyPaths = Object.freeze([
+export const contractPath = trancheContractPath;
+export const archivedPolicyPaths = Object.freeze([
   '.agents/skills/github-collaboration/SKILL.md',
   '.agents/skills/github-collaboration/references/governance-and-contributions.md',
   '.agents/skills/github-collaboration/references/quality-and-pull-requests.md',
@@ -22,9 +32,16 @@ export const policyPaths = Object.freeze([
   previousContractPath,
   supersededContractPath,
   previousBudgetPath,
-  contractPath,
+  archivedBudgetPath,
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
+]);
+export const policyPaths = Object.freeze([
+  ...archivedPolicyPaths,
+  contractPath,
+  'scripts/vnext-rebaseline-budget-tranche.mjs',
+  'scripts/vnext-rebaseline-budget-tranche.test.mjs',
+  'scripts/vnext-rebaseline-budget.v6.md',
 ]);
 
 const protocol = 'combo.vnext-rebaseline-budget/5';
@@ -624,9 +641,10 @@ export function assessPullRequest(
 }
 
 export function assessCumulative(contract, entries) {
+  const allowedPolicyPaths = contract.protocol === protocol ? archivedPolicyPaths : policyPaths;
   for (const { path } of entries) {
     invariant(
-      policyPaths.includes(path) ||
+      allowedPolicyPaths.includes(path) ||
         path === contract.maintenanceFile ||
         pathAllowed(contract, path),
       `cumulative path is outside the R1-R3 rebuild scope: ${path}`,
@@ -1052,8 +1070,8 @@ function verifyPlatformV2AdmissionShape({ comparisonBase, candidateSha, requireO
 }
 
 function verifyPlatformV2GovernanceBase(comparisonBase) {
-  const currentSource = readFileSync(join(repoRoot, contractPath), 'utf8');
-  const baseSource = git(['show', `${comparisonBase}:${contractPath}`]);
+  const currentSource = readFileSync(join(repoRoot, archivedBudgetPath), 'utf8');
+  const baseSource = git(['show', `${comparisonBase}:${archivedBudgetPath}`]);
   invariant(
     baseSource === currentSource,
     'V2 admission base must contain the exact active budget contract',
@@ -1115,10 +1133,15 @@ export function defaultBaseRef(environment = process.env) {
 
 export function verifyRepository({ baseRef, environment = process.env } = {}) {
   const resolvedBaseRef = baseRef ?? defaultBaseRef(environment);
-  const contract = parseContract(readFileSync(join(repoRoot, contractPath), 'utf8'));
+  const archivedSource = readFileSync(join(repoRoot, archivedBudgetPath), 'utf8');
+  const archivedBudget = parseContract(archivedSource);
+  const contract = parseTrancheContract(
+    readFileSync(join(repoRoot, contractPath), 'utf8'),
+    archivedBudget,
+  );
   if (environment.GITHUB_ACTIONS === 'true') {
     invariant(
-      environment.GITHUB_REPOSITORY === contract.platformV2Bootstrap.repository,
+      environment.GITHUB_REPOSITORY === legacyV5Lock.repository,
       'budget gate is running in the wrong GitHub repository',
     );
   }
@@ -1134,26 +1157,48 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     spawnSync('git', ['diff', '--quiet'], { cwd: repoRoot }).status === 0,
     'budget check requires all tracked changes to be staged',
   );
-  const previousBudget = verifyPreviousBudget(contract);
-  const previousTranche = verifyPreviousTranche(contract);
-  const supersededAdmission = verifySupersededAdmission(contract);
-  const platformV2Receipt = verifyPlatformV2Bootstrap(contract);
+  const previousBudget = verifyPreviousBudget(archivedBudget);
+  const previousTranche = verifyPreviousTranche(archivedBudget);
+  const supersededAdmission = verifySupersededAdmission(archivedBudget);
+  const platformV2Receipt = verifyPlatformV2Bootstrap(archivedBudget);
   const comparisonBase = git(['merge-base', resolvedBaseRef, 'HEAD']).trim();
   invariant(shaPattern.test(comparisonBase), 'comparison base is unavailable');
+  const trancheBase = verifyMainlineTrancheBase({
+    repoRoot,
+    baseSha: contract.baseSha,
+    comparisonBase,
+    environment,
+  });
+  invariant(
+    isAncestor(legacyV5Lock.baseSha, legacyV5Lock.headSha),
+    'legacy v5 base must be an ancestor of its head',
+  );
+  const legacyV5Entries = collectCommittedDiff(legacyV5Lock.baseSha, legacyV5Lock.headSha);
+  // The old scope and cumulative ceiling remain live checks, not just receipt metadata.
+  assessCumulative(archivedBudget, legacyV5Entries);
+  const legacyV5 = verifyLegacyV5Receipt({
+    source: archivedSource,
+    committedSource: git(['show', `${legacyV5Lock.headSha}:${archivedBudgetPath}`]),
+    entries: legacyV5Entries,
+    rawDiffSha256: collectCommittedRawDiffSha256(legacyV5Lock.baseSha, legacyV5Lock.headSha),
+  });
   const previousMainIsAncestor = isAncestor(
-    contract.platformV2Bootstrap.previousMainSha,
+    archivedBudget.platformV2Bootstrap.previousMainSha,
     comparisonBase,
   );
   invariant(previousMainIsAncestor, 'pull request base must descend from previous Main');
-  const candidateInBase = isAncestor(contract.platformV2Bootstrap.candidateSha, comparisonBase);
-  const candidateInHead = isAncestor(contract.platformV2Bootstrap.candidateSha, 'HEAD');
+  const candidateInBase = isAncestor(
+    archivedBudget.platformV2Bootstrap.candidateSha,
+    comparisonBase,
+  );
+  const candidateInHead = isAncestor(archivedBudget.platformV2Bootstrap.candidateSha, 'HEAD');
   const bootstrapState = classifyPlatformV2Bootstrap({ candidateInBase, candidateInHead });
   let admission = { valid: false, shape: null };
   if (bootstrapState === 'ADMITTING') {
     verifyPlatformV2GovernanceBase(comparisonBase);
     admission = verifyPlatformV2AdmissionShape({
       comparisonBase,
-      candidateSha: contract.platformV2Bootstrap.candidateSha,
+      candidateSha: archivedBudget.platformV2Bootstrap.candidateSha,
       requireOuterMerge:
         environment.GITHUB_EVENT_NAME === 'pull_request' ||
         (environment.GITHUB_EVENT_NAME === 'push' && environment.GITHUB_REF === 'refs/heads/main'),
@@ -1226,6 +1271,8 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     previousTranche,
     supersededAdmission,
     platformV2Bootstrap,
+    legacyV5,
+    trancheBase,
     cumulative,
   };
 }
