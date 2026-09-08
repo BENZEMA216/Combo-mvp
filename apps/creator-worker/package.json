@@ -31,6 +31,10 @@
     "./agent-package-compiler": {
       "types": "./dist/agent-package-compiler.d.ts",
       "default": "./dist/agent-package-compiler.js"
+    },
+    "./agent-package-context-compiler": {
+      "types": "./dist/agent-package-context-compiler.d.ts",
+      "default": "./dist/agent-package-context-compiler.js"
     }
   },
   "files": [
@@ -43,7 +47,7 @@
     "combo-creator-worker": "./dist/local-alpha-cli.js"
   },
   "scripts": {
-    "build": "pnpm run clean && tsc -b && esbuild dist/agent-package-creator-bridge.js --bundle --packages=bundle --platform=node --format=esm --target=node24 --charset=utf8 --legal-comments=none --outfile=dist/agent-package-creator-bridge.mjs",
+    "build": "pnpm run clean && tsc -b && esbuild dist/agent-package-creator-bridge.js --bundle --packages=bundle --platform=node --format=esm --target=node24 --charset=utf8 --legal-comments=none --outfile=dist/agent-package-creator-bridge.mjs && esbuild dist/agent-package-context-compiler-cli.js --bundle --packages=bundle --platform=node --format=esm --target=node24 --charset=utf8 --legal-comments=none --outfile=dist/agent-package-context-compiler.mjs",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-persistence build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-worker-broker-client build && pnpm run build",
