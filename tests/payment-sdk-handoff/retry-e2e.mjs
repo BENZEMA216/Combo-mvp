@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL, URL } from 'node:url';
 import process from 'node:process';
 import console from 'node:console';
 
-const {fetch, Request}=globalThis;
+const { fetch, Request } = globalThis;
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const database = new URL(process.env.DATABASE_URL || 'invalid:');
