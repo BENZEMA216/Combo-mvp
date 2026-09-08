@@ -6,6 +6,27 @@
 
 本文中的符号命名必须使用“稳定 ID · 语义名称”双命名。面向人的页面、文档、PR 和验收报告不得只展示裸 ID；语义发生变化时应新增 ID，而不是保留旧 ID 改写含义。
 
+## 当前增量：`J-012` · 可用上下文轻量创作
+
+用户于 2026-09-07 明确确认取消完整快照和 Desktop 来源证明前置；该决定已写入 `PROJECT.md`。
+首版由当前 Codex 根据其可用上下文整理结构化方法，Combo 接收 `combo.agent-context-request/1`，
+生成独立的 `combo.agent-context-draft/1` 并确定性编译为既有 `combo.agent-package/1`。
+新来源固定为 `codex_available_context`，验证状态固定 `not_verified`，覆盖固定 `partial_or_unknown`。
+这不是 V2 attested Draft，也没有伪造 snapshot、来源签名或完整历史声明。
+
+`CAP-013` · 可用上下文内容编译由 `MOD-PACKAGE` · Package 核心负责。当前纯编译器与独立 Node 文件入口
+只消费有界整理结果，返回可审阅 Draft、AGENT、Skill、规范清单和 exact digest；不读取任何来源文件、
+不调用模型、不开 Session、不发布、不上传。使用者必须审阅整理结果，敏感格式检查不等同于完整脱敏证明。
+Plugin 负责把一句话触发、结果卡片与当前 Codex 任务连起来；真实推理结果和主站上传仍须分别验证。
+
+验收分开记录：`ACC-CONTRACT-012A` · 轻量内容与编译合同覆盖严格输入、敏感内容、字节与摘要，
+`ACC-UAT-012B` · 一句话审阅体验覆盖真实 Plugin 操作，`ACC-E2E-012C` · 当前 Codex 使用已编译能力
+覆盖真实推理。编译返回 `runtime.status=not_run`，不得据此把后两项标记通过。
+
+下文 `J-011` · 当前对话生成 Draft 保留为历史严格 Host 路线及其独立协议约束，不再是轻量首版的前置。
+其机器合同和五层验收继续保持原有 `BLOCKED`、`NOT_IMPLEMENTED`、`NOT_RUN`；新入口不得提高其 PASS。
+保留这条路线不代表当前 Codex 在产品能力上无法提取，只说明仓库的严格 Host 适配器尚未接通。
+
 ## 一、产品到工程的追踪模型
 
 `PROJECT.md` 已确认目标、体验和唯一产物。下面的工程拆解用于指导开发与验证，不代表用户已经确认具体实现方式。
@@ -57,8 +78,8 @@ Agent Package Release
 | `J-050` · 持续使用            | 使用者在同一个 Agent 对话中持续使用已获取能力完成工作                                    | Agent Session                      | `CAP-070` · Package 推理运行                                                                     | `MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                                                                                | `ACC-E2E-050` · 同线程两轮推理：同一 Package 与同一 Codex 线程连续完成两轮真实任务                                             |
 | `J-055` · 余额不足后继续使用  | 使用者在收费调用被余额拦住后，通过 Combo 托管支付完成入账，并继续原业务请求              | Agent Session                      | `CAP-075` · 平台托管支付                                                                         | `MOD-PAYMENTS` · 支付中台、`MOD-CODEX-HOST` · 原生 Codex Agent 运行、`MOD-SHARED` · 共享基础设施                                                                      | `ACC-CONTRACT-055A`、`ACC-SEC-055B`、`ACC-RECOVERY-055C`、`ACC-HOST-055D`、`ACC-UAT-055E` · 支付接入五层验收                   |
 
-当前 Creator Golden Path 只以 `J-011` 作为独立最小里程碑。`J-010` 中显式 Project 与工作旅程来源继续保留，但状态为
-`DEFERRED`，不能阻塞 `J-011`，也不能用其测试结果替代 `J-011`。
+当前 Creator Golden Path 以 `J-012` · 可用上下文轻量创作为独立最小里程碑。`J-011` 保留严格 Host 验证路线；
+`J-010` 中显式 Project 与工作旅程来源继续保留为 `DEFERRED`，它们不能阻塞或冒充轻量里程碑的验收。
 
 `CAP-075` · 平台托管支付与 `CAP-080` · 安装与会话恢复都属于 `P5` · 平台化与可靠性，用于强化长期使用，不是最小产品闭环成立的前置条件。
 
@@ -202,7 +223,7 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 
 完成标准：用户 B 通过链接、用户 C 通过能力获取指令，都能加载用户 A 发布的同一 Package digest，并分别连续完成两轮真实任务。
 
-### `P2` · 创作者最小闭环
+### `P2` · 创作者最小闭环的历史严格 Host 路线
 
 用户结果：创作者先从当前 Codex Desktop 对话直接得到可审阅的 Agent Package Draft。
 
@@ -294,7 +315,7 @@ Draft。显式 Project、工作旅程、Package 编译、正式重载和真实�
 - `ACC-RECOVERY-*` · 故障恢复验收：中断、重试与恢复。
 - `ACC-UAT-*` · 真实用户体验验收：真实用户完成目标体验。
 
-### 当前优先验收：`J-011` · 当前对话生成 Draft
+### 独立严格 Host 验收：`J-011` · 当前对话生成 Draft
 
 新流程以 `apps/creator-worker/creator-conversation-acceptance.v1.json` 为机器可读状态，并由
 `apps/creator-worker/CREATOR_CONVERSATION_ACCEPTANCE.md` 规定真实证据。五层门禁必须独立报告：
