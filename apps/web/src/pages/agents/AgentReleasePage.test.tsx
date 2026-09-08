@@ -75,9 +75,11 @@ describe('Public Agent release', () => {
     await screen.findByRole('heading', { name: 'shared-agent' });
     expect(copy).not.toHaveBeenCalled();
     expect(createUrl).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: '复制获取提示词' }));
+    await user.click(screen.getByRole('button', { name: '在 Codex 中使用 · 复制指令' }));
     expect(copy).toHaveBeenCalledWith(view.acquirePrompt);
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/复制指令不会自动打开或操作 Codex/u)).toBeInTheDocument();
+    expect(screen.getByText(/当前支持轻量文本方法/u)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '下载包 JSON' }));
     await waitFor(() => expect(click).toHaveBeenCalledOnce());
     expect(fetcher.mock.calls[1]?.[0]).toBe(

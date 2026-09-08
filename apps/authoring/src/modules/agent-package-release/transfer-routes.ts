@@ -20,6 +20,7 @@ import {
 } from './transfer-contract.js';
 import { AgentTransferService } from './transfer-service.js';
 import { AgentPublicationService } from './publication-service.js';
+import { agentReceiverInstructions, getAgentReceiverArtifact } from './receiver-handoff.js';
 
 const objectDeadlines = new WeakMap<FastifyRequest, AbortSignal>();
 function services(req: FastifyRequest) {
@@ -221,6 +222,50 @@ export const AGENT_TRANSFER_ENDPOINTS: EndpointDecl[] = [
       },
     }),
   ),
+  {
+    method: 'GET',
+    url: '/agent-package-publications/:releaseId/codex-installation',
+    onRequest: base,
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    handler: (req, reply) =>
+      invoke(req, reply, async () => {
+        const releaseId = CreatorAgentPackageReleaseIdSchema.safeParse(
+          (req.params as { releaseId?: unknown }).releaseId,
+        );
+        if (!releaseId.success) throw new TransferFailure('not_found');
+        const publication = await services(req).publication.read(releaseId.data);
+        if (publication.release.releaseId !== releaseId.data)
+          throw new TransferFailure('unavailable');
+        const origin = canonicalBrowserOrigins(req.server.infra.env)[0];
+        if (!origin) throw new TransferFailure('unavailable');
+        return agentReceiverInstructions(publication, origin, await getAgentReceiverArtifact());
+      }),
+  },
+  {
+    method: 'GET',
+    url: '/agent-package-receivers/v1/:artifactFile',
+    onRequest: base,
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      try {
+        const { artifactFile } = req.params as { artifactFile?: unknown };
+        if (typeof artifactFile !== 'string' || !/^[0-9a-f]{64}\.mjs$/u.test(artifactFile))
+          throw new TransferFailure('not_found');
+        const artifact = await getAgentReceiverArtifact();
+        if (artifact.filename !== artifactFile) throw new TransferFailure('not_found');
+        return reply
+          .header(
+            'content-disposition',
+            `attachment; filename="combo-agent-receiver-${artifactFile}"`,
+          )
+          .header('x-content-type-options', 'nosniff')
+          .type('text/javascript; charset=utf-8')
+          .send(artifact.bytes);
+      } catch (error) {
+        return fail(req, reply, error);
+      }
+    },
+  },
 ];
 export async function registerAgentTransferRoutes(app: FastifyInstance) {
   if (app.infra.env.COMBO_ENVIRONMENT !== 'test') return;

@@ -24,6 +24,9 @@
 - `agent-transfer-fixture.ts` 提供合成轻量上传、回执与公开 Package，并在真实 PG 写入前校验临时实例的 server data directory。
 - `agent-transfer.test.ts` 验证 Test-only 注册、元数据严格模式、无凭据回执、Desktop/Cookie/Origin 隔离、解析前鉴权、
   413/415/429 安全信封、只读 GET、匿名下载和 canonical 文件的完整性；默认没有真实数据库或对象存储。
+  同时验证匿名 Codex 接收说明、固定摘要安装器字节下载、过时地址拒绝、撤销与错误脱敏，以及这些 GET 不执行
+  安装器、不解析会话、不上传或发布；另用真实 Worker 构建资产复验出口、字节摘要与 HTTP 回传，不把假数据库、
+  假公开记录或构建资产验证当作真实接收者验收。
 - `agent-transfer.pg.test.ts` 只在 `AGENT_TRANSFER_PG_TEST=1` 开启并确认专用 PostgreSQL16 实例后追加合成行，使用
   `combo_api` 最小角色与单连接池验证真实 HTTP、账户抢占、精确上传、公开发布、幂等、过期、撤销与事务回滚。
   独立四连接池用例先持有目标行，并经 `pg_stat_activity` 确认两个不同后端真实等待锁，再释放并断言审批唯一归属、
