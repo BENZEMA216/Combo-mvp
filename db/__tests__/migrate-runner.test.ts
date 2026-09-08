@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0020_private_agent_drafts.sql');
+    expect(plan.head).toBe('0021_agent_package_publication.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -38,6 +38,7 @@ describe('migration runner contract', () => {
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
       '0020_private_agent_drafts.sql',
+      '0021_agent_package_publication.sql',
     ]);
   });
 
@@ -53,6 +54,7 @@ describe('migration runner contract', () => {
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
       '0020_private_agent_drafts.sql',
+      '0021_agent_package_publication.sql',
     ]);
   });
 
@@ -67,6 +69,7 @@ describe('migration runner contract', () => {
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
       '0020_private_agent_drafts.sql',
+      '0021_agent_package_publication.sql',
     ]);
   });
 
@@ -80,13 +83,22 @@ describe('migration runner contract', () => {
     expect(plan.pending).toEqual([
       '0019_pending_usage_recovery.sql',
       '0020_private_agent_drafts.sql',
+      '0021_agent_package_publication.sql',
     ]);
   });
 
-  it('plans only private drafts 0020 after recovery 0019', () => {
+  it('plans private drafts and publication after recovery 0019', () => {
     const applied = migrations.slice(0, migrations.indexOf('0019_pending_usage_recovery.sql') + 1);
     expect(planMigrations(migrations, applied, migrationHead(migrations)).pending).toEqual([
       '0020_private_agent_drafts.sql',
+      '0021_agent_package_publication.sql',
+    ]);
+  });
+
+  it('plans only publication 0021 after private drafts 0020', () => {
+    const applied = migrations.slice(0, migrations.indexOf('0020_private_agent_drafts.sql') + 1);
+    expect(planMigrations(migrations, applied, migrationHead(migrations)).pending).toEqual([
+      '0021_agent_package_publication.sql',
     ]);
   });
 
@@ -119,7 +131,7 @@ describe('migration runner contract', () => {
 
   it('rejects a release whose expected migration head differs from source', () => {
     expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
-      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0020_private_agent_drafts\.sql/,
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0021_agent_package_publication\.sql/,
     );
   });
 

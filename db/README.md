@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前源码迁移链从 `0000` 连续到 `0020`（不表示任何环境已部署）。Test 常驻数据库已经记录 `0012` 至 `0016`，因此这五个文件按原文件名和精确字节恢复为不可变兼容前缀；canonical Agent Package Registry 只由后置的 `0017` 定义，受控 Test 的知识 Agent Session 与用量收据由 `0018` 追加，服务端待恢复用量由 `0019` 追加，私有编译快照元数据由 `0020` 追加。
+这个目录是数据库结构的唯一真源。当前源码迁移链从 `0000` 连续到 `0021`（不表示任何环境已部署）。Test 常驻数据库已经记录 `0012` 至 `0016`，因此这五个文件按原文件名和精确字节恢复为不可变兼容前缀；canonical Agent Package Registry 由后置的 `0017` 定义，受控 Test 的知识 Agent Session 与用量收据由 `0018` 追加，服务端待恢复用量由 `0019` 追加，私有编译快照元数据由 `0020` 追加，精确发布者声明、公开 Release 范围和浏览器上传授权状态由 `0021` 追加。
 
 ## 迁移文件
 
@@ -23,7 +23,7 @@
 
 ## V2 独立验证链
 
-`combo-v2` 不读取正式链的 `0012` 至 `0020`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0017_v2_payment_channel.sql`。`0016` 追加收费调用、支付请求、请求编号别名与原调用资金预留，`0017` 增加渠道订单和低敏事件。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；正式源码头为 `0020`，各环境实际头须独立核验。
+`combo-v2` 不读取正式链的 `0012` 至 `0021`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0017_v2_payment_channel.sql`。`0016` 追加收费调用、支付请求、请求编号别名与原调用资金预留，`0017` 增加渠道订单和低敏事件。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；正式源码头为 `0021`，各环境实际头须独立核验。
 
 V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenges` 与 `v2_sessions`，和创作者域的 `auth_` 表互不引用。V2 计费域使用 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events`；流水和计量事件只允许追加。
 
@@ -37,7 +37,9 @@ V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenge
 
 Authoring 创建首个或替代充值订单时，必须在同一个数据库事务中先取得和 Runtime 完全相同的 owner+usage advisory lock：`pg_advisory_xact_lock(hashtextextended(owner_user_id::text || ':' || usage_id::text, 0))`；随后只选择安全列并 `FOR UPDATE` 锁定待恢复行，再以 owner、原 `usageId`、旧 active intent、`active` 状态和未过期条件 CAS `active_recharge_intent_id`，CAS 成功后才插入携带相同 `recovery_usage_id` 的订单。订单 INSERT trigger 中的普通 `SELECT` 只是静态防误用，不能替代这套跨事务并发锁合同。这个关系只有订单指向待恢复用量的单向外键；待恢复行不反向引用订单，Runtime 也没有充值订单权限，因此没有新增 Runtime→充值订单的反向锁边。
 
-当前 Registry 是单一可信、固定 controlled-Test publisher 的 first-writer 模型：Package digest 证明内容身份，不证明发布者身份或授权；publisher 只能从不可变 Release 关系推导，Session/receipt 不接受调用方独立声明 publisher。Runtime 与 consumers 对 Registry 只有解析所需的只读权限，不能注册 Package 或 Release；多 publisher 授权不在本迁移范围。
+`0017` 的 controlled-Test Registry 保持 first-writer owner 约束。`0021` 保留 Package 的历史 owner 作为首次提交者记录，但为公开发布新增独立 publisher claim：每个创作者必须有自己已验证保存的 exact Draft 五字段（owner、draftId、revision、fingerprint、packageDigest），才能为同一内容摘要创建自己的 `public_link` Release。摘要只证明内容身份，不证明发布权；public Release 的 owner 来自不可变 claim，旧 Session/receipt 仍只接受 controlled-Test，不激活通用 Runtime 或计费。Runtime 与 consumers 没有新增表权限。
+
+浏览器 transfer 仅保存摘要、名称、随机 secret 的 SHA-256、核对码和状态，不保存 Cookie 或原始对话。INSERT 由数据库时钟固定十分钟期限，approve/upload 使用取得行锁后的实时时钟检查到期；identity 和 owner 不可改绑，状态只允许 pending→approved→uploaded→published 或批准前/上传前拒绝。uploaded 后的单独发布不受已失效上传 secret 的 TTL 限制，但必须有浏览器会话的独立授权；数据库只校验 exact public Release 血缘，不证明用户按过确认按钮。公开撤销通过追加 exact Release/owner/digest 记录表达，不删除 Package 或历史 Release。
 
 终态知识 charge 与 Turn、权威 response Message、receipt 必须在同一事务闭合：`answered` 对应 completed Turn/charge，`insufficient_evidence` 对应 completed Turn + released charge，两者都必须绑定同 Session/Turn 唯一的 completed assistant Message；`failed`/`interrupted` 对应同名 Turn + released charge且不绑定 response，失败与中断结算恒为零；reserved charge 没有 completed assistant response、outcome 或 receipt。insufficient receipt 不带 citations，interrupted 的 validator code 只能是 `not_run`；failed 可记录平台拒绝、不可用或协议错误但不能产生扣费。receipt 还固定 `execution_environment=test`、`runtime_release_id=release-<runtime_source_sha>` 与非全零 40 位 source SHA，不额外声明没有共享 canonical serializer 支持的“密码学 receipt digest”。
 
@@ -73,12 +75,12 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0020_private_agent_drafts.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0021_agent_package_publication.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
 ```
 
-`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0020`、历史 `0018`→`0019` 升级且历史订单保留 `NULL`、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。私有 Draft 的真实 HTTP、并发和权限测试位于 authoring；它使用临时数据库及内存对象存储，不证明线上上传或 Desktop 推理。
+`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0021`、历史 `0018`→`0019` 升级且历史订单保留 `NULL`、`0020`→`0021` 保留已有 Package/Release/Draft、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。私有 Draft 的真实 HTTP、并发和权限测试位于 authoring；它使用临时数据库及内存对象存储，不证明线上上传或 Desktop 推理。
 
-V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0017_v2_payment_channel.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0020` 未进入 `combo_v2`。
+V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0017_v2_payment_channel.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0021` 未进入 `combo_v2`。

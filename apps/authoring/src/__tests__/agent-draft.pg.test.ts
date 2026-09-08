@@ -48,7 +48,7 @@ pgDescribe('private Agent Draft HTTP and PostgreSQL (object storage fake)', () =
     const head = await admin.query(
       'SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1',
     );
-    expect(head.rows[0]?.filename).toBe('0020_private_agent_drafts.sql');
+    expect(head.rows[0]?.filename).toBe('0021_agent_package_publication.sql');
     for (const [index, owner] of owners.entries()) {
       const account = `creator-${randomBytes(8)
         .toString('hex')
@@ -253,7 +253,7 @@ pgDescribe('private Agent Draft HTTP and PostgreSQL (object storage fake)', () =
     for (const sql of [
       'UPDATE agent_draft_revisions SET view_id=view_id WHERE false',
       'DELETE FROM agent_draft_revisions WHERE false',
-      'TRUNCATE agent_draft_revisions',
+      'TRUNCATE agent_draft_revisions CASCADE',
     ]) {
       await expect(admin.query(sql)).rejects.toMatchObject({ code: '55000' });
       await expect(api.query(sql)).rejects.toMatchObject({ code: '42501' });

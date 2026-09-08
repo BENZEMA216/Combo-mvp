@@ -2,7 +2,9 @@
 
 本目录按文件名字典序保存 PostgreSQL 迁移。已应用的迁移不可修改，新增结构必须通过新的迁移文件演进。
 
-当前源码头为 `0020_private_agent_drafts.sql`：新增私有 `agent_draft_revisions` 元数据索引，正文仍在私有对象存储。owner/request 幂等、连续 revision 与 exact parent 外键共同约束版本；历史只追加，禁止 UPDATE/DELETE/TRUNCATE。只向 API 授予 SELECT/INSERT，不授予 Runtime、worker 或 PUBLIC 权限。私有保存不创建 canonical Registry marker 或公共 Release，不复用旧 Agent 表；上传的来源声明仍未经过 Desktop 核验。
+当前源码头为 `0021_agent_package_publication.sql`：保留旧 Package/controlled-Test Release 行和原 owner 约束，增加每个发布者独立的 exact 私有 Draft claim、`public_link` Release、追加式撤销和有界浏览器上传授权状态。数据库只保存 upload secret 摘要；十分钟有效期及状态时间由数据库实时钟生成，API 不能改时间、secret 或 intent 身份。公开状态必须绑定同一 exact Draft 的公开 Release，不能把受控 Test 或同 digest 的另一 Draft 冒充已发布。新增表只给 API 必需权限，worker、Runtime、PUBLIC 零权限。这是存储先决层，不表示浏览器、Plugin 或环境部署已完成。
+
+`0020_private_agent_drafts.sql` 新增私有 `agent_draft_revisions` 元数据索引，正文仍在私有对象存储。owner/request 幂等、连续 revision 与 exact parent 外键共同约束版本；历史只追加，禁止 UPDATE/DELETE/TRUNCATE。只向 API 授予 SELECT/INSERT，不授予 Runtime、worker 或 PUBLIC 权限。私有保存不创建 canonical Registry marker 或公共 Release，不复用旧 Agent 表；上传的来源声明仍未经过 Desktop 核验。
 
 `0000_baseline_schema.sql` 建立当前基线。`0001_expired_upload_reconciliation.sql` 增加上传超时查询索引，`0002_drop_stream_events.sql` 拒绝旧 PostgreSQL 事件表，`0003_turns.sql` 增加自治轮次与轮内消息顺序。`0004_studio_sessions.sql`、`0005_capability_current_ui.sql` 和 `0006_one_running_turn_per_session.sql` 保存 Goal B 已发布的 Studio、current UI 与 Turn fencing 结构。
 
@@ -20,6 +22,6 @@
 
 知识 usage charge 重复相同冻结绑定，并保存规范化 billing/validator policy 与 terminal outcome。终态 charge 在提交时必须和对应 Turn、权威 response Message 及唯一 append-only `agent_usage_receipts` 同步：answered 才能 completed；insufficient evidence、failed 与 interrupted 都必须 released，failed/interrupted 结算为零；reserved 没有 completed assistant response、outcome 或 receipt。answered/insufficient 必须通过 exact scope FK 绑定同 Session/Turn 唯一的 completed assistant Message，failed/interrupted 不绑定 response；insufficient 不带 citations，interrupted validator 只能是 `not_run`。receipt 固定 Test execution environment、与非全零 source SHA 严格相等的 Runtime Release ID，以及最多 32 个唯一、canonical 排序的 Knowledge Bundle chunk IDs。chunk ID 依赖 frozen Package + fixed resource 才间接绑定内容，不能作为独立跨 Package selector。response digest 由 Runtime 对 exact answer UTF-8 文本计算并由读取方复验；数据库不擅自哈希现有 JSON blocks。本层不定义尚无共享 canonical serializer 的 receipt digest。
 
-Registry 当前仅支持单一可信、固定 controlled-Test publisher 的 first-writer 模型；digest 不是 publisher 身份或授权证明。Session/receipt 不接收独立 publisher 字段，Runtime/consumers 对 Registry 保持只读，未来多 publisher 必须先建立显式 owner claim/authorization 合同。
+`0017` 的 controlled-Test publisher 仍保留 first-writer owner 约束；`0021` 通过独立的 exact 私有 Draft claim 增加多 publisher 公开发布关系。digest 不是 publisher 身份或授权证明。Session/receipt 继续只接受旧受控范围、不接收独立 publisher 字段，Runtime/consumers 保持原只读权限，没有启用通用公开 Agent 推理。
 
 `combo-v2` 的独立验证迁移不属于本目录，保存在 `db/v2-migrations`。正式 runner 不读取该目录；V2 runner 只复用本目录 `0000` 至 `0011` 的公共前缀。
