@@ -2,7 +2,7 @@
 
 本目录只服务 `combo-v2` 独立验证数据库，不属于 Test、Preview、Production 使用的正式迁移链。当前迁移头为 `0018_v2_call_attempts.sql`。
 
-V2 的有效迁移序列由 `db/migrations/0000` 至 `0011` 的稳定公共前缀，加上本目录的 `0012` 至 `0017` 组成。`migrate-v2.ts` 负责组装并校验这条序列；正式 `migrate.ts` 永远只读取 `db/migrations`。`0015` 保留既有金额与业务事实，只在同一事务内把旧充值幂等键迁入独立域，并为计量事件补充幂等键、exact hold scope、安全整数边界、rolling-writer 兼容触发器和并发顺序保护。
+V2 的有效迁移序列由 `db/migrations/0000` 至 `0011` 的稳定公共前缀，加上本目录的 `0012` 至 `0018` 组成。`migrate-v2.ts` 负责组装并校验这条序列；正式 `migrate.ts` 永远只读取 `db/migrations`。`0015` 保留既有金额与业务事实，只在同一事务内把旧充值幂等键迁入独立域，并为计量事件补充幂等键、exact hold scope、安全整数边界、rolling-writer 兼容触发器和并发顺序保护。
 
 `0016_v2_payment_admission.sql` 新增收费调用、支付请求、Host 请求编号和支付资金预留。调用身份与金额不能修改；相同调用只能关联一份支付；同一渠道交易不能用于两份支付。延迟约束要求 completed 与唯一充值流水、资金预留在同一事务内闭合。应用只获得必要列权限，不能删除支付事实。
 
