@@ -201,6 +201,157 @@ suite('payment admission PostgreSQL transactions', () => {
     expect(count.rows[0]!.count).toBe('0');
   });
 
+  it('retries an explicitly failed paid call with the original business identity and one successful debit', async () => {
+    const call = await input();
+    const required = await payments.admitCall(call);
+    if (required.kind !== 'payment_required') throw new Error('payment missing');
+    await payments.createPayment({
+      userId: call.userId,
+      paymentToken: required.requirement.paymentToken,
+      requestKey: 'retry-test-key',
+    });
+    await payments.confirmPayment({
+      paymentRequestId: required.requirement.id,
+      channelTransactionId: randomUUID(),
+      amountCents: 300,
+    });
+    const first = await payments.admitCall(call);
+    if (first.kind !== 'admitted') throw new Error('admission missing');
+    expect(
+      await payments.finishCall!({
+        holdId: first.holdId,
+        outcome: 'failed_no_charge',
+        failureReason: 'invalid_response',
+      }),
+    ).toBe('conflict');
+    await billing.settleHold({ holdId: first.holdId, actualAmount: 0 });
+    expect(await payments.admitCall(call)).toMatchObject({ replayed: true });
+    expect(
+      await payments.finishCall!({
+        holdId: first.holdId,
+        outcome: 'failed_no_charge',
+        failureReason: 'invalid_response',
+      }),
+    ).toBe('recorded');
+    const next = await Promise.all([payments.admitCall(call), payments.admitCall(call)]);
+    expect(next.filter((r) => r.kind === 'admitted' && !r.replayed)).toHaveLength(1);
+    const retry = next.find((r) => r.kind === 'admitted' && !r.replayed)!;
+    if (retry.kind !== 'admitted') throw new Error('retry missing');
+    expect(retry.holdId).not.toBe(first.holdId);
+    expect(retry.executionId).not.toBe(call.callId);
+    await billing.settleHold({ holdId: retry.holdId, actualAmount: 200 });
+    expect(await payments.finishCall!({ holdId: retry.holdId, outcome: 'succeeded' })).toBe(
+      'recorded',
+    );
+    expect(await payments.admitCall(call)).toMatchObject({ holdId: retry.holdId, replayed: true });
+    expect(
+      await payments.finishCall!({
+        holdId: first.holdId,
+        outcome: 'failed_no_charge',
+        failureReason: 'invalid_response',
+      }),
+    ).toBe('recorded');
+    expect(await payments.admitCall(call)).toMatchObject({ holdId: retry.holdId, replayed: true });
+    expect(await billing.readWallet(call.userId)).toMatchObject({
+      principalBalance: 100,
+      heldAmount: 0,
+    });
+    const facts = await admin.query(
+      `SELECT (SELECT count(*) FROM v2_payment_requests WHERE user_id=$1)::int AS payments,
+      (SELECT count(*) FROM v2_ledger WHERE user_id=$1 AND kind='recharge')::int AS credits,
+      (SELECT count(*) FROM v2_ledger WHERE user_id=$1 AND kind='consume')::int AS debits`,
+      [call.userId],
+    );
+    expect(facts.rows[0]).toEqual({ payments: 1, credits: 1, debits: 1 });
+    const root = await admin.query(
+      'SELECT operation_id,call_id,hold_id FROM v2_billable_calls WHERE user_id=$1',
+      [call.userId],
+    );
+    expect(root.rows[0]).toMatchObject({
+      operation_id: call.operationId,
+      call_id: call.callId,
+      hold_id: first.holdId,
+    });
+    await expect(
+      pool.query('DELETE FROM v2_call_attempts WHERE hold_id=$1', [retry.holdId]),
+    ).rejects.toThrow();
+    await expect(
+      pool.query(
+        "UPDATE v2_call_attempts SET state='failed_no_charge',failure_reason='invalid_response' WHERE hold_id=$1",
+        [retry.holdId],
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('does not equate successful zero-cost, unknown, or historical zero settlements with retry permission', async () => {
+    for (const outcome of ['succeeded', 'unknown'] as const) {
+      const call = await input();
+      await billing.adminRecharge({
+        userId: call.userId,
+        amount: 300,
+        idempotencyKey: randomUUID(),
+      });
+      const first = await payments.admitCall(call);
+      if (first.kind !== 'admitted') throw new Error('missing');
+      await billing.settleHold({ holdId: first.holdId, actualAmount: 0 });
+      expect(await payments.finishCall!({ holdId: first.holdId, outcome })).toBe('recorded');
+      expect(
+        await payments.finishCall!({
+          holdId: first.holdId,
+          outcome: 'failed_no_charge',
+          failureReason: 'invalid_response',
+        }),
+      ).toBe('conflict');
+      expect(await payments.admitCall(call)).toMatchObject({ replayed: true });
+    }
+    const call = await input();
+    await billing.adminRecharge({ userId: call.userId, amount: 300, idempotencyKey: randomUUID() });
+    const first = await payments.admitCall(call);
+    if (first.kind !== 'admitted') throw new Error('missing');
+    await billing.settleHold({ holdId: first.holdId, actualAmount: 0 });
+    expect(await payments.admitCall(call)).toMatchObject({ replayed: true });
+    expect(await payments.admitCall({ ...call, requestFingerprint: 'b'.repeat(64) })).toEqual({
+      kind: 'conflict',
+    });
+  });
+
+  it('requires an explicit audited failure receipt to recover a pre-upgrade zero settlement', async () => {
+    const call = await input();
+    await billing.adminRecharge({ userId: call.userId, amount: 300, idempotencyKey: randomUUID() });
+    const held = await billing.createHold({
+      userId: call.userId,
+      agentId: call.agentId,
+      turnId: call.callId,
+      estimatedAmount: 300,
+      overdraftHardLimitCents: 500,
+    });
+    if (held.kind !== 'held') throw new Error('hold missing');
+    await admin.query(
+      `INSERT INTO v2_billable_calls(user_id,agent_id,operation_id,call_id,request_fingerprint,pricing_policy_id,estimated_amount,hold_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        call.userId,
+        call.agentId,
+        call.operationId,
+        call.callId,
+        call.requestFingerprint,
+        call.pricingPolicyId,
+        call.estimatedAmount,
+        held.hold.id,
+      ],
+    );
+    await billing.settleHold({ holdId: held.hold.id, actualAmount: 0 });
+    expect(await payments.admitCall(call)).toMatchObject({ replayed: true });
+    expect(
+      await payments.finishCall!({
+        holdId: held.hold.id,
+        outcome: 'failed_no_charge',
+        failureReason: 'invalid_response',
+      }),
+    ).toBe('recorded');
+    expect(await payments.admitCall(call)).toMatchObject({ replayed: false });
+  });
+
   it('accounts for trusted late success and rejects a channel transaction reused for another payment', async () => {
     const call = await input();
     const callRef = randomUUID();
