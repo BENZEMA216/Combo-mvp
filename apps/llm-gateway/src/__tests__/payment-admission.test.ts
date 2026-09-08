@@ -387,6 +387,7 @@ describe('explicit call-attempt recovery', () => {
     try {
       const first = await request(app, body);
       expect(first.statusCode).toBe(502);
+      expect(first.headers['x-combo-call-outcome']).toBe('failed_no_charge');
       expect(first.json().error.userMessage).toContain('未扣费');
       expect((await request(app, body)).statusCode).toBe(200);
       expect((await request(app, body)).statusCode).toBe(409);
@@ -441,6 +442,7 @@ describe('explicit call-attempt recovery', () => {
       try {
         const result = await request(app, body);
         expect(result.statusCode).toBe(503);
+        expect(result.headers['x-combo-call-outcome']).toBeUndefined();
         expect(result.json().error.userMessage).not.toContain('未扣费');
         expect(finish.mock.calls[0]?.[0].outcome).toBe(
           kind === 'network' ? 'unknown' : 'failed_no_charge',
