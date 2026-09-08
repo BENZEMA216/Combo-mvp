@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { renderPage } from '../../test/renderWithProviders.js';
 import { AgentTransferPage } from './AgentTransferPage.js';
 import type { AgentTransferView, TransferPhase } from '../../api/agentPackages.js';
+vi.mock('../../shell/auth.js', () => ({ useAuth: () => ({ me: { id: 'synthetic-owner' } }) }));
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const RELEASE = `release.agent-package.${'a'.repeat(32)}`;
@@ -177,6 +178,27 @@ describe('Agent transfer explicit approval and publication', () => {
     expect(await screen.findByRole('heading', { name: '已按链接公开' })).toBeInTheDocument();
     expect(posts()).toHaveLength(1);
   });
+  it('rejects a published response for another exact pair without showing a success card or link', async () => {
+    const wrong = view('published').transfer;
+    wrong.saved = {
+      ...wrong.saved!,
+      draftFingerprint: `sha256:${'e'.repeat(64)}`,
+      packageDigest: `sha256:${'d'.repeat(64)}`,
+    };
+    wrong.release = { ...wrong.release!, packageDigest: `sha256:${'d'.repeat(64)}` };
+    fetcher
+      .mockResolvedValueOnce(response(view('uploaded')))
+      .mockResolvedValueOnce(response(wrong));
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    expect(await screen.findByText(/结果未知不代表失败/u)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '已按链接公开' })).toBeNull();
+    expect(screen.queryByRole('link', { name: shareUrl })).toBeNull();
+    expect(screen.getByText(DIGEST)).toBeInTheDocument();
+    expect(screen.queryByText(wrong.saved.packageDigest)).toBeNull();
+  });
   it('does not send publication when safe request storage is unavailable', async () => {
     fetcher.mockResolvedValue(response(view('uploaded')));
     vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {
@@ -189,6 +211,28 @@ describe('Agent transfer explicit approval and publication', () => {
     expect(await screen.findByText(/因此尚未发送/u)).toBeInTheDocument();
     expect(posts()).toHaveLength(0);
   });
+  it.each(['pending_approval', 'uploaded'] as const)(
+    'invalidates old confirmation when a refresh changes the immutable pair in %s',
+    async (phase) => {
+      const changed = view(phase);
+      changed.draftFingerprint = `sha256:${'e'.repeat(64)}`;
+      if (changed.transfer.saved)
+        changed.transfer.saved.draftFingerprint = changed.draftFingerprint;
+      fetcher.mockResolvedValueOnce(response(view(phase))).mockResolvedValueOnce(response(changed));
+      const user = userEvent.setup();
+      mount();
+      if (phase === 'uploaded') await user.click(await screen.findByRole('checkbox'));
+      else await user.type(await screen.findByLabelText('Codex 中的 8 位配对码'), 'AB12CD34');
+      const label = phase === 'uploaded' ? '确认公开发布' : '允许私有上传';
+      expect(screen.getByRole('button', { name: label })).toBeEnabled();
+      await user.click(screen.getByRole('button', { name: '刷新状态' }));
+      await screen.findByText(changed.draftFingerprint);
+      expect(screen.getByRole('button', { name: label })).toBeDisabled();
+      if (phase === 'uploaded') expect(screen.getByRole('checkbox')).not.toBeChecked();
+      else expect(screen.getByLabelText('Codex 中的 8 位配对码')).toHaveValue('');
+      expect(posts()).toHaveLength(0);
+    },
+  );
   it('deduplicates rapid clicks while publication is in flight', async () => {
     let finish: (value: Response) => void = () => {};
     fetcher.mockResolvedValueOnce(response(view('uploaded'))).mockImplementationOnce(

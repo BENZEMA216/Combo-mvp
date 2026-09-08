@@ -3,10 +3,12 @@
 ## 边界
 
 - `/agent-transfers/:transferId` 在原有 Cookie 登录守卫内；配对只授权精确摘要的私有上传，不授权公开发布。
+- 私有页面、查询缓存和确认状态绑定当前 `/me` 账号与 transfer ID。账号切换立即重新挂载并读取新账号权限；旧查询卸载后回收，旧 mutation 延迟返回不得回填内容或成功卡。
 - 上传完成后展示实际 AGENT.md、Skill、附属文件和 manifest 原文。独立勾选公开确认后才发送 publication；任何 GET、刷新、页面重载都不会自动批准或发布。
 - `/agents/:releaseId` 使用公开布局，不挂载 AuthProvider、不探测 `/me`；公开读取不携带 Cookie。展示仅代表 API 已验证并返回这个固定版本，不代表浏览器重算摘要、安装或试运行。
 - 所有原文以 React 文本展示，不渲染 HTML、不执行 Markdown 或包脚本。来源未核验、覆盖可能不完整和尚未试运行持续可见。
 - 发布请求编号在发送前写入 sessionStorage，绑定 transfer ID、draft fingerprint、package digest。只保存不透明编号和摘要，不保存上传 secret、配对码、包内容或会话。存储不可用时不发送。未知结果先刷新；同一标签页重载和显式重试复用原编号。
+- 发布响应必须是本次请求两个摘要对应的 published receipt；返回另一份 Draft 或 Package 时按结果未知拒绝，不把旧内容与新发布记录拼成成功卡。
 - 匿名、跨账号、撤销和损坏响应保持安全错误，不展示服务端原始错误。下载与复制只由显式点击触发，不读取其他任务或 Project。
 
 ## 文件

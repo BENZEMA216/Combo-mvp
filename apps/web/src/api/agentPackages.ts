@@ -274,7 +274,12 @@ export function approveAgentTransfer(
   return request(
     `/agent-package-transfers/${id}/approval`,
     true,
-    (value) => receipt(value, id),
+    (value) => {
+      const result = receipt(value, id);
+      if (result.phase !== (input.decision === 'approve' ? 'approved' : 'rejected'))
+        return invalid();
+      return result;
+    },
     undefined,
     input,
   );
@@ -292,7 +297,17 @@ export function publishAgentTransfer(
   return request(
     `/agent-package-transfers/${id}/publication`,
     true,
-    (value) => receipt(value, id),
+    (value) => {
+      const result = receipt(value, id);
+      if (
+        result.phase !== 'published' ||
+        result.saved?.draftFingerprint !== input.draftFingerprint ||
+        result.saved.packageDigest !== input.packageDigest ||
+        result.release?.packageDigest !== input.packageDigest
+      )
+        return invalid();
+      return result;
+    },
     undefined,
     input,
   );

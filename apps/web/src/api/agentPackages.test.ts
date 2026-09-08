@@ -53,6 +53,17 @@ const publicView = {
   shareUrl: `${window.location.origin}/agents/${RELEASE}`,
   acquirePrompt: '请核对后在当前任务中使用。',
 };
+const publishedReceipt = {
+  ...transfer,
+  phase: 'published',
+  saved: { draftId: 'draft-id', revision: 1, draftFingerprint: FINGERPRINT, packageDigest: DIGEST },
+  release: {
+    releaseId: RELEASE,
+    packageDigest: DIGEST,
+    shareUrl: publicView.shareUrl,
+    acquirePrompt: publicView.acquirePrompt,
+  },
+};
 const fetcher = vi.fn<typeof fetch>();
 function response(data: unknown, status = 200): Response {
   return new Response(JSON.stringify({ data, meta: { traceId: 'test-only' } }), { status });
@@ -132,10 +143,40 @@ describe('Agent Package HTTP boundary', () => {
       packageDigest: DIGEST,
       confirmPublic: true as const,
     };
+    fetcher.mockResolvedValueOnce(response(publishedReceipt));
     await publishAgentTransfer(ID, publish);
     expect(fetcher.mock.calls[1]?.[0]).toBe(`/api/v1/agent-package-transfers/${ID}/publication`);
     expect(fetcher.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(publish));
   });
+  it.each([
+    {
+      ...publishedReceipt,
+      saved: { ...publishedReceipt.saved, draftFingerprint: `sha256:${'e'.repeat(64)}` },
+    },
+    {
+      ...publishedReceipt,
+      saved: {
+        ...publishedReceipt.saved,
+        draftFingerprint: `sha256:${'e'.repeat(64)}`,
+        packageDigest: `sha256:${'d'.repeat(64)}`,
+      },
+      release: { ...publishedReceipt.release, packageDigest: `sha256:${'d'.repeat(64)}` },
+    },
+    { ...transfer, phase: 'approved' },
+  ])(
+    'refuses a mutation response that does not publish the exact submitted pair %#',
+    async (payload) => {
+      fetcher.mockResolvedValue(response(payload));
+      await expect(
+        publishAgentTransfer(ID, {
+          requestId: ID,
+          draftFingerprint: FINGERPRINT,
+          packageDigest: DIGEST,
+          confirmPublic: true,
+        }),
+      ).rejects.toMatchObject({ outcomeUncertain: true });
+    },
+  );
   it.each([404, 503])('does not reveal server error content for HTTP %s', async (status) => {
     fetcher.mockResolvedValue(response({ secret: 'sensitive-stack-raw' }, status));
     const error = await getAgentPublication(RELEASE).catch((value: unknown) => value);

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App.js';
 
@@ -10,15 +11,15 @@ const fetcher = vi.fn<typeof fetch>();
 function response(data: unknown, status = 200): Response {
   return new Response(JSON.stringify({ data, meta: { traceId: 'trace-agent-test' } }), { status });
 }
-function mount(path: string): void {
+function mount(path: string): QueryClient {
   window.history.replaceState({}, '', path);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}
-    >
+    <QueryClientProvider client={client}>
       <App />
     </QueryClientProvider>,
   );
+  return client;
 }
 beforeEach(() => {
   fetcher.mockReset();
@@ -104,5 +105,140 @@ describe('App Agent routes', () => {
       fetcher.mock.calls.some((call) => call[0] === `/api/v1/agent-package-transfers/${ID}`),
     ).toBe(true);
     expect(fetcher.mock.calls.every((call) => call[1]?.method !== 'POST')).toBe(true);
+  });
+  it('immediately hides the previous owner content and approval state on /me account switch', async () => {
+    const ownerA = ID;
+    const ownerB = '22222222-2222-4222-8222-222222222222';
+    let owner = ownerA;
+    let denyB: (value: Response) => void = () => {};
+    fetcher.mockImplementation(async (url) => {
+      if (String(url).endsWith('/me'))
+        return response({
+          id: owner,
+          account: owner === ownerA ? 'creator-abcdefgh' : 'creator-bcdefghi',
+          email: 'synthetic@example.test',
+          roles: ['creator'],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastLoginAt: null,
+        });
+      if (owner === ownerB)
+        return new Promise((resolve) => {
+          denyB = resolve;
+        });
+      return response({
+        name: 'owner-a-private-agent',
+        draftFingerprint: DIGEST,
+        packageDigest: DIGEST,
+        transfer: {
+          protocol: 'combo.agent-transfer/1',
+          transferId: ID,
+          phase: 'uploaded',
+          approvalUrl: `${window.location.origin}/agent-transfers/${ID}`,
+          verificationCode: 'AB12CD34',
+          expiresAt: '2030-09-08T08:00:00.000Z',
+          saved: {
+            draftId: 'draft-a',
+            revision: 1,
+            draftFingerprint: DIGEST,
+            packageDigest: DIGEST,
+          },
+        },
+        review: {
+          manifestText: JSON.stringify({ protocol: 'combo.agent-package/1' }),
+          packageDigest: DIGEST,
+          files: [
+            { path: 'AGENT.md', text: 'Owner A private method only' },
+            { path: 'skills/method/SKILL.md', text: '# Private Skill' },
+          ],
+        },
+      });
+    });
+    const user = userEvent.setup();
+    const client = mount(`/agent-transfers/${ID}`);
+    await user.click(await screen.findByRole('checkbox'));
+    expect(screen.getByRole('button', { name: '确认公开发布' })).toBeEnabled();
+    owner = ownerB;
+    await act(() => client.invalidateQueries({ queryKey: ['me'] }));
+    await waitFor(() => expect(screen.queryByText('Owner A private method only')).toBeNull());
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'owner-a-private-agent' })).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(['agent-transfer', ownerA, ID])).toBeUndefined(),
+    );
+    await act(async () => denyB(response({}, 404)));
+    expect(await screen.findByRole('alert')).toHaveTextContent('不属于当前账号');
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+  });
+  it('does not refill old private cache when a publication response arrives after account switch', async () => {
+    const ownerA = ID;
+    const ownerB = '22222222-2222-4222-8222-222222222222';
+    let owner = ownerA;
+    let finishPublication: (value: Response) => void = () => {};
+    const transfer = {
+      protocol: 'combo.agent-transfer/1',
+      transferId: ID,
+      phase: 'uploaded',
+      approvalUrl: `${window.location.origin}/agent-transfers/${ID}`,
+      verificationCode: 'AB12CD34',
+      expiresAt: '2030-09-08T08:00:00.000Z',
+      saved: { draftId: 'draft-a', revision: 1, draftFingerprint: DIGEST, packageDigest: DIGEST },
+    };
+    fetcher.mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/me'))
+        return response({
+          id: owner,
+          account: owner === ownerA ? 'creator-abcdefgh' : 'creator-bcdefghi',
+          email: 'synthetic@example.test',
+          roles: ['creator'],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastLoginAt: null,
+        });
+      if (init?.method === 'POST')
+        return new Promise((resolve) => {
+          finishPublication = resolve;
+        });
+      if (owner === ownerB) return response({}, 404);
+      return response({
+        name: 'owner-a-private-agent',
+        draftFingerprint: DIGEST,
+        packageDigest: DIGEST,
+        transfer,
+        review: {
+          manifestText: JSON.stringify({ protocol: 'combo.agent-package/1' }),
+          packageDigest: DIGEST,
+          files: [
+            { path: 'AGENT.md', text: 'Owner A private method only' },
+            { path: 'skills/method/SKILL.md', text: '# Private Skill' },
+          ],
+        },
+      });
+    });
+    const user = userEvent.setup();
+    const client = mount(`/agent-transfers/${ID}`);
+    await user.click(await screen.findByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    owner = ownerB;
+    await act(() => client.invalidateQueries({ queryKey: ['me'] }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('不属于当前账号');
+    await act(async () =>
+      finishPublication(
+        response({
+          ...transfer,
+          phase: 'published',
+          release: {
+            releaseId: RELEASE,
+            packageDigest: DIGEST,
+            shareUrl: `${window.location.origin}/agents/${RELEASE}`,
+            acquirePrompt: '请核对后使用。',
+          },
+        }),
+      ),
+    );
+    expect(screen.queryByText('Owner A private method only')).toBeNull();
+    expect(screen.queryByRole('heading', { name: '已按链接公开' })).toBeNull();
+    await waitFor(() =>
+      expect(client.getQueryData(['agent-transfer', ownerA, ID])).toBeUndefined(),
+    );
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../../api/agentPackages.js';
 import { CopyButton } from '../../components/CopyButton.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
+import { useAuth } from '../../shell/auth.js';
 import {
   AgentPackageContents,
   AgentPackageEvidence,
@@ -28,19 +29,34 @@ const PHASE_LABELS: Record<TransferPhase, string> = {
   rejected: '已拒绝此次上传',
 };
 
-function TransferContent({ transferId }: { transferId: string }): ReactElement {
+function TransferContent({
+  transferId,
+  ownerId,
+}: {
+  transferId: string;
+  ownerId: string;
+}): ReactElement {
   const client = useQueryClient();
-  const queryKey = ['agent-transfer', transferId];
+  const queryKey = useMemo(() => ['agent-transfer', ownerId, transferId], [ownerId, transferId]);
   const query = useQuery({
     queryKey,
     queryFn: ({ signal }) => getAgentTransfer(transferId, signal),
     retry: false,
     refetchOnWindowFocus: false,
+    // 最后一个订阅卸载即回收私有内容；已消费的 signal 同时取消旧账号的 GET。
+    gcTime: 0,
   });
-  const [code, setCode] = useState('');
-  const [confirmed, setConfirmed] = useState(false);
+  const [codeEntry, setCodeEntry] = useState<{ identity: string; text: string } | null>(null);
+  const [confirmedIdentity, setConfirmedIdentity] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const activeRef = useRef(false);
+  useEffect(() => {
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+    };
+  }, []);
   const [actionError, setActionError] = useState<unknown>(null);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -51,6 +67,17 @@ function TransferContent({ transferId }: { transferId: string }): ReactElement {
     query.data ? `${query.data.name} · 上传与发布 · Combo` : 'Agent 上传与发布 · Combo',
   );
   const view = query.data;
+  const identity = view
+    ? JSON.stringify([
+        view.draftFingerprint,
+        view.packageDigest,
+        view.transfer.verificationCode,
+        view.transfer.expiresAt,
+      ])
+    : '';
+  // 确认绑定到屏幕上那一份内容；刷新若返回不同身份，不继承旧输入或勾选。
+  const code = codeEntry?.identity === identity ? codeEntry.text : '';
+  const confirmed = identity !== '' && confirmedIdentity === identity;
   const phase = view?.transfer.phase;
   const expired = view ? now >= Date.parse(view.transfer.expiresAt) : false;
 
@@ -90,15 +117,17 @@ function TransferContent({ transferId }: { transferId: string }): ReactElement {
         if (transfer.phase !== (decision === 'approve' ? 'approved' : 'rejected'))
           throw new AgentPackageRequestError('确认结果尚未明确，请刷新状态。', true);
       }
+      if (!activeRef.current) return;
       await client.cancelQueries({ queryKey });
+      if (!activeRef.current) return;
       client.setQueryData(queryKey, { ...view, transfer });
-      setCode('');
-      setConfirmed(false);
+      setCodeEntry(null);
+      setConfirmedIdentity(null);
     } catch (error) {
-      setActionError(error);
+      if (activeRef.current) setActionError(error);
     } finally {
       busyRef.current = false;
-      setBusy(false);
+      if (activeRef.current) setBusy(false);
     }
   }
 
@@ -168,12 +197,13 @@ function TransferContent({ transferId }: { transferId: string }): ReactElement {
               id="agent-verification-code"
               value={code}
               onChange={(event) =>
-                setCode(
-                  event.target.value
+                setCodeEntry({
+                  identity,
+                  text: event.target.value
                     .toUpperCase()
                     .replace(/[^A-Z0-9]/gu, '')
                     .slice(0, 8),
-                )
+                })
               }
               autoComplete="off"
               autoCapitalize="characters"
@@ -240,7 +270,7 @@ function TransferContent({ transferId }: { transferId: string }): ReactElement {
             <input
               type="checkbox"
               checked={confirmed}
-              onChange={(event) => setConfirmed(event.target.checked)}
+              onChange={(event) => setConfirmedIdentity(event.target.checked ? identity : null)}
               disabled={busy}
             />
             <span>
@@ -290,6 +320,7 @@ function TransferContent({ transferId }: { transferId: string }): ReactElement {
 
 export function AgentTransferPage(): ReactElement {
   const { transferId = '' } = useParams();
+  const { me } = useAuth();
   if (!TRANSFER_ID_PATTERN.test(transferId))
     return (
       <article className="cb-agent-page">
@@ -297,5 +328,11 @@ export function AgentTransferPage(): ReactElement {
         <p>请从 Codex 打开完整的确认链接。</p>
       </article>
     );
-  return <TransferContent key={transferId} transferId={transferId} />;
+  if (!me)
+    return (
+      <article className="cb-agent-page">
+        <p role="status">正在确认登录身份…</p>
+      </article>
+    );
+  return <TransferContent key={`${me.id}:${transferId}`} transferId={transferId} ownerId={me.id} />;
 }
