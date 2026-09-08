@@ -79,4 +79,26 @@ describe('provider success protocol', () => {
     expect(result.stream).not.toBeNull();
     await result.stream?.cancel();
   });
+
+  it('does not mark a broken or unparseable response body as a confirmed failure', async () => {
+    for (const response of [
+      new Response('not-json', { status: 200 }),
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error('connection lost'));
+          },
+        }),
+        { status: 200 },
+      ),
+    ])
+      await expect(clientFor(response).chatCompletion({})).rejects.toMatchObject({
+        retryableWithoutCharge: false,
+      });
+    await expect(
+      clientFor(
+        Response.json({ choices: [{ message: { role: 'assistant', content: null } }] }),
+      ).chatCompletion({}),
+    ).rejects.toMatchObject({ retryableWithoutCharge: true });
+  });
 });

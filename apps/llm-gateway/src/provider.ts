@@ -73,7 +73,9 @@ export function createFetchProviderClient(options: {
         json = await response.json();
       } catch {
         if (response.status >= 200 && response.status < 300) {
-          throw new ProviderUnavailableError('provider returned malformed success JSON', true);
+          // A truncated/network-failed body can also make json() reject. Without a complete
+          // parsed response, the outcome is unknown rather than a confirmed retryable failure.
+          throw new ProviderUnavailableError('provider returned malformed success JSON');
         }
         json = null;
       }
