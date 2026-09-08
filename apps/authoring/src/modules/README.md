@@ -1,6 +1,6 @@
 # modules — 业务模块层
 
-这个目录按业务领域分成六个模块。`account/` 管邮箱验证码、首次建号和 PostgreSQL 会话，`task/` 管任务生命周期、助手上传与提取流水线，`capability/` 管历史能力项读取与发布，`agent-package-release/` 管受控 Test canonical Package Registry，`agent-draft/` 管私有 Draft V2 与 exact Package 保存、指定版本读取和卡片投影，`billing/` 管钱包读取、配置化充值订单、支付确认和主动查单。
+这个目录按业务领域分成六个模块。`account/` 管邮箱验证码、首次建号和 PostgreSQL 会话，`task/` 管任务生命周期、助手上传与提取流水线，`capability/` 管历史能力项读取与发布，`agent-package-release/` 管受控 Test canonical Package Registry，`agent-draft/` 管私有 Draft V2、独立轻量上下文 Draft 与 exact Package 保存、指定版本读取和卡片投影，`billing/` 管钱包读取、配置化充值订单、支付确认和主动查单。
 
 `agent-draft` 的 `routes.ts` 负责认证与 HTTP 边界，`service.ts` 复用公开编译器、既有对象存储与 PostgreSQL 事务。私有快照不是新的 Agent 定义或公共 Release，也不取得可信 Desktop 来源证明。
 
