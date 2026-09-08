@@ -41,6 +41,10 @@ describe('provider success protocol', () => {
       new Response('{"error":{"message":"failed"}}', { status: 200 }),
       new Response('{"choices":[{"message":[]}]}', { status: 200 }),
       new Response('{"choices":[{"message":{}}]}', { status: 200 }),
+      new Response('{"choices":[{"message":{"role":"assistant","content":""}}]}', { status: 200 }),
+      new Response('{"choices":[{"message":{"role":"assistant","content":"   "}}]}', {
+        status: 200,
+      }),
       new Response('{"choices":[{"message":{"role":"user","content":"wrong"}}]}', {
         status: 200,
       }),

@@ -37,7 +37,11 @@ export function isProviderJsonSuccessPayload(value: unknown): value is Record<st
   const message = (first as { message?: unknown }).message;
   if (typeof message !== 'object' || message === null || Array.isArray(message)) return false;
   const candidate = message as { role?: unknown; content?: unknown };
-  return candidate.role === 'assistant' && typeof candidate.content === 'string';
+  return (
+    candidate.role === 'assistant' &&
+    typeof candidate.content === 'string' &&
+    candidate.content.trim().length > 0
+  );
 }
 
 interface FetchLike {
