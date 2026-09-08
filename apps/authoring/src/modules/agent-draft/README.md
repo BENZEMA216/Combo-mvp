@@ -1,5 +1,8 @@
 # 私有 Agent Draft 同步
 
+`index.ts` 是供其他业务域复用的显式出口；上传授权模块经此复用轻量内容检查、私有服务与同事务仓储，
+不得深入导入实现文件，也不得自行重写 Draft 验证或开启嵌套数据库连接。
+
 本模块只保存和读取已经编译的 Draft V2、轻量上下文 Draft 与 exact Package，不负责读取 Codex 对话、提取、推理或公开分享。分别复用 `@cb/creator-worker/agent-package-compiler` 和 `agent-package-context-compiler` 的确定性编译器，不建立第二套 Agent 定义或推理服务。
 
 ## 文件与接口

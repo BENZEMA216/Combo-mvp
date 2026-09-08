@@ -194,4 +194,8 @@ pnpm -C "$ROOT_DIR" -F @cb/authoring... build
 AGENT_DRAFT_PG_TEST=1 \
   pnpm --dir "${ROOT_DIR}/apps/authoring" exec vitest run src/__tests__/agent-draft.pg.test.ts
 
+log "浏览器授权上传、exact 公共发布与失败回滚（真实 PostgreSQL，合成对象）..."
+AGENT_TRANSFER_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/apps/authoring" exec vitest run src/__tests__/agent-transfer.pg.test.ts
+
 log "迁移集成全部通过 ✓"
