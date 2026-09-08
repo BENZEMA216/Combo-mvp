@@ -68,6 +68,7 @@ describe('publication PostgreSQL instance safety', () => {
     };
     const service = 'postgres://agora:ci-test@localhost:5432/agora';
     expect(publicationTestTarget(service, ci).ci).toBe(true);
+    expect(publicationTestTarget(service, { ...ci, GITHUB_JOB: 'billing-pg' }).ci).toBe(true);
     for (const invalid of [
       { GITHUB_ACTIONS: 'true' },
       { ...ci, GITHUB_JOB: 'quality' },

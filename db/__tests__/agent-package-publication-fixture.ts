@@ -30,7 +30,7 @@ export function publicationTestTarget(
       env.GITHUB_ACTIONS === 'true' &&
       env.CI === 'true' &&
       env.GITHUB_REPOSITORY === 'dangdang-tech/Combo' &&
-      env.GITHUB_JOB === 'integration' &&
+      ['integration', 'billing-pg'].includes(env.GITHUB_JOB ?? '') &&
       local &&
       url.port === '5432' &&
       url.search === '' &&
