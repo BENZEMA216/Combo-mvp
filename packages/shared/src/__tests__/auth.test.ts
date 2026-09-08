@@ -76,6 +76,34 @@ describe('邮箱验证码请求契约', () => {
 });
 
 describe('认证 returnTo 白名单', () => {
+  const transferPath = '/agent-transfers/11111111-1111-4111-8111-111111111111';
+  it('保留精确的小写 UUIDv4 Agent transfer 登录回跳', () => {
+    expect(sanitizeAuthReturnTo(transferPath)).toBe(transferPath);
+    expect(
+      EmailVerificationBodySchema.parse({
+        email: 'Alice@example.com',
+        code: '123456',
+        returnTo: transferPath,
+      }).returnTo,
+    ).toBe(transferPath);
+  });
+  it.each([
+    `${transferPath}?secret=x`,
+    `${transferPath}#confirm`,
+    `${transferPath}/`,
+    '/agent-transfers/AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+    '/agent-transfers/11111111-1111-7111-8111-111111111111',
+    '/agent-transfers/11111111-1111-4111-1111-111111111111',
+    '/agent-transfers/not-an-id',
+    '/agent-transfers',
+    '/agent-transfers/%31' + transferPath.slice('/agent-transfers/1'.length),
+    `/tasks/..${transferPath}`,
+    `/unused/..${transferPath}`,
+    `https://evil.example${transferPath}`,
+    `/${transferPath}`,
+  ])('Agent transfer 回跳拒绝非规范变体 %s', (value) => {
+    expect(sanitizeAuthReturnTo(value)).toBe(AUTH_DEFAULT_RETURN_TO);
+  });
   it.each([
     ['/tasks', '/tasks'],
     ['/tasks/task-1?tab=events', '/tasks/task-1?tab=events'],

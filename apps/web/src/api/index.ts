@@ -20,6 +20,7 @@ export {
   type AuthSessionProbe,
 } from './auth.js';
 export * from './endpoints.js';
+export * from './agentPackages.js';
 export {
   useTaskEvents,
   reduceTaskEvents,
