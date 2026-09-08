@@ -114,7 +114,7 @@ pgDescribe('browser-approved Agent transfer (real PostgreSQL16, synthetic object
         'ALTER TABLE agent_package_transfers DISABLE TRIGGER agent_package_transfer_guard',
       );
       await tx.query(
-        "UPDATE agent_package_transfers SET created_at=clock_timestamp()-interval '11 minutes',expires_at=clock_timestamp()-interval '1 minute' WHERE transfer_id=$1::uuid",
+        "UPDATE agent_package_transfers SET created_at=statement_timestamp()-interval '11 minutes',expires_at=statement_timestamp()-interval '1 minute' WHERE transfer_id=$1::uuid",
         [id],
       );
       await tx.query(
@@ -281,6 +281,121 @@ pgDescribe('browser-approved Agent transfer (real PostgreSQL16, synthetic object
       [f.request.packageDigest, owners],
     );
     expect(claims.rows).toHaveLength(2);
+  });
+  it('resolves real multi-connection row-lock races for approval, upload and publication', async () => {
+    const applicationName = `transfer-race-${randomUUID()}`;
+    const concurrent = new Pool({
+      connectionString: transferPgTarget(process.env.DATABASE_URL).connectionString,
+      options: '-c role=combo_api',
+      application_name: applicationName,
+      max: 4,
+    });
+    const racingTransfer = new AgentTransferService(
+      asTxPool(concurrent),
+      concurrent,
+      objects,
+      'http://localhost',
+    );
+    const racingPublication = new AgentPublicationService(
+      asTxPool(concurrent),
+      concurrent,
+      objects,
+      'http://localhost',
+    );
+    // Hold the actual row until PostgreSQL confirms that two distinct backends wait for locks.
+    // This distinguishes database contention from Promise.all queued behind a max:1 pool.
+    async function race<T>(id: string, actions: (() => Promise<T>)[]) {
+      const blocker = await admin.connect();
+      let pending: Promise<PromiseSettledResult<T>[]> | undefined;
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query(
+          'SELECT transfer_id FROM agent_package_transfers WHERE transfer_id=$1 FOR UPDATE',
+          [id],
+        );
+        pending = Promise.allSettled(actions.map((action) => action()));
+        let waiting = 0;
+        const deadline = Date.now() + 3000;
+        while (waiting < actions.length && Date.now() < deadline) {
+          waiting = (
+            await admin.query(
+              "SELECT count(DISTINCT pid)::int AS n FROM pg_stat_activity WHERE application_name=$1 AND state='active' AND wait_event_type='Lock'",
+              [applicationName],
+            )
+          ).rows[0].n;
+          if (waiting < actions.length) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(actions.length);
+      } finally {
+        await blocker.query('ROLLBACK');
+        blocker.release();
+        // Always settle in-flight writes before the caller closes the connection pool.
+        if (pending) await pending;
+      }
+      return pending!;
+    }
+    try {
+      const f = transferFixture();
+      const receipt = await racingTransfer.create(f.request);
+      const approval = { ...f.approval, verificationCode: receipt.verificationCode };
+      const approvals = await race(
+        f.request.requestId,
+        owners.map((owner) => () => racingTransfer.approve(f.request.requestId, owner, approval)),
+      );
+      expect(approvals.filter((value) => value.status === 'fulfilled')).toHaveLength(1);
+      expect(approvals.filter((value) => value.status === 'rejected')).toMatchObject([
+        { reason: { kind: 'not_found' } },
+      ]);
+      const owner = owners[approvals.findIndex((value) => value.status === 'fulfilled')]!;
+      const uploads = await race(
+        f.request.requestId,
+        Array.from(
+          { length: 2 },
+          () => () => racingTransfer.upload(f.request.requestId, f.secret, f.upload),
+        ),
+      );
+      expect(uploads.every((value) => value.status === 'fulfilled')).toBe(true);
+      const uploadedReceipt = await racingTransfer.status(f.request.requestId, f.secret);
+      const body = publishBody(f);
+      const published = await race(
+        f.request.requestId,
+        Array.from(
+          { length: 2 },
+          () => () => racingPublication.publish(f.request.requestId, owner, body),
+        ),
+      );
+      expect(published.every((value) => value.status === 'fulfilled')).toBe(true);
+      const ids = published.map(
+        (value) => value.status === 'fulfilled' && value.value.release!.releaseId,
+      );
+      expect(new Set(ids).size).toBe(1);
+      expect(
+        (
+          await admin.query(
+            'SELECT count(*)::int AS n FROM agent_draft_revisions WHERE owner_user_id=$1 AND request_id=$2',
+            [owner, f.request.requestId],
+          )
+        ).rows[0].n,
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            'SELECT count(*)::int AS n FROM agent_package_publisher_claims WHERE owner_user_id=$1 AND draft_id=$2',
+            [owner, uploadedReceipt.saved!.draftId],
+          )
+        ).rows[0].n,
+      ).toBe(1);
+      expect(
+        (
+          await admin.query(
+            'SELECT count(*)::int AS n FROM agent_package_releases WHERE owner_user_id=$1 AND idempotency_key=$2',
+            [owner, body.requestId],
+          )
+        ).rows[0].n,
+      ).toBe(1);
+    } finally {
+      await concurrent.end();
+    }
   });
   it('rolls back private indexing and phase together after a post-object failure, then retries the same intent', async () => {
     const f = await created();

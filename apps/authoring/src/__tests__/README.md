@@ -26,6 +26,8 @@
   413/415/429 安全信封、只读 GET、匿名下载和 canonical 文件的完整性；默认没有真实数据库或对象存储。
 - `agent-transfer.pg.test.ts` 只在 `AGENT_TRANSFER_PG_TEST=1` 开启并确认专用 PostgreSQL16 实例后追加合成行，使用
   `combo_api` 最小角色与单连接池验证真实 HTTP、账户抢占、精确上传、公开发布、幂等、过期、撤销与事务回滚。
+  独立四连接池用例先持有目标行，并经 `pg_stat_activity` 确认两个不同后端真实等待锁，再释放并断言审批唯一归属、
+  上传单 revision、发布单 claim/Release；不把单连接池的请求排队当成数据库竞争证据。过期夹具使用同一语句时间构造 TTL。
   对象仍为假件；过期夹具的 trigger 开关只在经核验临时实例的事务内作用于本轮 UUID，不授权业务数据修改。
 - `agent-package-object-store.test.ts` 通过 AWS SDK 假件与对抗流验证 Agent Package 对象的条件首次写入、exact-byte 幂等回读、异内容冲突、声明长度与流式上限、取消、流收尾和错误脱敏。
 - `agent-package-release.test.ts` 验证固定三文件知识 Package 的严格 base64 与协议校验、files-first 与 `agent.json`-last exact 回读、并发 exactly-once、owner-only Release 读取、Registry SQL 锁序和只读追加权限面。
