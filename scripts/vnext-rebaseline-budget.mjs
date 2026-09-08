@@ -168,6 +168,7 @@ export const productGoalLock = Object.freeze({
   approvedProjectSha256s: Object.freeze([
     '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
     'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+    '9bd48541ec4d4edc9b170887d7ad3506fa5397aac90b7bc515f9e023db4904df',
   ]),
   headings: Object.freeze(['## 一、唯一产品目标', '## 二、目标用户体验', '## 三、唯一产物模型']),
 });
