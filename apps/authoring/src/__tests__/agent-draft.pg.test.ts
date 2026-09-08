@@ -474,7 +474,7 @@ pgDescribe('private Agent Draft HTTP and PostgreSQL (object storage fake)', () =
     for (const sql of [
       'UPDATE agent_draft_revisions SET view_id=view_id WHERE false',
       'DELETE FROM agent_draft_revisions WHERE false',
-      'TRUNCATE agent_draft_revisions',
+      'TRUNCATE agent_draft_revisions CASCADE',
     ]) {
       await expect(admin.query(sql)).rejects.toMatchObject({ code: '55000' });
       await expect(api.query(sql)).rejects.toMatchObject({ code: '42501' });

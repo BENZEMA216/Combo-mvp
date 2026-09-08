@@ -4,12 +4,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import './vnext-rebaseline-budget-tranche.test.mjs';
 
 import {
   assessCumulative,
   assessPullRequest,
   classifyPlatformV2Bootstrap,
-  contractPath,
+  archivedBudgetPath as contractPath,
   defaultBaseRef,
   initialTrancheLock,
   isAuthorizedPlatformV2AdmissionContext,
@@ -187,8 +188,41 @@ const validEngineeringSource = [
   '',
 ].join('\n');
 
+const conversationFirstSourceBoundary = [
+  '当前对话是默认创作来源：用户在 Codex Desktop 当前任务发出上述指令时，只同意使用该任务中用户可见的对话，',
+  '不授权读取 Project。系统必须绑定用户正在操作的当前任务，不接受业务调用方、Plugin 或 MCP 通过 task、thread、',
+  'session 标识或 raw transcript 选择其他来源。普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，',
+  '也不需要复制内部协议。Project 或工作旅程只能由用户另行明确选择，不能作为当前对话失败后的自动回退。',
+].join('\n');
+
+// Exact 2026-09-07 user-approved amendment; no generic baseline override is introduced.
+const lightweightSourceBoundary = [
+  '当前对话是默认创作来源。用户于 2026-09-07 确认首版采用轻量提取：Codex 根据当前可用上下文整理方法，',
+  '向 Combo 提交结构化内容；Combo 校验内容并编译，再展示 Draft 和已编译的 Agent、Skill 供用户审阅。',
+  '不要求先取得完整对话快照、Desktop 来源证明或 Host 签名。页面必须明确说明来源未经独立验证、覆盖可能不完整，',
+  '不得宣称提取了全部历史对话，也不得把编译完成当成真实推理成功。',
+  '',
+  '这句制作指令不授权读取 Project、其他任务、原始会话文件或凭据；不得为补齐上下文而主动读取未授权来源。',
+  'Combo 只接收整理后的方法，不接受 task、thread、session 标识、来源选择器或 raw transcript。',
+  '普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，也不需要复制内部协议。',
+  'Project 或工作旅程只能由用户另行明确选择，不能作为当前上下文不足时的自动回退。敏感信息和原始对话不应进入可分享 Package。',
+].join('\n');
+
 function approvedNextProjectSource(current = readFileSync(committedProjectPath, 'utf8')) {
   const currentSha256 = createHash('sha256').update(current).digest('hex');
+  if (currentSha256 === '9bd48541ec4d4edc9b170887d7ad3506fa5397aac90b7bc515f9e023db4904df') {
+    const previous = current
+      .replace(
+        '    由 Codex 整理方法并编译 Agent Package',
+        '    自动读取来源、提取方法并编译 Agent Package',
+      )
+      .replace(lightweightSourceBoundary, conversationFirstSourceBoundary);
+    assert.equal(
+      createHash('sha256').update(previous).digest('hex'),
+      'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+    );
+    return previous;
+  }
   if (currentSha256 === 'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea') {
     return current;
   }
@@ -210,6 +244,15 @@ function approvedNextProjectSource(current = readFileSync(committedProjectPath, 
       '也不需要复制内部协议。Project 或工作旅程只能由用户另行明确选择，不能作为当前对话失败后的自动回退。',
     ].join('\n'),
   );
+}
+
+function approvedLightweightProjectSource(current = readFileSync(committedProjectPath, 'utf8')) {
+  return approvedNextProjectSource(current)
+    .replace(
+      '    自动读取来源、提取方法并编译 Agent Package',
+      '    由 Codex 整理方法并编译 Agent Package',
+    )
+    .replace(conversationFirstSourceBoundary, lightweightSourceBoundary);
 }
 
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
@@ -294,6 +337,7 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.deepEqual(productGoalLock.approvedProjectSha256s, [
     '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
     'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+    '9bd48541ec4d4edc9b170887d7ad3506fa5397aac90b7bc515f9e023db4904df',
   ]);
   assert.equal(source, `${JSON.stringify(contract, null, 2)}\n`);
 });
@@ -1535,7 +1579,69 @@ test(
 );
 
 test(
-  'a one-byte edit and an unknown third product baseline revision fail closed',
+  'the exact lightweight amendment preserves both historical baselines and rejects byte drift',
+  { skip: !existsSync(committedProjectPath) },
+  () => {
+    const conversationFirst = approvedNextProjectSource();
+    const original = conversationFirst
+      .replace(
+        '用一句自然语言告诉自己的 Codex，把刚才的工作做成 Agent',
+        '复制一段AGENT的制作指令给自己的Codex，把刚才的工作做成 Agent',
+      )
+      .replace(`\n\n${conversationFirstSourceBoundary}`, '');
+    const lightweight = approvedLightweightProjectSource();
+    const fixtures = [original, conversationFirst, lightweight];
+    assert.deepEqual(
+      fixtures.map((value) => createHash('sha256').update(value).digest('hex')),
+      productGoalLock.approvedProjectSha256s,
+    );
+    for (const projectSource of fixtures) {
+      assert.equal(approvedNextProjectSource(projectSource), conversationFirst);
+      assert.equal(approvedLightweightProjectSource(projectSource), lightweight);
+      const sources = {
+        projectSource,
+        agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+        engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+      };
+      assert.equal(verifyProductBaselineSources(sources).status, 'LOCKED');
+      assert.throws(
+        () => verifyProductBaselineSources({ ...sources, projectSource: `${projectSource}\n` }),
+        /PROJECT\.md product baseline changed/,
+      );
+    }
+    for (const projectSource of [
+      lightweight.replace('来源未经独立验证', '来源已经独立验证'),
+      lightweight.replace('这句制作指令不授权读取 Project', '这句制作指令授权读取 Project'),
+      lightweight.replace('不得把编译完成当成真实推理成功', '可以把编译完成当成真实推理成功'),
+      lightweight.replace(
+        '敏感信息和原始对话不应进入可分享 Package',
+        '原始对话可以进入可分享 Package',
+      ),
+    ]) {
+      assert.throws(
+        () =>
+          verifyProductBaselineSources({
+            projectSource,
+            agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+            engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+          }),
+        /PROJECT\.md product baseline changed/,
+      );
+    }
+    assert.throws(
+      () =>
+        assessPullRequest(contract, [
+          entry('scripts/vnext-rebaseline-budget.mjs'),
+          entry('scripts/vnext-rebaseline-budget.test.mjs'),
+          entry('PROJECT.md'),
+        ]),
+      /governance-only/,
+    );
+  },
+);
+
+test(
+  'a one-byte edit and an unknown product baseline revision fail closed',
   { skip: !existsSync(committedProjectPath) },
   () => {
     const approved = approvedNextProjectSource();

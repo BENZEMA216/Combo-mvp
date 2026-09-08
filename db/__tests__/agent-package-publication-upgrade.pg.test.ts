@@ -6,6 +6,10 @@ import { Client } from 'pg';
 import { describe, expect, it } from 'vitest';
 import { applyMigrationFile, listMigrations, planMigrations } from '../scripts/migrate.ts';
 import { provisionApplicationRoleLogins } from '../scripts/provision-app-roles.ts';
+import {
+  assertPublicationTestInstance,
+  publicationTestTarget,
+} from './agent-package-publication-fixture.js';
 
 const enabled = process.env.AGENT_PACKAGE_PUBLICATION_UPGRADE_PG_TEST === '1';
 const pgDescribe = enabled ? describe : describe.skip;
@@ -14,21 +18,8 @@ const directory = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'migrat
 
 pgDescribe('private Draft 0020 to exact publication 0021 upgrade on PostgreSQL 16', () => {
   it('preserves historical rows and controlled writer semantics with a validated additive suffix', async () => {
-    const raw = process.env.DATABASE_URL;
-    if (!raw) throw new Error('publication upgrade requires a disposable DATABASE_URL');
-    const url = new URL(raw);
-    const socket = url.searchParams.get('host');
-    const local = socket === null && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    const safeSocket =
-      socket !== null && /^\/tmp\/combo-(?:publication|draft)-pg\.[A-Za-z0-9]+$/u.test(socket);
-    const keys = [...url.searchParams.keys()];
-    if (
-      (!local && !safeSocket) ||
-      new Set(keys).size !== keys.length ||
-      keys.some((key) => !['host', 'port'].includes(key))
-    ) {
-      throw new Error('publication upgrade only accepts a local disposable PostgreSQL instance');
-    }
+    const target = publicationTestTarget(process.env.DATABASE_URL);
+    const url = new URL(target.connectionString);
     if (
       !['POSTGRES_API_PASSWORD', 'POSTGRES_WORKER_PASSWORD', 'POSTGRES_RUNTIME_PASSWORD'].every(
         (key) => Boolean(process.env[key]),
@@ -44,12 +35,13 @@ pgDescribe('private Draft 0020 to exact publication 0021 upgrade on PostgreSQL 1
     let created = false;
     await admin.connect();
     try {
-      expect((await admin.query('SHOW server_version')).rows[0]?.server_version).toMatch(/^16[.]/u);
+      await assertPublicationTestInstance(admin, target);
       await admin.query(`CREATE DATABASE "${name}"`);
       created = true;
       url.pathname = `/${name}`;
       upgrade = new Client({ connectionString: url.toString() });
       await upgrade.connect();
+      await assertPublicationTestInstance(upgrade, target);
       await upgrade.query(
         'CREATE TABLE schema_migrations(filename text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())',
       );
