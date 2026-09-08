@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { agentReceiverPrompt } from './receiver-handoff.js';
 import { z } from 'zod';
 import { CreatorAgentPackageReleaseIdSchema } from '@cb/creator-agent-protocol/agent-package-release';
 
@@ -129,7 +130,7 @@ export function transferReceipt(row: TransferRow, origin: string) {
             releaseId: row.release_id,
             packageDigest,
             shareUrl,
-            acquirePrompt: `请从 ${shareUrl} 获取这个 Agent，核对 Package digest ${packageDigest} 后，在当前任务中使用它。不要把浏览分享页当作已安装或已运行。`,
+            acquirePrompt: agentReceiverPrompt(origin, row.release_id, packageDigest),
           },
         }
       : {}),

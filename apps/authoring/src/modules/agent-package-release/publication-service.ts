@@ -24,6 +24,7 @@ import {
   readPublicPackage,
   verifyPublicPackage,
 } from './publication-objects.js';
+import { agentReceiverPrompt } from './receiver-handoff.js';
 
 type ReleaseRow = {
   release_id: string;
@@ -206,7 +207,7 @@ export class AgentPublicationService {
         sourceVerification: 'not_verified' as const,
         package: candidate,
         shareUrl,
-        acquirePrompt: `请从 ${shareUrl} 获取这个 Agent，核对 Package digest ${release.packageDigest} 后，在当前任务中使用它。不要把浏览分享页当作已安装或已运行。`,
+        acquirePrompt: agentReceiverPrompt(this.origin, release.releaseId, release.packageDigest),
       };
     } catch (error) {
       throw error instanceof TransferFailure ? error : new TransferFailure('unavailable');

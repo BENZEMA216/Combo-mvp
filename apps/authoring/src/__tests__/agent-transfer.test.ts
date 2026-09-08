@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
@@ -9,6 +9,7 @@ import type { InfraContext } from '../platform/infra/index.js';
 import { registerAgentTransferRoutes } from '../modules/agent-package-release/transfer-routes.js';
 import { AgentTransferService } from '../modules/agent-package-release/transfer-service.js';
 import { AgentPublicationService } from '../modules/agent-package-release/publication-service.js';
+import * as receiver from '../modules/agent-package-release/receiver-handoff.js';
 import {
   TransferRequest,
   TransferFailure,
@@ -124,6 +125,12 @@ describe('Agent transfer HTTP and immutable Package boundaries (no real DB or st
         ).statusCode,
       ).toBe(404);
       expect(queries).toEqual([]);
+      for (const path of [
+        `/agent-package-publications/${publicationFixture().release.releaseId}/codex-installation`,
+        `/agent-package-receivers/v1/${'a'.repeat(64)}.mjs`,
+      ]) {
+        expect((await instance.inject({ url: `/api/v1${path}` })).statusCode).toBe(404);
+      }
     },
   );
   it('rejects browser and alternative credentials before parsing Desktop bodies', async () => {
@@ -361,6 +368,177 @@ describe('Agent transfer HTTP and immutable Package boundaries (no real DB or st
         files: [...f.upload.candidate.files, f.upload.candidate.files[0]!],
       }),
     ).rejects.toMatchObject({ kind: 'unavailable' });
+  });
+  it('serves an anonymous pinned receiver handoff without running code or resolving a user', async () => {
+    const { instance, queries } = await app();
+    const publication = publicationFixture();
+    const bytes = Buffer.from('throw new Error("MUST_NOT_EXECUTE_IN_API");\n');
+    const hex = createHash('sha256').update(bytes).digest('hex');
+    const artifact = { bytes, digest: `sha256:${hex}`, filename: `${hex}.mjs` };
+    const read = vi.spyOn(AgentPublicationService.prototype, 'read').mockResolvedValue(publication);
+    vi.spyOn(receiver, 'getAgentReceiverArtifact').mockResolvedValue(artifact);
+    const upload = vi.spyOn(AgentTransferService.prototype, 'upload');
+    const publish = vi.spyOn(AgentPublicationService.prototype, 'publish');
+    const response = await instance.inject({
+      url: `/api/v1/agent-package-publications/${publication.release.releaseId}/codex-installation`,
+      headers: { host: 'attacker.example.test', cookie: browserCookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const data = response.json().data;
+    expect(data).toMatchObject({
+      protocol: 'combo.codex-agent-installation-handoff/1',
+      release: publication.release,
+      shareUrl: publication.shareUrl,
+      receiver: {
+        profileVersion: 'combo.agent-package-receiver-text/1',
+        url: `http://localhost/api/v1/agent-package-receivers/v1/${hex}.mjs`,
+        digest: artifact.digest,
+        command: 'install',
+        arguments: {
+          '--share-url': publication.shareUrl,
+          '--package-digest': publication.release.packageDigest,
+        },
+      },
+      runtime: { status: 'not_run' },
+    });
+    expect(JSON.stringify(data)).not.toContain('attacker.example.test');
+    expect(JSON.stringify(data)).not.toContain(browserCookie);
+    expect(data).not.toHaveProperty('package');
+    expect(data).not.toHaveProperty('publisher');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith(publication.release.releaseId);
+    const script = await instance.inject({
+      url: `/api/v1/agent-package-receivers/v1/${hex}.mjs`,
+    });
+    expect(script.statusCode).toBe(200);
+    expect(script.rawPayload).toEqual(bytes);
+    expect(script.headers['content-type']).toContain('text/javascript');
+    expect(script.headers['content-disposition']).toContain(`combo-agent-receiver-${hex}.mjs`);
+    expect(script.headers['x-content-type-options']).toBe('nosniff');
+    expect(script.headers['cache-control']).toBe('no-store');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(queries).toEqual([]);
+    expect(upload).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+  it('distributes the real built receiver bytes through their exact hash address', async () => {
+    const { instance, queries } = await app();
+    const publication = publicationFixture();
+    vi.spyOn(AgentPublicationService.prototype, 'read').mockResolvedValue(publication);
+    // No receiver mock: fail if the application export or bundled build asset is missing.
+    const artifact = await receiver.getAgentReceiverArtifact();
+    expect(artifact.bytes.byteLength).toBeGreaterThan(0);
+    expect(artifact.bytes.byteLength).toBeLessThanOrEqual(1024 * 1024);
+    const hex = createHash('sha256').update(artifact.bytes).digest('hex');
+    expect(artifact.digest).toBe(`sha256:${hex}`);
+    expect(artifact.filename).toBe(`${hex}.mjs`);
+    const handoff = await instance.inject({
+      url: `/api/v1/agent-package-publications/${publication.release.releaseId}/codex-installation`,
+    });
+    expect(handoff.statusCode).toBe(200);
+    expect(handoff.json().data.receiver.digest).toBe(artifact.digest);
+    const download = await instance.inject({
+      url: new URL(handoff.json().data.receiver.url).pathname,
+    });
+    expect(download.statusCode).toBe(200);
+    expect(download.rawPayload).toEqual(artifact.bytes);
+    expect(queries).toEqual([]);
+  });
+  it('rejects unavailable, revoked, rebound and query-bearing handoffs without exposing raw errors', async () => {
+    const { instance, queries } = await app();
+    const publication = publicationFixture();
+    const path = `/api/v1/agent-package-publications/${publication.release.releaseId}/codex-installation`;
+    const read = vi.spyOn(AgentPublicationService.prototype, 'read');
+    const artifact = vi.spyOn(receiver, 'getAgentReceiverArtifact');
+    for (const [error, status] of [
+      [new TransferFailure('not_found'), 404],
+      [new Error('PRIVATE_STORAGE_PATH'), 503],
+    ] as const) {
+      read.mockRejectedValue(error);
+      const response = await instance.inject({ url: path });
+      expect(response.statusCode).toBe(status);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.body).not.toContain('PRIVATE_STORAGE_PATH');
+    }
+    expect(artifact).not.toHaveBeenCalled();
+    read.mockResolvedValue({
+      ...publication,
+      release: {
+        ...publication.release,
+        releaseId:
+          `release.agent-package.${'f'.repeat(32)}` as typeof publication.release.releaseId,
+      },
+    });
+    expect((await instance.inject({ url: path })).statusCode).toBe(503);
+    expect(artifact).not.toHaveBeenCalled();
+    read.mockResolvedValue(publication);
+    artifact.mockRejectedValue(new Error('PRIVATE_ARTIFACT_PATH'));
+    const missing = await instance.inject({ url: path });
+    expect(missing.statusCode).toBe(503);
+    expect(missing.body).not.toContain('PRIVATE_ARTIFACT_PATH');
+    read.mockClear();
+    artifact.mockClear();
+    for (const url of [
+      `${path}?access_token=PRIVATE_CANARY`,
+      '/api/v1/agent-package-publications/invalid/codex-installation',
+      `/api/v1/agent-package-receivers/v1/${'a'.repeat(64)}.mjs?latest=1`,
+      '/api/v1/agent-package-receivers/v1/latest.mjs',
+    ]) {
+      expect((await instance.inject({ url })).statusCode).toBe(404);
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(artifact).not.toHaveBeenCalled();
+    expect(queries).toEqual([]);
+  });
+  it('never serves different bytes at an earlier receiver digest URL', async () => {
+    const { instance, queries } = await app();
+    const bytes = Buffer.from('export {};\n');
+    const hex = createHash('sha256').update(bytes).digest('hex');
+    vi.spyOn(receiver, 'getAgentReceiverArtifact').mockResolvedValue({
+      bytes,
+      digest: `sha256:${hex}`,
+      filename: `${hex}.mjs`,
+    });
+    const response = await instance.inject({
+      url: `/api/v1/agent-package-receivers/v1/${'a'.repeat(64)}.mjs`,
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.body).not.toContain('export');
+    expect(queries).toEqual([]);
+  });
+  it('keeps acquisition instructions exact, non-executing and separate from Agent content', () => {
+    const publication = publicationFixture();
+    const prompt = receiver.agentReceiverPrompt(
+      'http://localhost',
+      publication.release.releaseId,
+      publication.release.packageDigest,
+    );
+    expect(prompt).toContain(publication.shareUrl);
+    expect(prompt).toContain(
+      `/api/v1/agent-package-publications/${publication.release.releaseId}/codex-installation`,
+    );
+    expect(prompt).toContain(publication.release.packageDigest);
+    expect(prompt).toContain('不重新提取或编译');
+    expect(prompt).toContain('不覆盖已有文件');
+    expect(prompt).not.toContain('curl');
+    expect(() =>
+      receiver.agentReceiverPrompt(
+        'http://localhost/private',
+        publication.release.releaseId,
+        publication.release.packageDigest,
+      ),
+    ).toThrow();
+    expect(() =>
+      receiver.agentReceiverPrompt('http://localhost', 'latest', publication.release.packageDigest),
+    ).toThrow();
+    expect(() =>
+      receiver.agentReceiverPrompt(
+        'http://localhost',
+        publication.release.releaseId,
+        'wrong-digest',
+      ),
+    ).toThrow();
   });
   it('checks the disposable instance before any writable test operation', async () => {
     const directory = '/tmp/combo-publication-pg.Safe123/data';

@@ -130,14 +130,27 @@ function ReleaseContent({ releaseId }: { releaseId: string }): ReactElement {
       </header>
       <section className="cb-agent-card" aria-labelledby="acquire-title">
         <p className="cb-agent-kicker">USE IN YOUR TASK</p>
-        <h2 id="acquire-title">把它带到你的任务中</h2>
+        <h2 id="acquire-title">在自己的 Codex 项目中使用</h2>
         <p>
-          复制下面的提示词，交给接收端核对包内容和摘要，再明确决定是否使用。打开此页不代表已安装或已运行。
+          点击下面的按钮，把指令粘贴到你已打开项目的 Codex 对话。Codex 会先校验，再把原包和 Skill
+          入口安装到这个项目，并在当前对话中使用。无需 Combo 插件或主站登录。
         </p>
         <div className="cb-agent-prompt">
           <p>{view.acquirePrompt}</p>
-          <CopyButton text={view.acquirePrompt} label="复制获取提示词" />
+          <CopyButton
+            text={view.acquirePrompt}
+            label="在 Codex 中使用 · 复制指令"
+            className="cb-agent-primary"
+          />
         </div>
+        <p className="cb-agent-subtle">
+          首版支持 macOS / Linux，需要已有 Node.js 24.2
+          或更新版本。当前支持轻量文本方法，不自动安装外部工具；只新增项目内文件，
+          遇到冲突会停止。项目 Skill 可供后续明确调用，不会修改 AGENTS.md 或全局配置。
+        </p>
+        <p className="cb-agent-subtle">
+          复制指令不会自动打开或操作 Codex。打开网页、安装完成与真实运行是三件不同的事。
+        </p>
         <p className="cb-agent-subtle">这是按链接公开的内容，任何拿到链接的人都能查看和下载。</p>
         <div className="cb-agent-actions">
           <CopyButton text={view.shareUrl} label="复制分享链接" />
