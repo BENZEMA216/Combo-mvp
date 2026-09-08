@@ -19,7 +19,10 @@ export interface ProviderClient {
 }
 
 export class ProviderUnavailableError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly retryableWithoutCharge = false,
+  ) {
     super(message);
     this.name = 'ProviderUnavailableError';
   }
@@ -66,12 +69,12 @@ export function createFetchProviderClient(options: {
         json = await response.json();
       } catch {
         if (response.status >= 200 && response.status < 300) {
-          throw new ProviderUnavailableError('provider returned malformed success JSON');
+          throw new ProviderUnavailableError('provider returned malformed success JSON', true);
         }
         json = null;
       }
       if (response.status >= 200 && response.status < 300 && !isProviderJsonSuccessPayload(json)) {
-        throw new ProviderUnavailableError('provider returned an invalid success payload');
+        throw new ProviderUnavailableError('provider returned an invalid success payload', true);
       }
       return { status: response.status, json };
     },

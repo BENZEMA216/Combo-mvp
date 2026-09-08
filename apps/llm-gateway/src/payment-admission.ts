@@ -18,14 +18,28 @@ export interface PaymentAdmissionInput {
   estimatedAmount: number;
 }
 export type PaymentAdmissionResult =
-  | { kind: 'admitted'; holdId: string; replayed: boolean }
+  | { kind: 'admitted'; holdId: string; replayed: boolean; executionId?: string }
   | { kind: 'rejected'; status: number; body: unknown };
 export interface PaymentAdmissionClient {
   admit(input: PaymentAdmissionInput): Promise<PaymentAdmissionResult>;
+  finish?(input: {
+    holdId: string;
+    outcome: 'succeeded' | 'failed_no_charge' | 'unknown';
+    failureReason?: 'invalid_response' | 'provider_rejected';
+  }): Promise<void>;
 }
 const AdmittedSchema = z
   .object({
-    data: z.object({ holdId: z.string().uuid(), replayed: z.boolean() }).strict(),
+    data: z
+      .object({
+        holdId: z.string().uuid(),
+        replayed: z.boolean(),
+        executionId: z
+          .string()
+          .regex(/^[A-Za-z0-9]([A-Za-z0-9._:-]{0,126}[A-Za-z0-9])?$/)
+          .optional(),
+      })
+      .strict(),
     meta: z.object({ traceId: PaymentTraceIdSchema }).strict(),
   })
   .strict();
@@ -84,11 +98,20 @@ export async function admitPaymentCall(
       return result;
     }
     const hold = AdmittedSchema.parse({
-      data: { holdId: result.holdId, replayed: result.replayed },
+      data: {
+        holdId: result.holdId,
+        replayed: result.replayed,
+        ...(result.executionId ? { executionId: result.executionId } : {}),
+      },
       meta: { traceId: 'internal-check' },
     });
     if (hold.data.replayed) return { kind: 'rejected', status: 409, body: null };
-    return { kind: 'held', holdId: hold.data.holdId, estimatedAmount };
+    return {
+      kind: 'held',
+      holdId: hold.data.holdId,
+      estimatedAmount,
+      ...(hold.data.executionId ? { executionId: hold.data.executionId } : {}),
+    };
   } catch {
     return { kind: 'rejected', status: 503, body: null };
   }
@@ -105,6 +128,38 @@ export function createPaymentAdmissionClient(options: {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = `${options.baseUrl.replace(/\/+$/, '')}/billing/call-admissions`;
   return {
+    async finish(input) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+      try {
+        const response = await boundedResponse(
+          fetchImpl(`${options.baseUrl.replace(/\/+$/, '')}/billing/call-attempt-results`, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${options.token}`,
+              'content-type': 'application/json',
+            },
+            redirect: 'error',
+            signal: controller.signal,
+            body: JSON.stringify(input),
+          }),
+          controller.signal,
+        );
+        const body = await readAdmissionJson(response, controller.signal);
+        if (response.status !== 200) throw new Error();
+        z.object({
+          data: z.object({ recorded: z.literal(true) }).strict(),
+          meta: z.object({ traceId: PaymentTraceIdSchema }).strict(),
+        })
+          .strict()
+          .parse(body);
+      } catch {
+        throw new Error('call outcome could not be confirmed');
+      } finally {
+        clearTimeout(timer);
+        controller.abort();
+      }
+    },
     async admit(input) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.timeoutMs);
