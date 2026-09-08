@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
@@ -7,13 +8,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { authSessionCookieName } from '@cb/shared';
 import { createCreatorAgentPackageDraftSnapshotV2 } from '@cb/creator-agent-protocol/agent-package-draft';
 import { loadEnv } from '../platform/config/env.js';
-import { asTxPool } from '../platform/infra/db-tx.js';
+import { asTxPool, withTransaction } from '../platform/infra/db-tx.js';
 import type { InfraContext } from '../platform/infra/index.js';
 import * as objectStore from '../platform/infra/object-store.js';
 import { registerAgentDraftRoutes } from '../modules/agent-draft/routes.js';
 import { AgentDraftService, PgDraftRepository } from '../modules/agent-draft/service.js';
 import {
   assertDisposableDraftDatabase,
+  contextUploadFixture,
   draftFixture,
   TestObjects,
   uploadFixture,
@@ -129,6 +131,225 @@ pgDescribe('private Agent Draft HTTP and PostgreSQL (object storage fake)', () =
     expect(results.filter((result) => result.created)).toHaveLength(1);
     expect(new Set(results.map((result) => JSON.stringify(result.record))).size).toBe(1);
     expect(objects.writes).toBe(1);
+  });
+  it('saves context through the existing Cookie route and reopens it in a fresh Node process', async () => {
+    const payload = contextUploadFixture();
+    const released = await api.query('SELECT count(*) FROM agent_package_releases');
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/agent-package-drafts',
+      headers: headers(),
+      payload,
+    });
+    expect(first.statusCode).toBe(201);
+    const record = first.json().data;
+    expect(record.protocol).toBe('combo.agent-context-record/1');
+    expect(record.storage.revision).toBe(1);
+    expect(record.draft.text).toBe(payload.draftText);
+    const own = await app.inject({
+      url: `/api/v1/agent-package-drafts/${record.storage.draftId}/revisions/1`,
+      headers: headers(),
+    });
+    expect(own.statusCode).toBe(200);
+    expect(own.json().data).toEqual(record);
+    const other = await app.inject({
+      url: `/api/v1/agent-package-drafts/${record.storage.draftId}/revisions/1`,
+      headers: headers(1),
+    });
+    expect(other.statusCode).toBe(404);
+    expect(other.body).not.toContain(payload.draftText);
+    expect(own.headers['cache-control']).toBe('no-store');
+    // Only synthetic fixture objects cross this subprocess boundary. PostgreSQL and
+    // the service module are real; object storage remains an explicitly fake adapter.
+    const script = `
+      import { Pool } from 'pg';
+      import { AgentDraftService, PgDraftRepository } from ${JSON.stringify(new URL('../../dist/modules/agent-draft/service.js', import.meta.url).href)};
+      import { asTxPool } from ${JSON.stringify(new URL('../../dist/platform/infra/db-tx.js', import.meta.url).href)};
+      let input = ''; for await (const chunk of process.stdin) input += chunk;
+      const fixture = JSON.parse(input);
+      const values = new Map(fixture.objects);
+      const pool = new Pool({ connectionString: process.env.DATABASE_URL, options: '-c role=combo_api' });
+      try {
+        const service = new AgentDraftService(new PgDraftRepository(asTxPool(pool), pool), {
+          commit: async () => { throw new Error('Restart read must never write'); },
+          read: async ({ key }) => Buffer.from(values.get(key), 'base64'),
+        });
+        process.stdout.write(JSON.stringify(await service.read(fixture.owner, fixture.draftId, 1)));
+      } finally { await pool.end(); }
+    `;
+    const reopened = await new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: new URL('../..', import.meta.url),
+        env: { DATABASE_URL: process.env.DATABASE_URL },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 10_000,
+      });
+      let output = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        output += chunk.toString('utf8');
+      });
+      child.stderr.resume();
+      child.on('error', () => reject(new Error('Fresh service process failed')));
+      child.on('exit', (code) =>
+        code === 0 ? resolve(output) : reject(new Error('Fresh service process failed')),
+      );
+      child.stdin.end(
+        JSON.stringify({
+          owner: owners[0],
+          draftId: record.storage.draftId,
+          objects: [...objects.values].map(([key, bytes]) => [
+            key,
+            Buffer.from(bytes).toString('base64'),
+          ]),
+        }),
+      );
+    });
+    expect(JSON.parse(reopened)).toEqual(record);
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/api/v1/agent-package-drafts',
+      headers: headers(),
+      payload,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().data).toEqual(record);
+    expect(objects.writes).toBe(1);
+    expect((await api.query('SELECT count(*) FROM agent_package_releases')).rows).toEqual(
+      released.rows,
+    );
+  });
+  it('serializes context retries and rejects changed content or a V2 request replay', async () => {
+    const payload = contextUploadFixture();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => service.saveContext(owners[0]!, payload)),
+    );
+    expect(results.filter((result) => result.created)).toHaveLength(1);
+    expect(objects.writes).toBe(1);
+    for (const other of [
+      contextUploadFixture(payload.requestId, '另一种方法'),
+      uploadFixture(draftFixture(), payload.requestId),
+    ]) {
+      await expect(service.save(owners[0]!, other)).rejects.toMatchObject({
+        kind: 'idempotency_conflict',
+      });
+    }
+    expect(objects.writes).toBe(1);
+    const separate = await service.saveContext(owners[1]!, payload);
+    expect(separate.created).toBe(true);
+    expect(separate.record.candidate.packageDigest).toBe(
+      results[0]!.record.candidate.packageDigest,
+    );
+    const rows = await api.query(
+      'SELECT owner_user_id FROM agent_draft_revisions WHERE request_id=$1',
+      [payload.requestId],
+    );
+    expect(new Set(rows.rows.map((row) => row.owner_user_id))).toEqual(new Set(owners));
+  });
+  it('uses one existing transaction and rolls back a saved context when its caller fails', async () => {
+    const payload = contextUploadFixture();
+    const single = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      options: '-c role=combo_api',
+      max: 1,
+      connectionTimeoutMillis: 1_000,
+    });
+    try {
+      await expect(
+        withTransaction(asTxPool(single), async (tx) => {
+          const scoped = new AgentDraftService(PgDraftRepository.inTransaction(tx), objects);
+          const saved = await scoped.saveContext(owners[0]!, payload);
+          expect(await scoped.read(owners[0]!, saved.record.storage.draftId, 1)).toEqual(
+            saved.record,
+          );
+          expect(
+            (
+              await tx.query('SELECT * FROM agent_draft_revisions WHERE request_id=$1', [
+                payload.requestId,
+              ])
+            ).rows,
+          ).toHaveLength(1);
+          expect(
+            (
+              await api.query('SELECT * FROM agent_draft_revisions WHERE request_id=$1', [
+                payload.requestId,
+              ])
+            ).rows,
+          ).toHaveLength(0);
+          throw new Error('abort-after-private-save');
+        }),
+      ).rejects.toThrow('abort-after-private-save');
+      expect(single.totalCount).toBe(1);
+      expect(
+        (
+          await api.query('SELECT * FROM agent_draft_revisions WHERE request_id=$1', [
+            payload.requestId,
+          ])
+        ).rows,
+      ).toHaveLength(0);
+      expect(objects.values.size).toBe(1);
+      const recovered = await withTransaction(asTxPool(single), async (tx) => {
+        const scoped = new AgentDraftService(PgDraftRepository.inTransaction(tx), objects);
+        return scoped.saveContext(owners[0]!, payload);
+      });
+      expect(recovered.created).toBe(true);
+      expect(await service.read(owners[0]!, recovered.record.storage.draftId, 1)).toEqual(
+        recovered.record,
+      );
+      expect(objects.values.size).toBe(1);
+    } finally {
+      await single.end();
+    }
+  });
+  it('rejects altered context content and caller ownership at the authenticated HTTP boundary', async () => {
+    const payload = contextUploadFixture();
+    for (const bad of [
+      { ...payload, ownerUserId: owners[1] },
+      {
+        ...payload,
+        candidate: { ...payload.candidate, compilationReceiptText: 'forged-attestation' },
+      },
+      { ...payload, draftText: ` ${payload.draftText}` },
+    ]) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/agent-package-drafts',
+        headers: headers(),
+        payload: bad,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body).not.toContain('forged-attestation');
+    }
+    expect(objects.writes).toBe(0);
+    expect(
+      (
+        await api.query('SELECT * FROM agent_draft_revisions WHERE request_id=$1', [
+          payload.requestId,
+        ])
+      ).rows,
+    ).toHaveLength(0);
+  });
+  it('rolls back context metadata after object failure and detects corruption after retry', async () => {
+    const payload = contextUploadFixture();
+    objects.fail = true;
+    await expect(service.saveContext(owners[0]!, payload)).rejects.toMatchObject({
+      kind: 'unavailable',
+    });
+    expect(
+      (
+        await api.query('SELECT * FROM agent_draft_revisions WHERE request_id=$1', [
+          payload.requestId,
+        ])
+      ).rows,
+    ).toHaveLength(0);
+    objects.fail = false;
+    const saved = await service.saveContext(owners[0]!, payload);
+    for (const key of objects.values.keys()) objects.values.set(key, new Uint8Array([0]));
+    const response = await app.inject({
+      url: `/api/v1/agent-package-drafts/${saved.record.storage.draftId}/revisions/1`,
+      headers: headers(),
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.body).not.toContain(payload.draftText);
   });
   it('serializes a reused UUID across different Drafts regardless of UUID letter case', async () => {
     const first = uploadFixture();

@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { compileCreatorAgentPackageDraftV2 } from '@cb/creator-worker/agent-package-compiler';
+import { compileCreatorAgentPackageFromContext } from '@cb/creator-worker/agent-package-context-compiler';
+import {
+  CREATOR_AGENT_CONTEXT_REQUEST_PROTOCOL,
+  parseCreatorAgentContextDraft,
+} from '@cb/creator-agent-protocol/agent-context';
 import {
   CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL,
   parseCreatorAgentPackageDraftSnapshotV2,
@@ -52,6 +57,20 @@ const Snapshot = z
   })
   .strict();
 type Snapshot = z.infer<typeof Snapshot>;
+const ContextCandidate = Candidate.omit({ compilationReceiptText: true }).strict();
+const ContextUpload = Upload.extend({
+  protocol: z.literal('combo.agent-context-upload/1'),
+  candidate: ContextCandidate,
+}).strict();
+const ContextSnapshot = Snapshot.extend({
+  protocol: z.literal('combo.private-agent-context-revision/1'),
+  candidate: ContextCandidate,
+}).strict();
+type ContextSnapshot = z.infer<typeof ContextSnapshot>;
+export type AgentContextUpload = z.infer<typeof ContextUpload>;
+export type AgentContextRecord = ReturnType<typeof projectContextRecord>;
+export type AgentDraftRecord = ReturnType<typeof projectRecord>;
+export type PrivateAgentRecord = AgentDraftRecord | AgentContextRecord;
 
 export class AgentDraftFailure extends Error {
   constructor(
@@ -89,64 +108,80 @@ export class PgDraftRepository implements DraftRepository {
     private pool: TxPool,
     private db: QueryableDb,
   ) {}
+  /** The caller owns this transaction and must finish it after all related writes. */
+  static inTransaction(tx: QueryableDb): DraftRepository {
+    return new TransactionDraftRepository(tx);
+  }
   async save(input: NewRevision, commit: (previous: DraftRow | null) => Promise<void>) {
-    return withTransaction(this.pool, async (tx) => {
-      // Fixed lock order also serializes the same request reused across different Drafts.
-      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `agent-draft-request:${input.owner_user_id}:${input.request_id}`,
-      ]);
-      await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `agent-draft:${input.owner_user_id}:${input.draft_id}`,
-      ]);
-      const existing = (
-        await tx.query<DraftRow>(
-          'SELECT * FROM agent_draft_revisions WHERE owner_user_id = $1::uuid AND request_id = $2::uuid',
-          [input.owner_user_id, input.request_id],
-        )
-      ).rows[0];
-      if (existing) {
-        if (
-          existing.snapshot_digest !== input.snapshot_digest ||
-          existing.draft_id !== input.draft_id ||
-          Number(existing.revision) !== input.revision
-        )
-          throw new AgentDraftFailure('idempotency_conflict');
-        return { row: existing, created: false };
-      }
-      const latest = (
-        await tx.query<DraftRow>(
-          'SELECT * FROM agent_draft_revisions WHERE owner_user_id = $1::uuid AND draft_id = $2 ORDER BY revision DESC LIMIT 1',
-          [input.owner_user_id, input.draft_id],
-        )
-      ).rows[0];
-      if (
-        input.revision !== (latest ? Number(latest.revision) + 1 : 1) ||
-        input.parent_fingerprint !== (latest?.draft_fingerprint ?? null)
+    return withTransaction(this.pool, (tx) =>
+      PgDraftRepository.inTransaction(tx).save(input, commit),
+    );
+  }
+  async read(owner: string, draftId: string, revision: number) {
+    return new TransactionDraftRepository(this.db).read(owner, draftId, revision);
+  }
+}
+
+/** No connection checkout or transaction lifecycle is hidden in this bound repository. */
+class TransactionDraftRepository implements DraftRepository {
+  constructor(private db: QueryableDb) {}
+  async save(input: NewRevision, commit: (previous: DraftRow | null) => Promise<void>) {
+    const tx = this.db;
+    // Fixed lock order also serializes the same request reused across different Drafts.
+    await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+      `agent-draft-request:${input.owner_user_id}:${input.request_id}`,
+    ]);
+    await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+      `agent-draft:${input.owner_user_id}:${input.draft_id}`,
+    ]);
+    const existing = (
+      await tx.query<DraftRow>(
+        'SELECT * FROM agent_draft_revisions WHERE owner_user_id = $1::uuid AND request_id = $2::uuid',
+        [input.owner_user_id, input.request_id],
       )
-        throw new AgentDraftFailure('revision_conflict');
-      await commit(latest ?? null);
-      const result = await tx.query<DraftRow>(
-        `INSERT INTO agent_draft_revisions
+    ).rows[0];
+    if (existing) {
+      if (
+        existing.snapshot_digest !== input.snapshot_digest ||
+        existing.draft_id !== input.draft_id ||
+        Number(existing.revision) !== input.revision
+      )
+        throw new AgentDraftFailure('idempotency_conflict');
+      return { row: existing, created: false };
+    }
+    const latest = (
+      await tx.query<DraftRow>(
+        'SELECT * FROM agent_draft_revisions WHERE owner_user_id = $1::uuid AND draft_id = $2 ORDER BY revision DESC LIMIT 1',
+        [input.owner_user_id, input.draft_id],
+      )
+    ).rows[0];
+    if (
+      input.revision !== (latest ? Number(latest.revision) + 1 : 1) ||
+      input.parent_fingerprint !== (latest?.draft_fingerprint ?? null)
+    )
+      throw new AgentDraftFailure('revision_conflict');
+    await commit(latest ?? null);
+    const result = await tx.query<DraftRow>(
+      `INSERT INTO agent_draft_revisions
          (owner_user_id, draft_id, revision, draft_fingerprint, parent_fingerprint, package_digest,
           snapshot_digest, snapshot_bytes, request_id, view_id)
          VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9::uuid,$10::uuid) RETURNING *`,
-        [
-          input.owner_user_id,
-          input.draft_id,
-          input.revision,
-          input.draft_fingerprint,
-          input.parent_fingerprint,
-          input.package_digest,
-          input.snapshot_digest,
-          input.snapshot_bytes,
-          input.request_id,
-          latest?.view_id ?? randomUUID(),
-        ],
-      );
-      const row = result.rows[0];
-      if (!row) throw new AgentDraftFailure('unavailable');
-      return { row, created: true };
-    });
+      [
+        input.owner_user_id,
+        input.draft_id,
+        input.revision,
+        input.draft_fingerprint,
+        input.parent_fingerprint,
+        input.package_digest,
+        input.snapshot_digest,
+        input.snapshot_bytes,
+        input.request_id,
+        latest?.view_id ?? randomUUID(),
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) throw new AgentDraftFailure('unavailable');
+    return { row, created: true };
   }
   async read(owner: string, draftId: string, revision: number) {
     return (
@@ -214,21 +249,91 @@ function prepare(owner: string, body: unknown) {
   }
 }
 
-/** Stored source claims remain unverified; compiling is not Desktop source attestation. */
-function projectRecord(row: DraftRow, snapshot: Snapshot) {
-  const draft = parseCreatorAgentPackageDraftSnapshotV2(snapshot.draftText);
+function contextDraftId(owner: string, requestId: string) {
+  const hash = createHash('sha256')
+    .update(`combo.agent-context-storage/1\n${owner}\n${requestId}`)
+    .digest('hex');
+  return `draft.agent-package.${hash.slice(0, 32)}`;
+}
+function validateContext(body: unknown) {
+  try {
+    const upload = ContextUpload.parse(body);
+    const draft = parseCreatorAgentContextDraft(upload.draftText);
+    const compiled = compileCreatorAgentPackageFromContext(
+      JSON.stringify({
+        protocol: CREATOR_AGENT_CONTEXT_REQUEST_PROTOCOL,
+        request: draft.request,
+        content: draft.content,
+      }),
+    );
+    const files = compiled.files.filter((file) => file.path !== 'agent.json');
+    const candidate = upload.candidate;
+    if (
+      compiled.draftText !== upload.draftText ||
+      candidate.packageDigest !== compiled.packageDigest ||
+      candidate.manifestText !== compiled.manifestText ||
+      candidate.files.length !== files.length ||
+      new Set(candidate.files.map((file) => file.path)).size !== candidate.files.length ||
+      files.some(
+        (file) => candidate.files.find((other) => other.path === file.path)?.text !== file.content,
+      )
+    )
+      throw new Error('candidate mismatch');
+    return { upload, draft };
+  } catch {
+    throw new AgentDraftFailure('validation');
+  }
+}
+/** Exact, bounded content identity for a caller's separate upload authorization check. */
+export function inspectAgentContextUpload(body: unknown) {
+  const { upload, draft } = validateContext(body);
+  return {
+    requestId: upload.requestId,
+    name: draft.content.name,
+    draftFingerprint: draft.draftFingerprint,
+    packageDigest: upload.candidate.packageDigest,
+  };
+}
+function prepareContext(owner: string, body: unknown) {
+  try {
+    const ownerUserId = z.string().uuid().parse(owner).toLowerCase();
+    const { upload, draft } = validateContext(body);
+    const candidate = upload.candidate;
+    const snapshot: ContextSnapshot = {
+      protocol: 'combo.private-agent-context-revision/1',
+      draftText: upload.draftText,
+      candidate: {
+        ...candidate,
+        files: [...candidate.files].sort((a, b) => (a.path < b.path ? -1 : 1)),
+      },
+    };
+    const bytes = Buffer.from(JSON.stringify(snapshot), 'utf8');
+    if (bytes.length > MAX_SNAPSHOT_BYTES) throw new Error('too large');
+    const row: NewRevision = {
+      owner_user_id: ownerUserId,
+      draft_id: contextDraftId(ownerUserId, upload.requestId),
+      revision: 1,
+      draft_fingerprint: draft.draftFingerprint,
+      parent_fingerprint: null,
+      package_digest: candidate.packageDigest,
+      snapshot_digest: sha(bytes),
+      snapshot_bytes: bytes.length,
+      request_id: upload.requestId,
+    };
+    return { row, bytes };
+  } catch {
+    throw new AgentDraftFailure('validation');
+  }
+}
+
+function projectPackage(row: DraftRow, snapshot: Snapshot | ContextSnapshot) {
   const manifest = parseCreatorAgentPackageManifest(snapshot.candidate.manifestText);
-  if (
-    draft.draftId !== row.draft_id ||
-    draft.revision !== Number(row.revision) ||
-    draft.draftFingerprint !== row.draft_fingerprint ||
-    digestCreatorAgentPackage(manifest) !== row.package_digest ||
-    snapshot.candidate.packageDigest !== row.package_digest
-  )
-    throw new AgentDraftFailure('unavailable');
   const files = snapshot.candidate.files;
   if (
+    digestCreatorAgentPackage(manifest) !== row.package_digest ||
+    snapshot.candidate.packageDigest !== row.package_digest ||
     manifest.files.length !== files.length ||
+    new Set(files.map((file) => file.path)).size !== files.length ||
     manifest.files.some((entry) => {
       const file = files.find((candidate) => candidate.path === entry.path);
       return (
@@ -237,6 +342,18 @@ function projectRecord(row: DraftRow, snapshot: Snapshot) {
         digestCreatorAgentPackageFile(Buffer.from(file.text, 'utf8')) !== entry.digest
       );
     })
+  )
+    throw new AgentDraftFailure('unavailable');
+  return { manifest, files };
+}
+
+/** Stored source claims remain unverified; compiling is not Desktop source attestation. */
+function projectRecord(row: DraftRow, snapshot: Snapshot) {
+  const draft = parseCreatorAgentPackageDraftSnapshotV2(snapshot.draftText);
+  if (
+    draft.draftId !== row.draft_id ||
+    draft.revision !== Number(row.revision) ||
+    draft.draftFingerprint !== row.draft_fingerprint
   )
     throw new AgentDraftFailure('unavailable');
   return {
@@ -251,52 +368,87 @@ function projectRecord(row: DraftRow, snapshot: Snapshot) {
     },
     candidate: snapshot.candidate,
     savedAt: new Date(row.created_at).toISOString(),
-    card: {
-      protocol: 'combo.agent-card-view/1',
-      viewId: row.view_id,
-      sequence: draft.revision,
-      dataMode: 'real',
-      audience: 'creator',
-      status: 'ready',
-      agent: {
-        name: manifest.name,
-        description: manifest.description,
-        included: `工作约定与 ${manifest.skills.length} 项 Skill。`,
-        excluded: '此卡片仅展示已保存的 Package 文件，不附带制作对话。',
-        sourceSummary: '私有保存已完成；Desktop 来源尚未核验，暂不能发布或试用。',
-        requirements: [],
-        starters: [...draft.content.starterPrompts],
-        sections: [
-          {
-            kind: 'instructions',
-            title: '方法与工作约定',
-            summary: 'Agent · AGENT.md',
-            paths: ['AGENT.md'],
-          },
-          ...(manifest.skills.length
-            ? [
-                {
-                  kind: 'skill',
-                  title: 'Skills',
-                  summary: `${manifest.skills.length} 项方法`,
-                  paths: [...manifest.skills],
-                },
-              ]
-            : []),
-        ],
-        compiled: {
-          packageDigest: row.package_digest,
-          files: [{ path: 'agent.json', text: snapshot.candidate.manifestText }, ...files],
+    card: projectCard(row, snapshot, draft.content.starterPrompts, false),
+  };
+}
+function projectContextRecord(row: DraftRow, snapshot: ContextSnapshot) {
+  const draft = parseCreatorAgentContextDraft(snapshot.draftText);
+  if (
+    Number(row.revision) !== 1 ||
+    row.parent_fingerprint !== null ||
+    row.draft_id !== contextDraftId(row.owner_user_id, row.request_id) ||
+    draft.draftFingerprint !== row.draft_fingerprint
+  )
+    throw new AgentDraftFailure('unavailable');
+  return {
+    protocol: 'combo.agent-context-record/1' as const,
+    visibility: 'private' as const,
+    sourceVerification: 'not_verified' as const,
+    storage: { draftId: row.draft_id, revision: 1 as const },
+    draft: {
+      protocol: draft.protocol,
+      fingerprint: draft.draftFingerprint,
+      text: snapshot.draftText,
+    },
+    candidate: snapshot.candidate,
+    savedAt: new Date(row.created_at).toISOString(),
+    card: projectCard(row, snapshot, draft.content.starterPrompts, true),
+  };
+}
+function projectCard(
+  row: DraftRow,
+  snapshot: Snapshot | ContextSnapshot,
+  starters: readonly string[],
+  context: boolean,
+) {
+  const { manifest, files } = projectPackage(row, snapshot);
+  return {
+    protocol: 'combo.agent-card-view/1',
+    viewId: row.view_id,
+    sequence: Number(row.revision),
+    dataMode: 'real',
+    audience: 'creator',
+    status: 'ready',
+    agent: {
+      name: manifest.name,
+      description: manifest.description,
+      included: `工作约定与 ${manifest.skills.length} 项 Skill。`,
+      excluded: '此卡片仅展示已保存的 Package 文件，不附带制作对话。',
+      sourceSummary: context
+        ? '私有保存已完成；来源未经独立验证，覆盖可能不完整；尚未真实试跑。'
+        : '私有保存已完成；Desktop 来源尚未核验，暂不能发布或试用。',
+      requirements: [],
+      starters: [...starters],
+      sections: [
+        {
+          kind: 'instructions',
+          title: '方法与工作约定',
+          summary: 'Agent · AGENT.md',
+          paths: ['AGENT.md'],
         },
+        ...(manifest.skills.length
+          ? [
+              {
+                kind: 'skill',
+                title: 'Skills',
+                summary: `${manifest.skills.length} 项方法`,
+                paths: [...manifest.skills],
+              },
+            ]
+          : []),
+      ],
+      compiled: {
+        packageDigest: row.package_digest,
+        files: [{ path: 'agent.json', text: snapshot.candidate.manifestText }, ...files],
       },
-      actions: {
-        share: false,
-        queryShare: false,
-        trial: false,
-        modify: false,
-        stop: false,
-        install: false,
-      },
+    },
+    actions: {
+      share: false,
+      queryShare: false,
+      trial: false,
+      modify: false,
+      stop: false,
+      install: false,
     },
   };
 }
@@ -305,7 +457,23 @@ export class AgentDraftService {
     private repository: DraftRepository,
     private objects: ImmutableObjectStore,
   ) {}
-  async save(owner: string, body: unknown) {
+  async save(
+    owner: string,
+    body: AgentContextUpload,
+  ): Promise<{ record: AgentContextRecord; created: boolean }>;
+  async save(
+    owner: string,
+    body: z.infer<typeof Upload>,
+  ): Promise<{ record: AgentDraftRecord; created: boolean }>;
+  async save(
+    owner: string,
+    body: unknown,
+  ): Promise<{ record: PrivateAgentRecord; created: boolean }>;
+  async save(
+    owner: string,
+    body: unknown,
+  ): Promise<{ record: PrivateAgentRecord; created: boolean }> {
+    if (ContextUpload.safeParse(body).success) return this.saveContext(owner, body);
     const { row, bytes, draft } = prepare(owner, body);
     try {
       const result = await this.repository.save(row, async (previous) => {
@@ -313,6 +481,7 @@ export class AgentDraftService {
           // Keep the original source and creator request fixed, under the same Draft lock.
           const stored = await this.readRow(previous);
           try {
+            if (stored.protocol !== 'combo.agent-draft-record/1') throw new Error('wrong protocol');
             const expected = reviseCreatorAgentPackageDraftV2(
               parseCreatorAgentPackageDraftSnapshotV2(stored.draft.text),
               {
@@ -338,7 +507,31 @@ export class AgentDraftService {
         if (!Buffer.from(readback).equals(bytes)) throw new AgentDraftFailure('unavailable');
       });
       // Always reread the committed object, including a retry after a lost HTTP response.
-      return { record: await this.readRow(result.row), created: result.created };
+      const record = await this.readRow(result.row);
+      if (record.protocol !== 'combo.agent-draft-record/1')
+        throw new AgentDraftFailure('unavailable');
+      return { record, created: result.created };
+    } catch (error) {
+      if (error instanceof AgentDraftFailure) throw error;
+      throw new AgentDraftFailure('unavailable');
+    }
+  }
+  async saveContext(
+    owner: string,
+    body: unknown,
+  ): Promise<{ record: AgentContextRecord; created: boolean }> {
+    const { row, bytes } = prepareContext(owner, body);
+    try {
+      const result = await this.repository.save(row, async () => {
+        const input = objectInput(row);
+        await this.objects.commit({ ...input, bytes, contentType: 'application/json' });
+        const readback = await this.objects.read(input);
+        if (!Buffer.from(readback).equals(bytes)) throw new AgentDraftFailure('unavailable');
+      });
+      const record = await this.readRow(result.row);
+      if (record.protocol !== 'combo.agent-context-record/1')
+        throw new AgentDraftFailure('unavailable');
+      return { record, created: result.created };
     } catch (error) {
       if (error instanceof AgentDraftFailure) throw error;
       throw new AgentDraftFailure('unavailable');
@@ -353,7 +546,7 @@ export class AgentDraftService {
     )
       throw new AgentDraftFailure('validation');
     try {
-      const row = await this.repository.read(owner, draftId, revision);
+      const row = await this.repository.read(owner.toLowerCase(), draftId, revision);
       if (!row) return null;
       return await this.readRow(row);
     } catch (error) {
@@ -371,9 +564,11 @@ export class AgentDraftService {
     const bytes = await this.objects.read(objectInput(row));
     if (bytes.length !== row.snapshot_bytes || sha(bytes) !== row.snapshot_digest)
       throw new AgentDraftFailure('unavailable');
-    const snapshot = Snapshot.parse(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-    );
-    return projectRecord(row, snapshot);
+    const snapshot = z
+      .discriminatedUnion('protocol', [Snapshot, ContextSnapshot])
+      .parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+    return snapshot.protocol === 'combo.private-agent-context-revision/1'
+      ? projectContextRecord(row, snapshot)
+      : projectRecord(row, snapshot);
   }
 }
