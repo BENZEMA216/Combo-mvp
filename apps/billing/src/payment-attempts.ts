@@ -53,7 +53,7 @@ export async function finishAttempt(
       `v2-hold:${found.agent_id}:${found.call_id}`,
     ]);
     await tx.query('SELECT id FROM v2_billable_calls WHERE id=$1 FOR UPDATE', [found.id]);
-    let attempt = (
+    const attempt = (
       await tx.query<CallAttempt>('SELECT * FROM v2_call_attempts WHERE hold_id=$1 FOR UPDATE', [
         input.holdId,
       ])
