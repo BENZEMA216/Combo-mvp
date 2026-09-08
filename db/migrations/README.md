@@ -2,6 +2,8 @@
 
 本目录按文件名字典序保存 PostgreSQL 迁移。已应用的迁移不可修改，新增结构必须通过新的迁移文件演进。
 
+当前源码头为 `0020_private_agent_drafts.sql`：新增私有 `agent_draft_revisions` 元数据索引，正文仍在私有对象存储。owner/request 幂等、连续 revision 与 exact parent 外键共同约束版本；历史只追加，禁止 UPDATE/DELETE/TRUNCATE。只向 API 授予 SELECT/INSERT，不授予 Runtime、worker 或 PUBLIC 权限。私有保存不创建 canonical Registry marker 或公共 Release，不复用旧 Agent 表；上传的来源声明仍未经过 Desktop 核验。
+
 `0000_baseline_schema.sql` 建立当前基线。`0001_expired_upload_reconciliation.sql` 增加上传超时查询索引，`0002_drop_stream_events.sql` 拒绝旧 PostgreSQL 事件表，`0003_turns.sql` 增加自治轮次与轮内消息顺序。`0004_studio_sessions.sql`、`0005_capability_current_ui.sql` 和 `0006_one_running_turn_per_session.sql` 保存 Goal B 已发布的 Studio、current UI 与 Turn fencing 结构。
 
 `0007_first_party_email_auth.sql` 至 `0011_recharge_qr_only.sql` 建立第一方认证、应用角色、计费与二维码充值当前结构。`0012_agent_builder_v1.sql` 至 `0016_project_history_agent_flow.sql` 是 Test 已应用的逐字节兼容前缀；它们保留旧 Agent Builder、外部 MCP OAuth、Test Review、Project Agent Share 与 Project-history Agent flow schema，但不表示当前应用激活这些旧协议。已经执行的迁移不可修改，新结构必须从 `0017` 继续追加编号；五个兼容文件的 SHA-256 由 `live_migration_prefix.test.ts` 固定。

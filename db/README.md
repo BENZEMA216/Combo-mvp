@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0019`。Test 常驻数据库已经记录 `0012` 至 `0016`，因此这五个文件按原文件名和精确字节恢复为不可变兼容前缀；canonical Agent Package Registry 只由后置的 `0017` 定义，受控 Test 的知识 Agent Session 与用量收据由 `0018` 追加，服务端待恢复用量由 `0019` 追加。
+这个目录是数据库结构的唯一真源。当前源码迁移链从 `0000` 连续到 `0020`（不表示任何环境已部署）。Test 常驻数据库已经记录 `0012` 至 `0016`，因此这五个文件按原文件名和精确字节恢复为不可变兼容前缀；canonical Agent Package Registry 只由后置的 `0017` 定义，受控 Test 的知识 Agent Session 与用量收据由 `0018` 追加，服务端待恢复用量由 `0019` 追加，私有编译快照元数据由 `0020` 追加。
 
 ## 迁移文件
 
@@ -23,7 +23,7 @@
 
 ## V2 独立验证链
 
-`combo-v2` 不读取正式链的 `0012` 至 `0019`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0017_v2_payment_channel.sql`。`0016` 追加收费调用、支付请求、请求编号别名与原调用资金预留，`0017` 增加渠道订单和低敏事件。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；Test、Preview、Production 继续以正式 `0019` 为迁移头。
+`combo-v2` 不读取正式链的 `0012` 至 `0020`。它复用正式链中逐字节相同的 `0000` 至 `0011`，再执行 `db/v2-migrations` 的 `0012_v2_end_user_identity.sql` 至 `0017_v2_payment_channel.sql`。`0016` 追加收费调用、支付请求、请求编号别名与原调用资金预留，`0017` 增加渠道订单和低敏事件。这条链只服务独立的 `combo_v2` 数据库，由 `migrate-v2.ts` 组装；正式源码头为 `0020`，各环境实际头须独立核验。
 
 V2 终端用户身份域使用 `v2_users`、`v2_identities`、`v2_auth_challenges` 与 `v2_sessions`，和创作者域的 `auth_` 表互不引用。V2 计费域使用 `v2_wallets`、`v2_ledger`、`v2_orders`、`v2_packages`、`v2_holds` 与 `v2_metering_events`；流水和计量事件只允许追加。
 
@@ -49,6 +49,8 @@ Authoring 创建首个或替代充值订单时，必须在同一个数据库事�
 
 ## 认证与权限
 
+`0020_private_agent_drafts.sql` 新增私有版本索引 `agent_draft_revisions`。Draft、Package 与编译收据保存在既有私有 bucket，索引仅保存 owner、版本链、digest、请求幂等键和稳定卡片标识。API 只可 SELECT/INSERT；Runtime、worker、PUBLIC 零权限；普通 DML 即使由迁移 owner 发起也不能更新、删除或清空历史。它不创建公开 Release，也不认证上传内容的 Desktop 来源。
+
 `0007` 在改变 `users` 前取得排他锁，并在发现任何用户时以 SQLSTATE `55000` 整体失败。它把账号限制为 `creator-` 加八位小写 Base32，把角色限制为唯一的 `creator`，将会话期限固定为七天，并允许显式撤销。该迁移不读取、转换或恢复旧身份。
 
 `combo_api` 可以读写认证表、任务、上传、能力和模型审计，并获得充值订单、支付尝试、回调、钱包可用余额与充值流水所需的最小表级和列级权限。`combo_worker` 只能处理任务、上传、能力和模型审计，不能读取认证或计费表。`combo_runtime` 只读 `users` 与 `auth_sessions`，读写 Session、Turn、Message 与 Artifact；它只获得 `capabilities.ui_artifact_id` 的列级更新权限，以及免费额度、钱包预留、使用记录和使用流水所需的计费权限。`combo_api` 与 `combo_runtime` 都只能查询和追加资金流水，不能修改、删除或清空既有流水；API 只能追加充值入账，Runtime 只能追加使用扣款。
@@ -71,12 +73,12 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0019_pending_usage_recovery.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0020_private_agent_drafts.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
 ```
 
-`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0019`、从 live `0018` 账本只追加 pending recovery `0019` 且历史订单保留 `NULL`、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
+`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0020`、历史 `0018`→`0019` 升级且历史订单保留 `NULL`、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。私有 Draft 的真实 HTTP、并发和权限测试位于 authoring；它使用临时数据库及内存对象存储，不证明线上上传或 Desktop 推理。
 
-V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0017_v2_payment_channel.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0019` 未进入 `combo_v2`。
+V2 验证使用 `pnpm -F @cb/db migrate:v2`，并以 `0017_v2_payment_channel.sql` 为独立迁移头。其真实 PostgreSQL 集成必须另外证明现有 V2 账本幂等、计量 exact scope、五角色正负权限以及正式 `0012` 至 `0020` 未进入 `combo_v2`。

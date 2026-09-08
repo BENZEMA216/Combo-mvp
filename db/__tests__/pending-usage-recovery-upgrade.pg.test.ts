@@ -173,7 +173,8 @@ pgDescribe('receipts 0018 to pending recovery 0019 upgrade on PostgreSQL 16', ()
           'SELECT filename FROM schema_migrations ORDER BY filename',
         )
       ).rows.map(({ filename }) => filename);
-      expect(planMigrations(migrationFiles, applied, migration0019).pending).toEqual([]);
+      const historicalSource = migrationFiles.slice(0, migrationFiles.indexOf(migration0019) + 1);
+      expect(planMigrations(historicalSource, applied, migration0019).pending).toEqual([]);
     } finally {
       if (upgrade) await upgrade.end().catch(() => undefined);
       if (databaseCreated) {
