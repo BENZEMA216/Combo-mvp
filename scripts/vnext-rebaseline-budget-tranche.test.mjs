@@ -49,7 +49,7 @@ test('v6 freezes the merged compiler Main baseline and all v5 bytes and ceilings
   assert.deepEqual(contract.compatibility, archivedBudget.compatibility);
   assert.deepEqual(contract.allowedPathPrefixes, archivedBudget.allowedPathPrefixes);
   assert.equal(contract.maintenanceFile, archivedBudget.maintenanceFile);
-  assert.equal(lightweightTransferScopeFiles.length, 14);
+  assert.equal(lightweightTransferScopeFiles.length, 15);
   assert.deepEqual(
     contract.allowedFiles,
     [...archivedBudget.allowedFiles, ...lightweightTransferScopeFiles].sort(),
@@ -151,6 +151,33 @@ test('v6 admits exactly the requested files and rejects every scope or compatibi
   ]) {
     assert.throws(() => assessPullRequest(contract, [entry(path)]), /outside/);
   }
+});
+
+test('the Agent Draft public export admits only index.ts, not its module prefix', () => {
+  const publicIndex = 'apps/authoring/src/modules/agent-draft/index.ts';
+  assert.equal(assessPullRequest(contract, [entry(publicIndex)]).mode, 'PRODUCT');
+  assert.throws(() => assessPullRequest(archivedBudget, [entry(publicIndex)]), /outside/);
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [entry('apps/authoring/src/modules/agent-draft/internal.ts')]),
+    /outside/,
+  );
+  const missingIndex = structuredClone(contract);
+  missingIndex.allowedFiles = missingIndex.allowedFiles.filter((path) => path !== publicIndex);
+  assert.throws(
+    () => parseTrancheContract(canonical(missingIndex), archivedBudget),
+    /15 exact transfer files/,
+  );
+  const widenedPrefix = structuredClone(contract);
+  widenedPrefix.allowedPathPrefixes.push('apps/authoring/src/modules/agent-draft/');
+  assert.throws(
+    () => parseTrancheContract(canonical(widenedPrefix), archivedBudget),
+    /preserve the v5 allowedPathPrefixes/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry(trancheContractPath), entry(publicIndex)]),
+    /governance-only/,
+  );
 });
 
 test('all exact ceilings remain mandatory and independently enforced after the tranche', () => {

@@ -28,6 +28,7 @@ export const lightweightTransferScopeFiles = Object.freeze([
   'apps/authoring/src/__tests__/agent-transfer-fixture.ts',
   'apps/authoring/src/__tests__/agent-transfer.pg.test.ts',
   'apps/authoring/src/__tests__/agent-transfer.test.ts',
+  'apps/authoring/src/modules/agent-draft/index.ts',
   'apps/web/src/App.agentPackages.test.tsx',
   'apps/web/src/App.tsx',
   'apps/web/src/api/agentPackages.test.ts',
@@ -89,7 +90,7 @@ export function parseTrancheContract(source, archivedBudget) {
   equal(
     contract.allowedFiles,
     expectedFiles,
-    'v6 allowedFiles must add only 14 exact transfer files',
+    'v6 allowedFiles must add only 15 exact transfer files',
   );
   return contract;
 }

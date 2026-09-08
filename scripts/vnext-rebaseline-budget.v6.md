@@ -23,8 +23,10 @@ git diff --raw -z --full-index --no-renames --abbrev=40 \
 新旧阶段均保留每个 PR 最多 30 个文件、5,000 行增删、单文件 1,200 行增删，以及累计 15,000 行增删的上限。
 新阶段自身的治理改动也从该阶段基准计入累计预算。治理与产品改动不能混在一个 PR 中。
 
-v6 保留 v5 全部范围，仅增加合同列出的 14 个精确文件：3 个 Authoring transfer 测试文件和 11 个 Web
-路由、接口、页面、样式及测试文件；没有增加路径前缀。PostgreSQL 和 Worker SQLite 的历史兼容约束不变。
+v6 保留 v5 全部范围，仅增加合同列出的 15 个精确文件：3 个 Authoring transfer 测试文件、Agent Draft 的
+`apps/authoring/src/modules/agent-draft/index.ts` 正式模块导出面，以及 11 个 Web 路由、接口、页面、样式及
+测试文件。业务域通过正式导出面复用 Draft 服务，不放宽跨域深层导入规则；没有增加路径前缀。
+PostgreSQL 和 Worker SQLite 的历史兼容约束不变。
 
 验证器要求新阶段基准同时是比较基准与 HEAD 的祖先，且位于规范 Main 的第一父链中。GitHub PR 使用已验证的
 双亲合并提交和 `BASE_SHA`，只接受规范仓库的 Main 目标；Main push 使用 exact `SOURCE_SHA` 和第一父提交。

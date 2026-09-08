@@ -50,6 +50,7 @@
     "apps/authoring/src/bootstrap/routes.ts",
     "apps/authoring/src/modules/README.md",
     "apps/authoring/src/modules/agent-draft/README.md",
+    "apps/authoring/src/modules/agent-draft/index.ts",
     "apps/authoring/src/modules/agent-draft/routes.ts",
     "apps/authoring/src/modules/agent-draft/service.ts",
     "apps/authoring/src/modules/billing/README.md",
