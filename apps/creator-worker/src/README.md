@@ -1,5 +1,8 @@
 # 源码职责
 
+- `agent-package-receiver/` 提供独立 Node 接收器，校验固定公开 Release 与轻量文本 Package，在 Host 已选项目
+  内保真安装原包和薄 Skill 适配器，并以原子入口发布、精确幂等和离线复验保护现有文件；它不启动推理或新任务。
+
 - `authoring/agent-context-compiler.ts` 把当前 Codex 整理后的有界内容编译为既有智能体包，返回独立轻量 Draft、
   精确文件与摘要；来源固定未验证且覆盖可能不完整，不导入来源读取器、Host、网络或执行层。
 - `agent-package-context-compiler.ts` 显式导出轻量编译器，保持独立于旧 V1、V2 来源入口。
