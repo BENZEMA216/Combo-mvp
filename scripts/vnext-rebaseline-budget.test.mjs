@@ -4,12 +4,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import './vnext-rebaseline-budget-tranche.test.mjs';
 
 import {
   assessCumulative,
   assessPullRequest,
   classifyPlatformV2Bootstrap,
-  contractPath,
+  archivedBudgetPath as contractPath,
   defaultBaseRef,
   initialTrancheLock,
   isAuthorizedPlatformV2AdmissionContext,
