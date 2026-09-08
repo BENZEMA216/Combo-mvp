@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  assertPublicationTestInstance,
+  publicationTestTarget,
+} from './agent-package-publication-fixture.js';
 
 const enabled = process.env.AGENT_PACKAGE_PUBLICATION_PG_TEST === '1';
 const pgDescribe = enabled ? describe : describe.skip;
@@ -8,38 +12,16 @@ const digest = () => `sha256:${randomUUID().replaceAll('-', '').repeat(2)}`;
 const releaseId = () => `release.agent-package.${randomUUID().replaceAll('-', '')}`;
 let sequence = 0;
 
-function requireDisposableDatabase(raw: string) {
-  const url = new URL(raw);
-  const keys = [...url.searchParams.keys()];
-  const socket = url.searchParams.get('host');
-  const safeSocket =
-    socket !== null && /^\/tmp\/combo-(?:publication|draft)-pg\.[A-Za-z0-9]+$/u.test(socket);
-  const local = socket === null && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (
-    (!safeSocket && !local) ||
-    new Set(keys).size !== keys.length ||
-    keys.some((key) => !['host', 'port'].includes(key)) ||
-    !(
-      /^\/combo_(?:publication|draft)_test_[a-z0-9]{6,32}$/u.test(url.pathname) ||
-      (safeSocket && ['/combo_publication_test', '/combo_draft_test'].includes(url.pathname)) ||
-      (local && process.env.GITHUB_ACTIONS === 'true' && url.pathname === '/agora')
-    )
-  )
-    throw new Error('publication tests require an explicitly named local disposable database');
-}
-
 pgDescribe('exact Agent Package publication and browser transfer on PostgreSQL 16', () => {
   let db: Client;
   let ownerA: string;
   let ownerB: string;
   let packageDigest: string;
   beforeAll(async () => {
-    const url = process.env.DATABASE_URL;
-    if (!url) throw new Error('AGENT_PACKAGE_PUBLICATION_PG_TEST requires DATABASE_URL');
-    requireDisposableDatabase(url);
-    db = new Client({ connectionString: url });
+    const target = publicationTestTarget(process.env.DATABASE_URL);
+    db = new Client({ connectionString: target.connectionString });
     await db.connect();
-    expect((await db.query('SHOW server_version')).rows[0]?.server_version).toMatch(/^16[.]/u);
+    await assertPublicationTestInstance(db, target);
     expect(
       (await db.query('SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1'))
         .rows[0]?.filename,
@@ -315,9 +297,7 @@ pgDescribe('exact Agent Package publication and browser transfer on PostgreSQL 1
     );
   });
 
-  it('enforces expiry at the database transition, without waiting or exposing a time override to API', async () => {
-    const value = await draft();
-    const { id } = await transfer(value);
+  async function expire(id: string) {
     await db.query('RESET ROLE');
     // This fixture-only DDL is transactional and only allowed against the guarded disposable DB.
     await db.query(
@@ -331,11 +311,47 @@ pgDescribe('exact Agent Package publication and browser transfer on PostgreSQL 1
       'ALTER TABLE agent_package_transfers ENABLE TRIGGER agent_package_transfer_guard',
     );
     await db.query('SET LOCAL ROLE combo_api');
+  }
+
+  it('enforces expiry at the database transition, without waiting or exposing a time override to API', async () => {
+    const value = await draft();
+    const { id } = await transfer(value);
+    await expire(id);
     await rejects(
       "UPDATE agent_package_transfers SET phase='approved',owner_user_id=$2 WHERE transfer_id=$1",
       [id, ownerA],
       '23514',
     );
+  });
+
+  it('rejects an expired approved upload but allows an independent publication after upload', async () => {
+    const value = await draft();
+    const approved = await transfer(value);
+    await db.query(
+      "UPDATE agent_package_transfers SET phase='approved',owner_user_id=$2 WHERE transfer_id=$1",
+      [approved.id, ownerA],
+    );
+    await expire(approved.id);
+    await rejects(
+      "UPDATE agent_package_transfers SET phase='uploaded',draft_id=$2,draft_revision=1 WHERE transfer_id=$1",
+      [approved.id, value.id],
+      '23514',
+    );
+    const uploaded = await transfer(value);
+    await upload(uploaded.id, value);
+    await expire(uploaded.id);
+    const exactRelease = await release(ownerA, await claim(value));
+    await db.query(
+      "UPDATE agent_package_transfers SET phase='published',release_id=$2 WHERE transfer_id=$1",
+      [uploaded.id, exactRelease],
+    );
+    expect(
+      (
+        await db.query('SELECT phase FROM agent_package_transfers WHERE transfer_id=$1', [
+          uploaded.id,
+        ])
+      ).rows[0]?.phase,
+    ).toBe('published');
   });
 
   it('retains immutable claims, releases and revocations with minimal application grants', async () => {
