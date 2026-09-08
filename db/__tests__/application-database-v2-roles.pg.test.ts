@@ -129,6 +129,16 @@ pgDescribe('isolated V2 application roles on PostgreSQL', () => {
     }
     for (const role of ['combo_api', 'combo_worker', 'combo_runtime', 'combo_authz'] as const) {
       expect(await tablePrivilege(clients.get(role)!, 'public.v2_ledger', 'SELECT')).toBe(false);
+      expect(await tablePrivilege(clients.get(role)!, 'public.v2_call_attempts', 'SELECT')).toBe(
+        false,
+      );
     }
+    expect(await tablePrivilege(billing, 'public.v2_call_attempts', 'SELECT')).toBe(true);
+    expect(await tablePrivilege(billing, 'public.v2_call_attempts', 'INSERT')).toBe(true);
+    expect(await tablePrivilege(billing, 'public.v2_call_attempts', 'DELETE')).toBe(false);
+    expect(await columnPrivilege(billing, 'public.v2_call_attempts', 'hold_id', 'UPDATE')).toBe(
+      false,
+    );
+    expect(await columnPrivilege(billing, 'public.v2_call_attempts', 'state', 'UPDATE')).toBe(true);
   });
 });

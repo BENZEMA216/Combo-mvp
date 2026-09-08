@@ -14,6 +14,7 @@ const V2_TAIL = [
   '0015_v2_billing_idempotency.sql',
   '0016_v2_payment_admission.sql',
   '0017_v2_payment_channel.sql',
+  '0018_v2_call_attempts.sql',
 ] as const;
 
 describe('isolated V2 migration runner contract', () => {
@@ -23,7 +24,7 @@ describe('isolated V2 migration runner contract', () => {
 
     expect(canonical.at(-1)).toBe('0019_pending_usage_recovery.sql');
     expect(v2).toEqual([...canonical.slice(0, 12), ...V2_TAIL]);
-    expect(v2.at(-1)).toBe('0017_v2_payment_channel.sql');
+    expect(v2.at(-1)).toBe('0018_v2_call_attempts.sql');
     expect(v2).not.toContain('0012_agent_builder_v1.sql');
   });
 
@@ -32,16 +33,18 @@ describe('isolated V2 migration runner contract', () => {
     const sharedPrefix = v2.slice(0, 12);
     const deployedThroughIdempotency = v2.filter((name) => Number(name.slice(0, 4)) <= 15);
 
-    expect(planMigrations(v2, sharedPrefix, '0017_v2_payment_channel.sql').pending).toEqual(
-      V2_TAIL,
-    );
+    expect(planMigrations(v2, sharedPrefix, '0018_v2_call_attempts.sql').pending).toEqual(V2_TAIL);
     expect(
-      planMigrations(v2, deployedThroughIdempotency, '0017_v2_payment_channel.sql').pending,
-    ).toEqual(['0016_v2_payment_admission.sql', '0017_v2_payment_channel.sql']);
-    expect(planMigrations(v2, v2.slice(0, -1), '0017_v2_payment_channel.sql').pending).toEqual([
+      planMigrations(v2, deployedThroughIdempotency, '0018_v2_call_attempts.sql').pending,
+    ).toEqual([
+      '0016_v2_payment_admission.sql',
       '0017_v2_payment_channel.sql',
+      '0018_v2_call_attempts.sql',
     ]);
-    expect(planMigrations(v2, v2, '0017_v2_payment_channel.sql').pending).toEqual([]);
+    expect(planMigrations(v2, v2.slice(0, -1), '0018_v2_call_attempts.sql').pending).toEqual([
+      '0018_v2_call_attempts.sql',
+    ]);
+    expect(planMigrations(v2, v2, '0018_v2_call_attempts.sql').pending).toEqual([]);
   });
 
   it('snapshots cluster-global roles only after acquiring the database migration lock', () => {

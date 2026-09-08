@@ -1,4 +1,4 @@
-# combo_v2 库迁移 Job：canonical 0000→0011 + V2 0012→0017，并配置五角色密码。
+# combo_v2 库迁移 Job：canonical 0000→0011 + V2 0012→0018，并配置五角色密码。
 # 五份角色密码中 combo_api / combo_worker / combo_runtime 与现有环境一致。0008 的
 # NOLOGIN 与同密码恢复在一个 migration transaction 内提交，其他连接看不到中间状态。
 apiVersion: batch/v1
@@ -49,7 +49,7 @@ spec:
               valueFrom:
                 secretKeyRef: { name: combo-env, key: POSTGRES_BILLING_PASSWORD }
             - name: EXPECTED_MIGRATION_HEAD
-              value: 0017_v2_payment_channel.sql
+              value: 0018_v2_call_attempts.sql
             - name: MIGRATION_RUNS
               value: '2'
           resources:

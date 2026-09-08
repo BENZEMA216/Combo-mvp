@@ -19,14 +19,14 @@ fail() {
 command -v pnpm >/dev/null 2>&1 || fail '需要 pnpm'
 command -v psql >/dev/null 2>&1 || fail '需要 psql'
 
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0017_v2_payment_channel.sql \
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0018_v2_call_attempts.sql \
   pnpm -F @cb/db migrate:v2
 
 migration_head=$(node --experimental-strip-types db/scripts/migrate-v2.ts --head)
-[[ "$migration_head" == 0017_v2_payment_channel.sql ]] || fail "迁移头错误：$migration_head"
+[[ "$migration_head" == 0018_v2_call_attempts.sql ]] || fail "迁移头错误：$migration_head"
 
 applied=$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')
-[[ "$applied" == 18 ]] || fail "迁移账本数量错误：$applied"
+[[ "$applied" == 19 ]] || fail "迁移账本数量错误：$applied"
 
 for table in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls \
   auth_identities auth_otp_challenges auth_sessions auth_audit_events \
@@ -35,7 +35,7 @@ for table in users tasks uploads capabilities sessions messages turns artifacts 
   v2_users v2_identities v2_auth_challenges v2_sessions \
   v2_wallets v2_ledger v2_orders v2_packages v2_holds v2_metering_events \
   v2_billable_calls v2_payment_requests v2_payment_request_keys v2_payment_fund_reservations \
-  v2_payment_channel_orders v2_payment_channel_events; do
+  v2_payment_channel_orders v2_payment_channel_events v2_call_attempts; do
   exists=$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${table}') IS NOT NULL")
   [[ "$exists" == t ]] || fail "缺基表 $table"
 done
