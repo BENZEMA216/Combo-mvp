@@ -5,9 +5,9 @@
 ## 文件
 
 - `fakes.ts` 提供任务、上传、能力项、对象存储、队列、事件流和大模型的内存假件。
-- `agent-draft-fixture.ts` 提供明确标记为合成来源的 V2 样例、编译上传、私有对象/版本假件和本地临时数据库保护。
-- `agent-draft.test.ts` 验证 exact 内容、幂等、版本、A→B→A、固定来源/制作要求、损坏与失败闭合，以及测试连接保护。
-- `agent-draft.pg.test.ts` 是显式 `AGENT_DRAFT_PG_TEST=1` 开启的临时 PostgreSQL 测试，验证真实 Cookie/Origin/HTTP、并发锁、最小角色、历史防改和失败回滚；对象存储仍是假件。只接受本地专用测试库（GitHub Actions 允许 CI 临时 agora service），保留合成 append-only 行直至临时库销毁，不读写已有业务数据。
+- `agent-draft-fixture.ts` 提供明确标记为合成来源的 V2 和轻量上下文样例、编译上传、私有对象/版本假件和本地临时数据库保护。
+- `agent-draft.test.ts` 验证两种协议的严格互斥、exact 内容、无写入身份检查、账户隔离、幂等、V2 版本与固定来源、轻量独立快照、损坏和失败恢复，以及测试连接保护。
+- `agent-draft.pg.test.ts` 是显式 `AGENT_DRAFT_PG_TEST=1` 开启的临时 PostgreSQL 测试，验证真实 Cookie/Origin/HTTP、并发锁、最小角色、历史防改、失败回滚和轻量快照在新 Node 进程中的回读；对象存储仍是假件，新进程只接收合成对象字节。只接受本地专用测试库（GitHub Actions 允许 CI 临时 agora service），保留合成 append-only 行直至临时库销毁，不读写已有业务数据。
 - `account-auth.test.ts` 验证四个认证 handler 的响应、错误映射、Cookie 属性、登出数据库故障和敏感日志边界。
 - `account-service.test.ts` 验证 challenge 两段事务编排、邮件结果映射、Redis 故障策略和 verification 结果映射。
 - `account-repo.test.ts` 使用假事务连接验证 Redis 限流不可用时的数据库硬守卫，不存在活动挑战的重复验证不会追加失败审计行。
