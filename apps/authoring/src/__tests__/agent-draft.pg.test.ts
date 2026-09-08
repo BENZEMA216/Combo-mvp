@@ -48,7 +48,7 @@ pgDescribe('private Agent Draft HTTP and PostgreSQL (object storage fake)', () =
     const head = await admin.query(
       'SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1',
     );
-    expect(head.rows[0]?.filename).toBe('0020_private_agent_drafts.sql');
+    expect(head.rows[0]?.filename).toBe('0021_agent_package_publication.sql');
     for (const [index, owner] of owners.entries()) {
       const account = `creator-${randomBytes(8)
         .toString('hex')

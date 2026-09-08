@@ -2,7 +2,9 @@
 
 本目录按文件名字典序保存 PostgreSQL 迁移。已应用的迁移不可修改，新增结构必须通过新的迁移文件演进。
 
-当前源码头为 `0020_private_agent_drafts.sql`：新增私有 `agent_draft_revisions` 元数据索引，正文仍在私有对象存储。owner/request 幂等、连续 revision 与 exact parent 外键共同约束版本；历史只追加，禁止 UPDATE/DELETE/TRUNCATE。只向 API 授予 SELECT/INSERT，不授予 Runtime、worker 或 PUBLIC 权限。私有保存不创建 canonical Registry marker 或公共 Release，不复用旧 Agent 表；上传的来源声明仍未经过 Desktop 核验。
+当前源码头为 `0021_agent_package_publication.sql`：保留旧 Package/controlled-Test Release 行和原 owner 约束，增加每个发布者独立的 exact 私有 Draft claim、`public_link` Release、追加式撤销和有界浏览器上传授权状态。数据库只保存 upload secret 摘要；十分钟有效期及状态时间由数据库实时钟生成，API 不能改时间、secret 或 intent 身份。公开状态必须绑定同一 exact Draft 的公开 Release，不能把受控 Test 或同 digest 的另一 Draft 冒充已发布。新增表只给 API 必需权限，worker、Runtime、PUBLIC 零权限。这是存储先决层，不表示浏览器、Plugin 或环境部署已完成。
+
+`0020_private_agent_drafts.sql` 新增私有 `agent_draft_revisions` 元数据索引，正文仍在私有对象存储。owner/request 幂等、连续 revision 与 exact parent 外键共同约束版本；历史只追加，禁止 UPDATE/DELETE/TRUNCATE。只向 API 授予 SELECT/INSERT，不授予 Runtime、worker 或 PUBLIC 权限。私有保存不创建 canonical Registry marker 或公共 Release，不复用旧 Agent 表；上传的来源声明仍未经过 Desktop 核验。
 
 `0000_baseline_schema.sql` 建立当前基线。`0001_expired_upload_reconciliation.sql` 增加上传超时查询索引，`0002_drop_stream_events.sql` 拒绝旧 PostgreSQL 事件表，`0003_turns.sql` 增加自治轮次与轮内消息顺序。`0004_studio_sessions.sql`、`0005_capability_current_ui.sql` 和 `0006_one_running_turn_per_session.sql` 保存 Goal B 已发布的 Studio、current UI 与 Turn fencing 结构。
 
