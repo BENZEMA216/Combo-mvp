@@ -121,6 +121,7 @@ function classify(root: string, path: string): Layer | undefined {
   if (name.startsWith('execution/') || name === 'agent-local-contract.ts') return 'execution';
   if (
     name.startsWith('application/') ||
+    name.startsWith('agent-package-receiver/') ||
     name === 'agent-catalog-cli.ts' ||
     name === 'agent-package-cli.ts' ||
     name === 'agent-package-context-compiler-cli.ts' ||

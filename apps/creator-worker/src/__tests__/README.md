@@ -1,5 +1,10 @@
 # 测试职责
 
+- `agent-package-receiver.test.ts` 使用公开合成 Package 和独立临时项目验证严格参数、平台、匿名下载、文本清单、
+  字节完整性、符号链接与硬链接拒绝、排他锁、目录身份、失败后入口状态、精确幂等、离线验证和真实单文件入口。
+  这些测试不联网真实 Test 服务、不安装使用者项目，也不启动 Codex 推理，不能替代跨用户同任务两轮验收。
+- `agent-package-receiver-fixture.ts` 只用现有轻量编译器生成非敏感合成 Package 与公开响应，不保存真实发布者数据。
+
 - `agent-context-compiler.test.ts` 覆盖轻量内容的确定性编译、真实 loader 回读、敏感内容全字段拒绝、
   V2 互斥、独立 Node 文件执行与无副作用导入，以及编译器依赖图没有来源读取和运行层；不调用真实 Codex。
 

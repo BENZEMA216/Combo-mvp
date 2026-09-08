@@ -1,5 +1,49 @@
 # @cb/creator-worker
 
+## 项目内公开 Agent 接收器
+
+`@cb/creator-worker/agent-package-receiver` 指向构建产物 `dist/agent-package-receiver.mjs`。
+它复用 Package 协议校验器并使用现有 esbuild 打成不超过 1 MiB 的单文件模块，运行时仅依赖 Node 内置模块。
+模块导入没有文件、网络或进程副作用；直接执行时支持 `install` 和完全离线的 `verify` 两个子命令。
+本切片没有注册公开下载路由，没有发布插件，也不启动模型或另一个 Codex 任务。
+
+```text
+node agent-package-receiver.mjs install --project-root <Host 已选的绝对根目录> --share-url <规范分享链接> --package-digest <精确摘要>
+node agent-package-receiver.mjs verify --project-root <同一个 Host 已选的绝对根目录> --share-url <同一个分享链接> --package-digest <同一个摘要>
+```
+
+以上是给 Codex Host 执行的技术接口，不要求普通用户打开 Terminal、填写路径或摘要。Host 必须先从可信公开
+引导取得固定接收器代码和摘要，在执行前独立核对代码 SHA-256，并使用当前已经选定的项目根。
+没有明确项目时停止并请用户在 Codex 中选择项目，不扫描其他项目、不从进程工作目录猜测。
+首版仅支持 macOS、Linux 和已有的 Node 24.2 或更新版本；其他平台在网络或项目操作前明确失败，不安装运行时。
+入口使用 Node 的 `import.meta.main`，避免临时目录祖先别名使命令静默跳过；支持版本内的模块导入不进行路径读取。
+
+`install` 仅从固定 Test origin 匿名读取 Release 投影和裸 Package，核对原始 Release、Package digest、
+规范清单和所有 UTF-8 文件字节。`combo.agent-package-receiver-text/1` 只接受轻量编译器的根 `AGENT.md`、
+`skills/extracted-method/SKILL.md` 和 `skills/extracted-method/provenance.json`；来源声明固定未验证。
+这只是文本安装范围，不证明 Agent 方法不需要工具，也不证明当前 Host 已具备全部语义能力。
+接收器不执行 Package 脚本、不安装依赖、不暗中连接 MCP，也不读取创作者对话、凭据或使用者业务文件。
+
+原始 `agent.json` 和清单文件按 exact bytes 保存到项目内 `.combo/agent-packages/sha256/<digest>/`。
+生成的薄适配器位于 `.agents/skills/combo-<release-id-suffix>/`，只包含受信 `SKILL.md`、显式调用策略、
+同一个接收器文件和包外安装收据。原包不放进自动发现的 Skill 目录，适配器不复制另一份 Agent 行为。
+入口默认禁止隐式调用，但它仍可被项目内其他任务发现，并非仅当前对话私有。不改 `AGENTS.md` 或全局配置。
+每次显式使用时，适配器先要求 Host 用独立原生摘要操作核对本地 helper 与入口中固定的接收器摘要，再允许
+执行离线验证。helper 不能先执行再为自己验真；同时替换入口和 helper 的同 UID 攻击不属于本机文件校验保证。
+
+所有目标都拒绝稳定符号链接、非普通文件、已有异物或版本冲突。新文件以排他创建且只读、不可执行的模式保存；
+完整读回后才通过不覆盖的硬链接发布 `SKILL.md`。这是入口最后激活，不是跨目录的全局事务。
+失败时不会递归删除目录；本次拥有的锁和已发布入口会做身份核对后的清理，无法确认清理时明确报告未完成。
+可能保留不完整目录，重复请求不能自行覆盖修复。已有完整字节、适配器和收据全部吻合才返回 `already_installed`。
+公开安装或验证入口遇到任何既存安装锁都会停止，只有安装内部持有该锁的 exact inode 才能完成提交前读回；
+因此已出现入口但提交尚未结束的窗口不能向另一请求报告成功。中断遗留锁不会自动清除，需显式人工恢复。
+目录 inode 检查不构成同 UID 恶意竞态下的操作系统隔离，Host 提供的路径也不是焦点 Project attestation。
+
+安装收据只绑定 exact Release、Package、接收器版本与代码摘要、本地目录身份和生成文件，不保存线程标识或
+第二份行为内容。安装与离线验证输出均固定 `runtime.status=not_run`。Host 仍需在同一对话读取已验证的
+`AGENT.md` 与 Skill 后实际应用；真实用户 B、C 各连续两轮和整体 `G-001@v1` · 可分享 Agent 验收尚不由本模块证明。
+该切片推进 Issue #321 的接收能力，但不表示该 Issue 已整体完成。
+
 ## 可用上下文轻量编译
 
 `agent-package-context-compiler` 是独立的轻量入口。Codex 先根据当前可用上下文整理方法，再调用
@@ -57,7 +101,7 @@ try {
 外层。
 
 当前智能体包运行时只承诺 `AGENT.md`、本地 Codex 技能、同一任务线程中的多轮交互和只读项目工具。MCP、
-应用、动态工具、智能体包发布签名、安装目录与崩溃后恢复会话尚未接入；不得把智能体包摘要当作发布者
+应用、动态工具、智能体包发布签名与崩溃后恢复会话尚未接入；独立文本接收器不进入此会话内核。不得把智能体包摘要当作发布者
 身份，也不得把只读工作区根目录当作操作系统级的项目隔离。旧版 V1/V2/V3 `AgentVersion`、目录数据库、
 `experience` 和 `Worker` 路径保持原字节与行为，不会被隐式转换成智能体包。
 
