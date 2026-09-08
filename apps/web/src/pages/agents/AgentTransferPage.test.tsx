@@ -201,14 +201,18 @@ describe('Agent transfer explicit approval and publication', () => {
   });
   it('does not send publication when safe request storage is unavailable', async () => {
     fetcher.mockResolvedValue(response(view('uploaded')));
-    vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {
-      throw new Error('blocked');
-    });
+    const setItem = vi
+      .spyOn(Object.getPrototypeOf(sessionStorage) as Storage, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('blocked');
+      });
+    expect(sessionStorage.setItem).toBe(setItem);
     const user = userEvent.setup();
     mount();
     await user.click(await screen.findByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: '确认公开发布' }));
     expect(await screen.findByText(/因此尚未发送/u)).toBeInTheDocument();
+    expect(setItem).toHaveBeenCalledOnce();
     expect(posts()).toHaveLength(0);
   });
   it.each(['pending_approval', 'uploaded'] as const)(

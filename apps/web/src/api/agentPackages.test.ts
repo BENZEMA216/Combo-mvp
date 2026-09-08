@@ -272,10 +272,14 @@ describe('Agent Package HTTP boundary', () => {
     sessionStorage.setItem(key, '{broken');
     expect(() => publicationRequestId(ID, FINGERPRINT, DIGEST)).toThrow('尚未发送');
     sessionStorage.clear();
-    vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {
-      throw new Error('blocked');
-    });
+    const setItem = vi
+      .spyOn(Object.getPrototypeOf(sessionStorage) as Storage, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('blocked');
+      });
+    expect(sessionStorage.setItem).toBe(setItem);
     expect(() => publicationRequestId(ID, FINGERPRINT, DIGEST)).toThrow('尚未发送');
+    expect(setItem).toHaveBeenCalledOnce();
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
