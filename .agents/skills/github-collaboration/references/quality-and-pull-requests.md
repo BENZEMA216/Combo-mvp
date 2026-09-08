@@ -22,7 +22,7 @@ pnpm typecheck:test
 pnpm test:local
 ```
 
-PR checks 在 Linux 上继续执行 `COMBO_RUN_CONTAINER_CONTRACTS=0 pnpm test:fast`，其中包含 GNU/Linux 主机控制面契约；不要为了让 macOS 本地执行这组契约而放宽生产部署脚本的固定 PATH 或主机安全约束。`test:local` 与 `test:fast` 都必须覆盖 Preview 身份验证器和工作树守卫测试。
+测试范围以根 `package.json` 和 `.github/workflows/pr-ci.yml` 为准。当前 `test:local` 与 `test:fast` 命令相同，均排除 `@cb/scripts` 工作区后执行 `test:workflow-contracts`，包含 Preview 身份验证器和工作树守卫。PR checks 在 Linux 上设置 `COMBO_RUN_CONTAINER_CONTRACTS=0` 执行 `test:fast`；实际结果仍须区分操作系统、环境变量和条件跳过，不能仅凭命令名称推断覆盖差异。不得为本地执行而放宽生产部署脚本的固定 PATH 或主机安全约束。
 
 修改 shell 脚本时，还要对拉取请求持续集成中列出的脚本运行 ShellCheck。不得用 Docker 或 Docker Compose 替代测试证据；本流程也不授权部署环境验证。
 

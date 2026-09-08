@@ -577,6 +577,12 @@ def check_dev_ready(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     reasons: list[str] = []
     warnings: list[str] = []
 
+    resolved_base = git(
+        root, "rev-parse", "--symbolic-full-name", data["base"], check=False
+    ).stdout.strip()
+    if not resolved_base.startswith(f"refs/remotes/{data['base_remote']}/"):
+        reasons.append("开发基线必须是规范基准远端的分支，不能使用裸 SHA 或本地引用")
+
     remote_url = git(root, "remote", "get-url", data["base_remote"]).stdout.strip()
     repository = github_repository(remote_url)
     if repository is None or repository.lower() != args.expected_repository.lower():
