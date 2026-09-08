@@ -1,5 +1,11 @@
 # 源码职责
 
+- `authoring/agent-context-compiler.ts` 把当前 Codex 整理后的有界内容编译为既有智能体包，返回独立轻量 Draft、
+  精确文件与摘要；来源固定未验证且覆盖可能不完整，不导入来源读取器、Host、网络或执行层。
+- `agent-package-context-compiler.ts` 显式导出轻量编译器，保持独立于旧 V1、V2 来源入口。
+- `agent-package-context-compiler-cli.ts` 提供有界 stdin 与单条安全 stdout 协议，并构建成无外部依赖的 Node 文件；
+  作为模块导入时只导出纯编译函数，不自动读取 stdin。
+
 - `pump-contract.ts` 定义三种严格 command payload、pump 生命周期、resolver 和错误合同。
 - `worker-serial-pump.ts` 串行执行两库 mutation，在 commit/mark 后发起 Host I/O，但不在 mutation
   队列内等待 Host promise；完成事件会重新入队。
