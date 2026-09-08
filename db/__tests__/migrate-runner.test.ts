@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0019_pending_usage_recovery.sql');
+    expect(plan.head).toBe('0020_private_agent_drafts.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -25,7 +25,7 @@ describe('migration runner contract', () => {
     expect(plan.pending).toEqual([]);
   });
 
-  it('plans live 0016, Registry 0017, receipts 0018, and recovery 0019 from legacy 0015', () => {
+  it('plans the current suffix through private drafts 0020 from legacy 0015', () => {
     const oldHeadIndex = migrations.indexOf('0015_project_agent_shares.sql');
     const applied = migrations.slice(0, oldHeadIndex + 1);
     const plan = planMigrations(migrations, applied, migrationHead(migrations));
@@ -37,10 +37,11 @@ describe('migration runner contract', () => {
       '0017_agent_package_registry.sql',
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
+      '0020_private_agent_drafts.sql',
     ]);
   });
 
-  it('plans Registry 0017, receipts 0018, and recovery 0019 from immutable live 0016', () => {
+  it('plans the current suffix through private drafts 0020 from immutable live 0016', () => {
     const liveHeadIndex = migrations.indexOf('0016_project_history_agent_flow.sql');
     const applied = migrations.slice(0, liveHeadIndex + 1);
     const plan = planMigrations(migrations, applied, migrationHead(migrations));
@@ -51,10 +52,11 @@ describe('migration runner contract', () => {
       '0017_agent_package_registry.sql',
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
+      '0020_private_agent_drafts.sql',
     ]);
   });
 
-  it('plans receipts 0018 then recovery 0019 when Registry 0017 is already applied', () => {
+  it('plans receipts, recovery, and private drafts when Registry 0017 is already applied', () => {
     const registryHeadIndex = migrations.indexOf('0017_agent_package_registry.sql');
     const applied = migrations.slice(0, registryHeadIndex + 1);
     const plan = planMigrations(migrations, applied, migrationHead(migrations));
@@ -64,17 +66,28 @@ describe('migration runner contract', () => {
     expect(plan.pending).toEqual([
       '0018_agent_session_usage_receipts.sql',
       '0019_pending_usage_recovery.sql',
+      '0020_private_agent_drafts.sql',
     ]);
   });
 
-  it('plans only pending recovery 0019 when receipts 0018 is already applied', () => {
+  it('plans recovery and private drafts when receipts 0018 is already applied', () => {
     const receiptsHeadIndex = migrations.indexOf('0018_agent_session_usage_receipts.sql');
     const applied = migrations.slice(0, receiptsHeadIndex + 1);
     const plan = planMigrations(migrations, applied, migrationHead(migrations));
 
     expect(receiptsHeadIndex).toBeGreaterThan(0);
     expect(plan.applied).toEqual(applied);
-    expect(plan.pending).toEqual(['0019_pending_usage_recovery.sql']);
+    expect(plan.pending).toEqual([
+      '0019_pending_usage_recovery.sql',
+      '0020_private_agent_drafts.sql',
+    ]);
+  });
+
+  it('plans only private drafts 0020 after recovery 0019', () => {
+    const applied = migrations.slice(0, migrations.indexOf('0019_pending_usage_recovery.sql') + 1);
+    expect(planMigrations(migrations, applied, migrationHead(migrations)).pending).toEqual([
+      '0020_private_agent_drafts.sql',
+    ]);
   });
 
   it('defaults MIGRATION_RUNS to one and accepts only the explicit Test values', () => {
@@ -106,7 +119,7 @@ describe('migration runner contract', () => {
 
   it('rejects a release whose expected migration head differs from source', () => {
     expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
-      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0019_pending_usage_recovery\.sql/,
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0020_private_agent_drafts\.sql/,
     );
   });
 

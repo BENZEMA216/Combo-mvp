@@ -2,6 +2,8 @@
 
 本目录维护本地 Compose、生产覆盖层、Kubernetes 清单、容器镜像和同源 Nginx 入口。
 
+私有 Agent Draft 同步复用 Creator Worker 的公开纯编译器出口；`Dockerfile.api` 按 authoring 依赖顺序构建，并在运行层携带该工作区包及其三个内部依赖的 manifest/dist，避免本地能导入而镜像缺依赖。它不启动 Codex Host、Broker 或额外 Worker 服务；现有三环境部署拓扑与授权边界保持不变。
+
 - `docker-compose.yml` 定义生产口径的 PostgreSQL、双 Redis、MinIO、观测组件、数据库迁移和业务服务。迁移容器用独立 PostgreSQL 连接字段接收数据库所有者凭据，不把原始密码拼进 URI；authoring API、worker 与 runtime 使用三份 URL 安全的独立应用角色凭据。authoring API 从环境变量读取 Resend、邮箱发件人、公开站点来源和验证码摘要密钥；runtime 只读取共享 PostgreSQL 会话，并与 authoring 共用精确公开站点来源。
 - `docker-compose.dev-test.yml` 只用于本地测试，并增加 Resend HTTP 替身。它不会被生产覆盖层或生产清单引用。
 - `docker-compose.prod.yml` 为部署环境改用已经发布的业务镜像，并收紧宿主端口。
