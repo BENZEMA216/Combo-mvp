@@ -67,4 +67,4 @@ pnpm --dir apps/authoring exec vitest run src/__tests__/agent-draft.test.ts
 AGENT_DRAFT_PG_TEST=1 pnpm --dir apps/authoring exec vitest run src/__tests__/agent-draft.pg.test.ts
 ```
 
-PG 测试要求显式 `DATABASE_URL`，只允许本地随机命名的 `combo_draft_test_<6到32位后缀>`，或 `/tmp/combo-draft-pg.<随机后缀>` Unix socket 下的 `combo_draft_test`；GitHub Actions 另允许仓库 CI 的临时 `agora` service。必须先构建 Authoring 及其依赖，再用正式 runner 迁移专用空库到 `0020`。测试会留下合成的 append-only 记录，不能指向长期开发库。PG、HTTP/认证与新 Node 进程中的服务回读为真实实现；新进程只收到合成对象字节，对象存储仍是假件。这不是主站上传、真实 S3 耐久性或真实 Desktop E2E 证明。
+PG 测试要求显式 `DATABASE_URL`，只允许本地随机命名的 `combo_draft_test_<6到32位后缀>`，或 `/tmp/combo-draft-pg.<随机后缀>` Unix socket 下的 `combo_draft_test`；GitHub Actions 另允许仓库 CI 的临时 `agora` service。必须先构建 Authoring 及其依赖，再用正式 runner 迁移专用空库到当前源码头 `0021`。测试会留下合成的 append-only 记录，不能指向长期开发库。PG、HTTP/认证与新 Node 进程中的服务回读为真实实现；新进程只收到合成对象字节，对象存储仍是假件。这不是主站上传、真实 S3 耐久性或真实 Desktop E2E 证明。
