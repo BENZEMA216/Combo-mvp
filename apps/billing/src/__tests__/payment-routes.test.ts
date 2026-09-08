@@ -24,6 +24,7 @@ const call = {
 function setup() {
   const store: PaymentStore = {
     admitCall: vi.fn().mockResolvedValue({ kind: 'payment_required', requirement }),
+    finishCall: vi.fn().mockResolvedValue('recorded'),
     createPayment: vi.fn().mockResolvedValue({ kind: 'not_found' }),
     getPayment: vi.fn().mockResolvedValue(null),
     findPayment: vi.fn().mockResolvedValue(null),
@@ -40,6 +41,50 @@ function setup() {
   return { app, store };
 }
 describe('payment HTTP contract', () => {
+  it('only lets the trusted Gateway record strict attempt outcomes', async () => {
+    const { app, store } = setup();
+    const payload = {
+      holdId: '00000000-0000-4000-8000-000000000001',
+      outcome: 'failed_no_charge',
+      failureReason: 'invalid_response',
+    };
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/billing/call-attempt-results',
+            headers: { cookie: 'trusted-test-session' },
+            payload,
+          })
+        ).statusCode,
+      ).toBe(401);
+      expect(store.finishCall).not.toHaveBeenCalled();
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/billing/call-attempt-results',
+            headers: { authorization: 'Bearer trusted-gateway' },
+            payload: { ...payload, userId },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/billing/call-attempt-results',
+            headers: { authorization: 'Bearer trusted-gateway' },
+            payload,
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(store.finishCall).toHaveBeenCalledWith(payload);
+    } finally {
+      await app.close();
+    }
+  });
   it('keeps JSON parser failures in the public error envelope', async () => {
     const { app } = setup();
     try {

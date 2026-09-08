@@ -24,6 +24,7 @@ import {
   type Queryable,
 } from './repo.js';
 import { availableBalance, ledgerIdempotencyKeys } from './service.js';
+import { finishAttempt, insertAttempt, latestAttempt } from './payment-attempts.js';
 
 interface CallRow {
   id: string;
@@ -98,11 +99,13 @@ async function createHold(
   tx: Queryable,
   call: CallRow,
   reservedPaymentId?: string,
+  attemptNumber = 1,
+  executionId = call.call_id,
 ): Promise<string> {
   const hold = await tx.query<{ id: string }>(
     `INSERT INTO v2_holds (user_id, agent_id, turn_id, estimated_amount, created_at, expires_at)
     VALUES ($1, $2, $3, $4, statement_timestamp(), statement_timestamp() + interval '5 minutes') RETURNING id`,
-    [call.user_id, call.agent_id, call.call_id, call.estimated_amount],
+    [call.user_id, call.agent_id, executionId, call.estimated_amount],
   );
   const id = hold.rows[0]!.id;
   if (reservedPaymentId) {
@@ -131,10 +134,12 @@ async function createHold(
       call.user_id,
       call.estimated_amount,
       id,
-      ledgerIdempotencyKeys.hold(call.agent_id, call.call_id),
+      ledgerIdempotencyKeys.hold(call.agent_id, executionId),
     ],
   );
-  await tx.query('UPDATE v2_billable_calls SET hold_id = $2 WHERE id = $1', [call.id, id]);
+  if (!call.hold_id)
+    await tx.query('UPDATE v2_billable_calls SET hold_id = $2 WHERE id = $1', [call.id, id]);
+  await insertAttempt(tx, call.id, attemptNumber, id, executionId);
   return id;
 }
 
@@ -154,6 +159,7 @@ export function createPgPaymentStore(
   const view = (row: PaymentRow) => paymentView(record(row), base, new Date());
 
   return {
+    finishCall: (input) => finishAttempt(pool, input),
     async admitCall(raw) {
       const input = CallAdmissionInputSchema.parse(raw);
       return withTransaction(pool, async (tx): Promise<CallAdmissionOutcome> => {
@@ -165,7 +171,28 @@ export function createPgPaymentStore(
           )
         ).rows[0];
         if (call && !matches(call, input)) return { kind: 'conflict' };
-        if (call?.hold_id) return { kind: 'admitted', holdId: call.hold_id, replayed: true };
+        if (call?.hold_id) {
+          const attempt = await latestAttempt(tx, call.id);
+          if (attempt?.state === 'failed_no_charge' && attempt.attempt_no < 20) {
+            const wallet = await lockWallet(tx, input.userId);
+            if (availableBalance(wallet) < input.estimatedAmount) return { kind: 'conflict' };
+            const executionId = `attempt-${randomUUID()}`;
+            const holdId = await createHold(
+              tx,
+              call,
+              undefined,
+              attempt.attempt_no + 1,
+              executionId,
+            );
+            return { kind: 'admitted', holdId, executionId, replayed: false };
+          }
+          return {
+            kind: 'admitted',
+            holdId: attempt?.hold_id ?? call.hold_id,
+            replayed: true,
+            ...(attempt ? { executionId: attempt.execution_id } : {}),
+          };
+        }
         const legacy = await tx.query(
           'SELECT id FROM v2_holds WHERE agent_id = $1 AND turn_id = $2 FOR UPDATE',
           [input.agentId, input.callId],
@@ -202,6 +229,7 @@ export function createPgPaymentStore(
             kind: 'admitted',
             holdId: await createHold(tx, call, funds.payment_id),
             replayed: false,
+            executionId: call.call_id,
           };
         }
         if (funds?.state === 'available') return { kind: 'conflict' };
@@ -216,7 +244,12 @@ export function createPgPaymentStore(
             : { kind: 'conflict' };
         }
         if (availableBalance(wallet) >= input.estimatedAmount)
-          return { kind: 'admitted', holdId: await createHold(tx, call), replayed: false };
+          return {
+            kind: 'admitted',
+            holdId: await createHold(tx, call),
+            executionId: call.call_id,
+            replayed: false,
+          };
         if (payment) return { kind: 'conflict' };
         const id = randomUUID();
         const inserted = (

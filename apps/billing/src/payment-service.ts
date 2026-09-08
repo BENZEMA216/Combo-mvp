@@ -21,13 +21,26 @@ export const CallAdmissionInputSchema = z
   .strict();
 export type CallAdmissionInput = z.infer<typeof CallAdmissionInputSchema>;
 export type CallAdmissionOutcome =
-  | { kind: 'admitted'; holdId: string; replayed: boolean }
+  | { kind: 'admitted'; holdId: string; replayed: boolean; executionId?: string }
   | { kind: 'payment_required'; requirement: PaymentRequirement }
   | { kind: 'not_found' }
   | { kind: 'conflict' };
 
+export const CallAttemptResultSchema = z
+  .object({
+    holdId: z.string().uuid(),
+    outcome: z.enum(['succeeded', 'failed_no_charge', 'unknown']),
+    failureReason: z.enum(['invalid_response', 'provider_rejected']).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => (value.outcome === 'failed_no_charge') === (value.failureReason !== undefined),
+  );
+export type CallAttemptResult = z.infer<typeof CallAttemptResultSchema>;
+
 export interface PaymentStore {
   admitCall(input: CallAdmissionInput): Promise<CallAdmissionOutcome>;
+  finishCall?(input: CallAttemptResult): Promise<'recorded' | 'conflict' | 'not_found'>;
   createPayment(input: {
     userId: string;
     paymentToken: string;

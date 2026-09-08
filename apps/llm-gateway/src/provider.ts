@@ -19,7 +19,10 @@ export interface ProviderClient {
 }
 
 export class ProviderUnavailableError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly retryableWithoutCharge = false,
+  ) {
     super(message);
     this.name = 'ProviderUnavailableError';
   }
@@ -34,7 +37,11 @@ export function isProviderJsonSuccessPayload(value: unknown): value is Record<st
   const message = (first as { message?: unknown }).message;
   if (typeof message !== 'object' || message === null || Array.isArray(message)) return false;
   const candidate = message as { role?: unknown; content?: unknown };
-  return candidate.role === 'assistant' && typeof candidate.content === 'string';
+  return (
+    candidate.role === 'assistant' &&
+    typeof candidate.content === 'string' &&
+    candidate.content.trim().length > 0
+  );
 }
 
 interface FetchLike {
@@ -66,12 +73,14 @@ export function createFetchProviderClient(options: {
         json = await response.json();
       } catch {
         if (response.status >= 200 && response.status < 300) {
+          // A truncated/network-failed body can also make json() reject. Without a complete
+          // parsed response, the outcome is unknown rather than a confirmed retryable failure.
           throw new ProviderUnavailableError('provider returned malformed success JSON');
         }
         json = null;
       }
       if (response.status >= 200 && response.status < 300 && !isProviderJsonSuccessPayload(json)) {
-        throw new ProviderUnavailableError('provider returned an invalid success payload');
+        throw new ProviderUnavailableError('provider returned an invalid success payload', true);
       }
       return { status: response.status, json };
     },
