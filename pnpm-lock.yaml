@@ -50,6 +50,9 @@ importers:
       '@cb/creator-agent-protocol':
         specifier: workspace:*
         version: link:../../packages/creator-agent-protocol
+      '@cb/creator-worker':
+        specifier: workspace:*
+        version: link:../creator-worker
       '@cb/shared':
         specifier: workspace:*
         version: link:../../packages/shared
