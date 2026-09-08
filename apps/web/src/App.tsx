@@ -18,6 +18,8 @@ import { PublicCapabilityPage } from './pages/public/PublicCapabilityPage.js';
 import { PublicCreatorPage } from './pages/public/PublicCreatorPage.js';
 import { LandingPage } from './pages/landing/LandingPage.js';
 import { ReleaseIdentityBadge } from './shell/releaseIdentity.js';
+import { AgentTransferPage } from './pages/agents/AgentTransferPage.js';
+import { AgentReleasePage } from './pages/agents/AgentReleasePage.js';
 
 /** 受保护组根：AuthProvider 只包受保护子树，公开页匿名访问根本不发 /me。 */
 function ProtectedRoot(): ReactElement {
@@ -40,6 +42,7 @@ export function App(): ReactElement {
               <Route path="/creator" element={<Navigate to="/tasks" replace />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+              <Route path="/agent-transfers/:transferId" element={<AgentTransferPage />} />
               <Route path="/capabilities" element={<CapabilitiesPage />} />
               <Route path="/capabilities/:capabilityId/release" element={<ReleasePage />} />
               <Route path="/capabilities/:capabilityId/release/:step" element={<ReleasePage />} />
@@ -52,6 +55,7 @@ export function App(): ReactElement {
           {/* 公开能力页 / 公开创作者主页：匿名可读，数据走前端 mock 层（publicApi）。 */}
           <Route path="/a/:slug" element={<PublicCapabilityPage />} />
           <Route path="/c/:slug" element={<PublicCreatorPage />} />
+          <Route path="/agents/:releaseId" element={<AgentReleasePage />} />
           {/* 登录页：两步邮箱验证码表单，只接受共享契约允许的站内 returnTo。 */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="*" element={<NotFoundPage />} />

@@ -42,6 +42,8 @@ const CAPABILITY_RELEASE_RETURN_PATH = new RegExp(
   `^/capabilities/${AUTH_ID_PATH_SEGMENT}/release(?:/(?:pricing|identity|review|success))?$`,
   'i',
 );
+const AGENT_TRANSFER_RETURN_PATH =
+  /^\/agent-transfers\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export const AuthSessionCookieValueSchema = z
   .string()
@@ -109,6 +111,7 @@ export function sanitizeAuthReturnTo(value: unknown): string {
       path.startsWith('/tasks/') ||
       path === '/capabilities' ||
       CAPABILITY_RELEASE_RETURN_PATH.test(path) ||
+      (AGENT_TRANSFER_RETURN_PATH.test(value) && path === value) ||
       path === '/try' ||
       path.startsWith('/try/');
 
