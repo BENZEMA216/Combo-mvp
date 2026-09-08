@@ -13,8 +13,8 @@ COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
 RUN pnpm install --frozen-lockfile=false
-# Authoring 的 Publisher 运行时依赖 creator-agent-protocol；两个工作区依赖都先构建。
-RUN pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/shared build && pnpm -F @cb/authoring build
+# Authoring 复用 Creator Worker 的纯编译器出口；按工作区依赖顺序构建，不启动 Host/Worker。
+RUN pnpm -F @cb/authoring... build
 
 FROM node:24-slim AS runtime
 WORKDIR /app
@@ -26,6 +26,10 @@ RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
 COPY --from=build /app/packages/creator-agent-protocol/package.json ./packages/creator-agent-protocol/package.json
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=build /app/packages/creator-agent-broker-journal/package.json ./packages/creator-agent-broker-journal/package.json
+COPY --from=build /app/packages/creator-agent-persistence/package.json ./packages/creator-agent-persistence/package.json
+COPY --from=build /app/packages/creator-worker-broker-client/package.json ./packages/creator-worker-broker-client/package.json
+COPY --from=build /app/apps/creator-worker/package.json ./apps/creator-worker/package.json
 COPY --from=build /app/apps/authoring/package.json ./apps/authoring/package.json
 COPY --from=build /app/db/package.json ./db/package.json
 RUN pnpm install --prod --frozen-lockfile=false
@@ -33,6 +37,10 @@ RUN pnpm install --prod --frozen-lockfile=false
 # 不复制完整 db 源码树，避免把测试、fixture 或开发辅助文件带入生产镜像。
 COPY --from=build /app/packages/creator-agent-protocol/dist ./packages/creator-agent-protocol/dist
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build /app/packages/creator-agent-broker-journal/dist ./packages/creator-agent-broker-journal/dist
+COPY --from=build /app/packages/creator-agent-persistence/dist ./packages/creator-agent-persistence/dist
+COPY --from=build /app/packages/creator-worker-broker-client/dist ./packages/creator-worker-broker-client/dist
+COPY --from=build /app/apps/creator-worker/dist ./apps/creator-worker/dist
 COPY --from=build /app/apps/authoring/dist ./apps/authoring/dist
 COPY --from=build /app/db/migrations ./db/migrations
 COPY --from=build /app/db/scripts/migrate.ts ./db/scripts/migrate.ts

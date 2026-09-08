@@ -124,8 +124,8 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
     const migration = await db.query<{ filename: string }>(
       `SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1`,
     );
-    if (migration.rows[0]?.filename !== '0019_pending_usage_recovery.sql') {
-      throw new Error('knowledge billing migration head is not 0019');
+    if (migration.rows[0]?.filename !== '0020_private_agent_drafts.sql') {
+      throw new Error('knowledge billing migration head is not 0020');
     }
   });
 

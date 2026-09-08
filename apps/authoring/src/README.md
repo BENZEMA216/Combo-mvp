@@ -6,7 +6,7 @@
 
 - `processes/` 放 API 与 worker 两个进程入口。
 - `bootstrap/` 组装 Fastify、基础设施、健康检查和业务路由。
-- `modules/` 按 account、task、capability、agent-package-release 和 billing 五个业务领域组织代码。account 是第一方认证唯一写入方，agent-package-release 是受控 Test canonical Registry 的唯一写入方，billing 是外部充值与内部钱包入账的唯一写入方。
+- `modules/` 按 account、task、capability、agent-package-release、agent-draft 和 billing 六个业务领域组织代码。account 是第一方认证唯一写入方，agent-package-release 是受控 Test canonical Registry 的唯一写入方，agent-draft 只保存私有编译快照，billing 是外部充值与内部钱包入账的唯一写入方。
 - `platform/` 提供配置、HTTP 边界、PostgreSQL、Redis、队列、对象存储、Resend、本地会话校验、链路追踪和事件流等公共设施。
 
 依赖保持单向。processes 使用 bootstrap 与 modules，bootstrap 使用 modules 与 platform，modules 使用 platform，platform 不依赖业务模块。共享类型、错误信封、Cookie 常量和校验契约来自 `@cb/shared`。

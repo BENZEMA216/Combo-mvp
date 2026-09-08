@@ -22,7 +22,7 @@ describe('isolated V2 migration runner contract', () => {
     const canonical = listMigrations();
     const v2 = listMigrations('v2');
 
-    expect(canonical.at(-1)).toBe('0019_pending_usage_recovery.sql');
+    expect(canonical.at(-1)).toBe('0020_private_agent_drafts.sql');
     expect(v2).toEqual([...canonical.slice(0, 12), ...V2_TAIL]);
     expect(v2.at(-1)).toBe('0018_v2_call_attempts.sql');
     expect(v2).not.toContain('0012_agent_builder_v1.sql');

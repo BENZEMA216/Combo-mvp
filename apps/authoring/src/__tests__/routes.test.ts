@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 24 declared endpoints (including recovery order readback)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(24);
+  it('registers exactly 26 declared endpoints (including private Agent revisions)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(26);
   });
 
   it('has no duplicate method and URL pairs', () => {
