@@ -123,6 +123,7 @@ function classify(root: string, path: string): Layer | undefined {
     name.startsWith('application/') ||
     name === 'agent-catalog-cli.ts' ||
     name === 'agent-package-cli.ts' ||
+    name === 'agent-package-context-compiler-cli.ts' ||
     name === 'agent-package-creator-bridge.ts'
   ) {
     return 'application';
@@ -136,6 +137,7 @@ function classify(root: string, path: string): Layer | undefined {
     name === 'agent-package-authoring.ts' ||
     name === 'agent-package-creator.ts' ||
     name === 'agent-package-compiler.ts' ||
+    name === 'agent-package-context-compiler.ts' ||
     name === 'agent-package-current-conversation-draft.ts'
   ) {
     return 'public';

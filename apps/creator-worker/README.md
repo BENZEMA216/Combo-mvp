@@ -1,5 +1,24 @@
 # @cb/creator-worker
 
+## 可用上下文轻量编译
+
+`agent-package-context-compiler` 是独立的轻量入口。Codex 先根据当前可用上下文整理方法，再调用
+`compileCreatorAgentPackageFromContext(requestText)`；本函数不读取对话或 Project，不调用模型或启动会话。
+输入使用 `combo.agent-context-request/1`，字段仅有 `request` 和 `content`；后者包含 `name`、
+`description`、字符串 `instructions`、`starterPrompts`、`outputDescription` 和 `coverageSummary`。
+来源由代码固定为 `codex_available_context / not_verified / partial_or_unknown`，不接受调用方来源字段。
+
+结果使用 `combo.agent-context-compilation/1`，包含真实 `draft`、规范 `draftText`、`draftFingerprint`、
+`manifestText`、`packageDigest` 和完整 `files`。每个文件含 `path`、精确文本 `content`、带 `sha256:`
+前缀的摘要 `sha256` 和 UTF-8 长度 `bytes`；完整文件集合包含 `agent.json`。`runtime.status` 固定 `not_run`。
+私有制作要求和 coverage 不进入 Package；相同能力得到相同 Package，Draft 的内容变化由 fingerprint 区分。
+
+`pnpm -F @cb/creator-worker run pretest` 构建独立 `dist/agent-package-context-compiler.mjs`。该文件可以作为
+模块导入 `compileCreatorAgentPackageFromContext`，导入没有 stdin 副作用；直接由 Node 执行时只读取一份有界
+UTF-8 stdin JSON，stdout 返回一份结果或安全错误。它不接受来源路径参数，也不依赖凭据或外部 npm 模块。
+这是插件携带的技术入口，不要求普通用户打开 Terminal。格式检查和敏感内容拒绝只是有限防线，仍需用户审阅，
+不能承诺完整历史覆盖、独立来源验证或真实推理成功。旧 V1 Project 与 V2 严格 Host 路径及验收状态不变。
+
 ## 智能体包原生推理侧
 
 本包现在提供独立于旧版 `AgentVersion` 的 `AgentPackageSession`。智能体包（Agent Package）是真正的可加载
