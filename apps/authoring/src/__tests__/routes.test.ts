@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 26 declared endpoints (including private Agent revisions)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(26);
+  it('registers exactly 34 declared endpoints (including browser-approved transfers)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(34);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -41,11 +41,14 @@ describe('route registry self-check', () => {
     expect(account.find((endpoint) => endpoint.url === '/me')?.preHandlers).toHaveLength(1);
   });
 
-  it('puts an Origin guard before every browser write and exempts only pairing-code uploads', () => {
+  it('puts an Origin guard before every browser write and enumerates non-browser exceptions', () => {
     const exempt = new Set([
       '/connect/prepare',
       '/connect/upload',
       '/billing/leshouying/payment-notify',
+      '/agent-package-transfers',
+      '/agent-package-transfers/:transferId/status',
+      '/agent-package-transfers/:transferId/upload',
     ]);
     for (const endpoint of ALL_ENDPOINTS) {
       if (endpoint.method === 'GET' || exempt.has(endpoint.url)) continue;

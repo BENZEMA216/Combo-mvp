@@ -138,7 +138,7 @@ export function parseChatRequest(
 }
 
 export type HoldOutcome =
-  | { kind: 'held'; holdId: string; estimatedAmount: number }
+  | { kind: 'held'; holdId: string; estimatedAmount: number; executionId?: string }
   | { kind: 'rejected'; status: number; body: unknown }
   | { kind: 'fail_open'; estimatedAmount: number };
 

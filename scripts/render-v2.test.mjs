@@ -48,7 +48,7 @@ test('payment manifests use scoped identity, TEST channel and isolated durable A
   assert.doesNotMatch(source('llm-gateway'), /LLM_GATEWAY_INTERNAL_TOKEN/);
   assert.match(source('llm-gateway'), /LLM_GATEWAY_PAYMENT_ADMISSION\s+value: 'true'/);
   assert.match(source('billing'), /BILLING_LESHOUYING_ENVIRONMENT\s+value: TEST/);
-  assert.match(source('job-migrate'), /0017_v2_payment_channel.sql/);
+  assert.match(source('job-migrate'), /0018_v2_call_attempts.sql/);
   for (const entry of agentEnv.filter((e) =>
     ['COMBO_AUTHZ_URL', 'COMBO_LLM_GATEWAY_URL', 'COMBO_JWKS_URL'].includes(e.name),
   ))

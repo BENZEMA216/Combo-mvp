@@ -11,7 +11,11 @@ import {
 } from './identity.js';
 import type { BillingClient } from './billing.js';
 import { priceFor, type PricingTable, type TokenUsage } from './pricing.js';
-import { isProviderJsonSuccessPayload, type ProviderClient } from './provider.js';
+import {
+  isProviderJsonSuccessPayload,
+  ProviderUnavailableError,
+  type ProviderClient,
+} from './provider.js';
 import {
   checkAndHold,
   finalizeTurn,
@@ -67,6 +71,7 @@ function sendError(
     payment_required: '余额不足，请完成支付后继续。',
     conflict: '本次调用已处理或与原请求冲突，请查询业务状态。',
     provider_unavailable: '模型服务暂时不可用，请稍后重试。',
+    provider_retryable: '模型服务未返回可用结果，本次未扣费，请重试原请求。',
     billing_unavailable: '计费服务暂时不可用，请稍后重试。',
   };
   return reply.code(status).send(
@@ -217,16 +222,70 @@ export async function buildApp(deps: GatewayAppDependencies): Promise<FastifyIns
       );
     }
 
+    const execution =
+      hold.kind === 'held' && hold.executionId
+        ? { ...parsed, platform: { ...parsed.platform, turnId: hold.executionId } }
+        : parsed;
     if (parsed.stream) {
-      return handleStream(req, reply, deps, parsed, hold, price, log, logFields);
+      return handleStream(req, reply, deps, execution, hold, price, log, logFields);
     }
-    return handleJson(req, reply, deps, parsed, hold, price, log, logFields);
+    return handleJson(req, reply, deps, execution, hold, price, log, logFields);
   });
 
   return app;
 }
 
 type Parsed = NonNullable<ReturnType<typeof parseChatRequest>>;
+
+async function recordAttempt(
+  deps: GatewayAppDependencies,
+  hold: HoldOutcome,
+  outcome: 'succeeded' | 'failed_no_charge' | 'unknown',
+  log: GatewayLogger,
+  failureReason?: 'invalid_response' | 'provider_rejected',
+): Promise<boolean> {
+  if (hold.kind !== 'held' || !hold.executionId || !deps.paymentAdmission?.finish) return false;
+  try {
+    await deps.paymentAdmission.finish({
+      holdId: hold.holdId,
+      outcome,
+      ...(failureReason ? { failureReason } : {}),
+    });
+    return true;
+  } catch {
+    log.warn({ hold_id: hold.holdId }, 'call attempt outcome could not be confirmed');
+    return false;
+  }
+}
+async function providerFailure(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  deps: GatewayAppDependencies,
+  hold: HoldOutcome,
+  log: GatewayLogger,
+  logFields: Record<string, unknown>,
+  reason?: 'invalid_response' | 'provider_rejected',
+): Promise<FastifyReply> {
+  await releaseHold(deps.billing, hold, log, logFields);
+  const recorded = await recordAttempt(
+    deps,
+    hold,
+    reason ? 'failed_no_charge' : 'unknown',
+    log,
+    reason,
+  );
+  // A retry hint is returned only after the platform durably confirms failure and zero charge.
+  if (reason && recorded) {
+    reply.header('x-combo-call-outcome', 'failed_no_charge');
+    return sendError(req, reply, 502, 'provider_retryable');
+  }
+  return sendError(
+    req,
+    reply,
+    hold.kind === 'held' && hold.executionId ? 503 : 502,
+    'provider_unavailable',
+  );
+}
 
 async function handleJson(
   req: FastifyRequest,
@@ -242,20 +301,27 @@ async function handleJson(
   try {
     upstream = await deps.provider.chatCompletion(parsed.forwardBody);
   } catch (error) {
-    await releaseHold(deps.billing, hold, log, logFields);
     req.log.warn({ ...logFields, err: error }, 'provider request failed');
-    return sendError(req, reply, 502, 'provider_unavailable');
+    return providerFailure(
+      req,
+      reply,
+      deps,
+      hold,
+      log,
+      logFields,
+      error instanceof ProviderUnavailableError && error.retryableWithoutCharge
+        ? 'invalid_response'
+        : undefined,
+    );
   }
 
   if (upstream.status < 200 || upstream.status >= 300) {
-    await releaseHold(deps.billing, hold, log, logFields);
-    return sendError(req, reply, 502, 'provider_unavailable');
+    return providerFailure(req, reply, deps, hold, log, logFields, 'provider_rejected');
   }
 
   if (!isProviderJsonSuccessPayload(upstream.json)) {
-    await releaseHold(deps.billing, hold, log, logFields);
     req.log.warn(logFields, 'provider returned an invalid success payload');
-    return sendError(req, reply, 502, 'provider_unavailable');
+    return providerFailure(req, reply, deps, hold, log, logFields, 'invalid_response');
   }
 
   const usage = normalizeUsage((upstream.json as { usage?: unknown }).usage);
@@ -264,6 +330,7 @@ async function handleJson(
     { hold, platform: parsed.platform, model: parsed.model, price, usage },
     log,
   );
+  await recordAttempt(deps, hold, 'succeeded', log);
   return reply.code(upstream.status).send(upstream.json);
 }
 
@@ -281,15 +348,21 @@ async function handleStream(
   try {
     upstream = await deps.provider.chatCompletionStream(parsed.forwardBody);
   } catch (error) {
-    await releaseHold(deps.billing, hold, log, logFields);
     req.log.warn({ ...logFields, err: error }, 'provider stream request failed');
-    return sendError(req, reply, 502, 'provider_unavailable');
+    return providerFailure(req, reply, deps, hold, log, logFields);
   }
 
   if (!upstream.stream || upstream.status < 200 || upstream.status >= 300) {
     void upstream.stream?.cancel().catch(() => undefined);
-    await releaseHold(deps.billing, hold, log, logFields);
-    return sendError(req, reply, 502, 'provider_unavailable');
+    return providerFailure(
+      req,
+      reply,
+      deps,
+      hold,
+      log,
+      logFields,
+      upstream.status < 200 || upstream.status >= 300 ? 'provider_rejected' : 'invalid_response',
+    );
   }
 
   const usage = await pumpProviderStream(req, reply, upstream.stream);
@@ -298,5 +371,6 @@ async function handleStream(
     { hold, platform: parsed.platform, model: parsed.model, price, usage },
     log,
   );
+  await recordAttempt(deps, hold, 'succeeded', log);
   return reply;
 }

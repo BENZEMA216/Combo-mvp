@@ -2,7 +2,12 @@
 
 本目录验证迁移文件与数据库级不变量。
 
-正式源码头更新到 `0020`，迁移计划测试覆盖 `0019`→`0020`，旧 `0018`→`0019` 升级测试仍固定历史源码前缀。私有版本链的 HTTP、实际并发和角色拒绝测试位于 `apps/authoring/src/__tests__/agent-draft.pg.test.ts`，由正式迁移集成入口显式运行。
+正式源码头更新到 `0021`，迁移计划测试覆盖 `0020`→`0021`，旧 `0018`→`0019` 升级测试仍固定历史源码前缀。私有版本链的 HTTP、实际并发和角色拒绝测试位于 `apps/authoring/src/__tests__/agent-draft.pg.test.ts`，由正式迁移集成入口显式运行。
+
+- `agent-package-publication-migration.test.ts` 静态校验 0021 不改写历史、exact publisher claim、旧 controlled-Test owner、浏览器 transfer 实时钟及最小列权限。
+- `agent-package-publication-fixture.ts` 和对应 `.test.ts` 在任何 DDL/role 操作前核验真实实例：本地须显式 `COMBO_PUBLICATION_PG_DATA_DIR=/tmp/combo-publication-pg.<随机>/data`，服务端 data_directory 与真实目录的 realpath 必须相等，拒绝转发到其他实例和 symlink 替身。CI 只接受规范仓库 integration job 的固定临时 agora service；继承单个 GitHub 标记不足以豁免保护。
+- `agent-package-publication.pg.test.ts` 在专用临时 PostgreSQL 16 实际验证多 owner 同摘要发布、跨 owner/版本拒绝、严格状态序列、部分 NULL、服务端十分钟 TTL、public Release 的 exact Draft 血缘及审计不可变性；测试事务回滚，含过期 fixture 的事务内 DDL，必须与其他 TRUNCATE/DDL 测试串行运行。
+- `agent-package-publication-upgrade.pg.test.ts` 从真实 0020 账本追加 0021，验证历史 Package/Release/Draft 字节不变、旧 writer 可用、约束全部验证及二次幂等计划。
 
 - `migrations.test.ts` 验证迁移编号顺序、基线业务表、任务状态、对象存储键、轮次结构、UUID v7 函数和 Test 兼容前缀的完整表集合。它将 `0012` 至 `0016` 的旧 Agent、OAuth 与 Project-history 表视为迁移兼容结构，不把它们当成当前 Agent Package 产品模型。
 - `gen_uuid_v7.test.ts` 复刻 UUID v7 的字节打包逻辑，验证数据库函数使用正确的字节写入类型、版本位、变体位和时间顺序。

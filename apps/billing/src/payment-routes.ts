@@ -12,7 +12,11 @@ import {
   PaymentRequiredResponseSchema,
   PaymentSuccessResponseSchema,
 } from '@cb/payment-protocol';
-import { CallAdmissionInputSchema, type PaymentStore } from './payment-service.js';
+import {
+  CallAdmissionInputSchema,
+  CallAttemptResultSchema,
+  type PaymentStore,
+} from './payment-service.js';
 import { PaymentAuthenticationError } from './payment-auth.js';
 
 export interface PaymentRouteDependencies {
@@ -167,7 +171,11 @@ export function registerPaymentRoutes(app: FastifyInstance, deps: PaymentRouteDe
               }),
             );
           return reply.code(result.replayed ? 200 : 201).send({
-            data: { holdId: result.holdId, replayed: result.replayed },
+            data: {
+              holdId: result.holdId,
+              replayed: result.replayed,
+              ...(result.executionId ? { executionId: result.executionId } : {}),
+            },
             meta: { traceId: req.id },
           });
         } catch {
@@ -176,5 +184,19 @@ export function registerPaymentRoutes(app: FastifyInstance, deps: PaymentRouteDe
         }
       },
     );
+    if (deps.store.finishCall)
+      app.post('/billing/call-attempt-results', { bodyLimit: 1024 }, async (req, reply) => {
+        reply.header('cache-control', 'no-store');
+        try {
+          if (!(await deps.authenticateGateway(req))) return fail(req, reply, 401);
+          const parsed = CallAttemptResultSchema.safeParse(req.body);
+          if (!parsed.success) return fail(req, reply, 400);
+          const result = await deps.store.finishCall!(parsed.data);
+          if (result !== 'recorded') return fail(req, reply, result === 'not_found' ? 404 : 409);
+          return reply.send({ data: { recorded: true }, meta: { traceId: req.id } });
+        } catch {
+          return fail(req, reply, 503);
+        }
+      });
   });
 }

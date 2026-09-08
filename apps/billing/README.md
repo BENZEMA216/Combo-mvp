@@ -14,6 +14,7 @@
 - `src/app.ts` 装配 Fastify 路由与 Bearer token 鉴权，进程入口和测试共用同一份装配。
 - `src/payment-service.ts` 定义支付持久层端口、调用输入、短期不透明凭证及公共状态投影。数据库只保存凭证摘要，原始业务内容不进入支付表。
 - `src/payment-repo.ts` 在 PostgreSQL 事务中绑定 operationId 与 callId，创建唯一支付、管理 requestKey 别名，并在确认到账的同一事务中入账和预留原调用资金；并发认领只生成一个正常 hold。
+- `src/payment-attempts.ts` 保存执行尝试的结果，只接收可信网关的成功、明确失败或结果不明记录，不保存业务正文。只有明确失败且确认零扣费后才能创建下一次尝试，旧调用、支付和流水保持不变。
 - `src/payment-routes.ts` 提供标准 402 与三个支付 HTTP 路由。注册时必须提供用户认证和独立 Gateway 认证；它不提供付款成功的公共写接口。
 - `src/payment-auth.ts` 把 Host 的当前会话交给 Authz 重新核验，再验证返回的用户断言；同时检查允许的网页来源和独立 Gateway 凭据，不接受请求体身份或 Agent 令牌作为用户身份。
 - `src/channel/` 提供乐收赢下单、查单和通知验签，不依赖旧 Hosted 钱包，也不读写业务请求。
@@ -36,6 +37,10 @@
 - `GET /health` 与 `GET /ready` 是健康与就绪探针。就绪探针检查 PostgreSQL 可达性，开启支付时还要求渠道订单和事件表已经存在。
 
 ## 上下游
+
+`0018_v2_call_attempts.sql` 增加独立的执行尝试表。业务的 operationId、callId 与原支付始终不变，中台只为新的执行尝试生成内部编号和新的冻结记录。同一调用的并发恢复只有一方可以开始，成功和结果不明都不能再次放行。
+
+`POST /billing/call-attempt-results` 只允许独立 Gateway 凭据写入执行结果。失败记录还要核对零元结算、没有计量和扣费；成功的零费用调用不算失败。历史零元结算保持不可重试，只有运营核对明确的原网关失败证据并补记失败结果后才能恢复，不能批量猜测或修改旧账。
 
 设置 `BILLING_PAYMENTS_ENABLED=true` 后增加 `POST /billing/call-admissions` 和三个 `/v1/payments` 创建、按编号查询、按 requestKey 找回接口。默认不注册这些路由。
 

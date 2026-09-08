@@ -2,7 +2,7 @@
 
 本包是创作者业务、受控 Test Agent Package 发布和余额充值的写入服务。API 进程提供第一方邮箱验证码认证、任务、上传、提取、能力管理、受控 Package Registry、钱包读取与乐收赢充值接口；worker 进程消费提取队列并执行租约对账。只有 API 进程持有邮件供应商、验证码 HMAC、Test Publisher gate 和支付机构密钥，worker 不依赖这些配置。
 
-`src/modules/agent-draft/` 另外提供私有 Draft V2 与已编译 Package 的保存/指定版本读取和只读卡片投影。它复用 `@cb/creator-worker` 的公开编译器，不运行 worker，不创建公共 Release，不表示 Plugin OAuth 或 Desktop 提取已接入。
+`src/modules/agent-draft/` 另外提供私有 Draft V2、独立轻量上下文 Draft 与已编译 Package 的严格保存、指定版本读取和只读卡片投影。它复用 `@cb/creator-worker` 的两套公开编译器与同一私有版本表，固定声明来源未验证，不运行 worker，不创建公共 Release，不表示 Plugin OAuth 或 Desktop 提取已接入。
 
 ## 目录与文件
 

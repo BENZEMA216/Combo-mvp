@@ -8,6 +8,7 @@ import {
   type PaymentAdmissionClient,
 } from '../payment-admission.js';
 import { createFakeBillingClient, createFakeProviderClient } from './fakes.js';
+import { ProviderUnavailableError } from '../provider.js';
 
 const userId = randomUUID();
 const token = 'test-payment-token-value';
@@ -182,6 +183,36 @@ describe('Gateway payment admission', () => {
 });
 
 describe('admission HTTP client', () => {
+  it('records outcomes through the dedicated credential with strict bounded acknowledgement', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ data: { recorded: true }, meta: { traceId: 'trace-1' } }));
+    const client = createPaymentAdmissionClient({
+      baseUrl: 'https://billing.combo.test',
+      token: 'test-only-credential',
+      timeoutMs: 100,
+      fetchImpl,
+    });
+    await client.finish!({
+      holdId: randomUUID(),
+      outcome: 'failed_no_charge',
+      failureReason: 'invalid_response',
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      'https://billing.combo.test/billing/call-attempt-results',
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      redirect: 'error',
+      method: 'POST',
+      headers: { authorization: 'Bearer test-only-credential' },
+    });
+    fetchImpl.mockResolvedValueOnce(
+      Response.json({ data: { recorded: true, extra: true }, meta: { traceId: 'trace-1' } }),
+    );
+    await expect(client.finish!({ holdId: randomUUID(), outcome: 'succeeded' })).rejects.toThrow(
+      'could not be confirmed',
+    );
+  });
   it('stops even when a transport adapter does not respect cancellation', async () => {
     const client = createPaymentAdmissionClient({
       baseUrl: 'https://billing.combo.test',
@@ -293,4 +324,132 @@ describe('admission HTTP client', () => {
       ).rejects.toThrow('could not be confirmed');
     }
   });
+});
+
+describe('explicit call-attempt recovery', () => {
+  it('records failure before advertising retry and meters the next internal execution only once', async () => {
+    const billing = createFakeBillingClient();
+    const firstHold = randomUUID();
+    const retryHold = randomUUID();
+    const outcomes: unknown[] = [];
+    const admissions: unknown[] = [];
+    let failed = false;
+    let started = false;
+    let succeeded = false;
+    let dispatches = 0;
+    const app = await buildApp({
+      billing: billing.client,
+      gatewayToken: 'test-gateway-token',
+      pricing: { default: { input: 1, output: 2 } },
+      holdFixedCostCents: 1,
+      defaultMaxTokens: 4096,
+      paymentAdmission: {
+        async admit(input) {
+          admissions.push(input);
+          const replayed = started;
+          started = true;
+          return {
+            kind: 'admitted',
+            holdId: failed ? retryHold : firstHold,
+            executionId: failed ? 'internal-retry' : 'call-1',
+            replayed: replayed || succeeded,
+          };
+        },
+        async finish(input) {
+          outcomes.push(input);
+          if (input.outcome === 'failed_no_charge') {
+            expect(billing.state.settlements.at(-1)).toEqual({
+              holdId: firstHold,
+              actualAmount: 0,
+            });
+            failed = true;
+            started = false;
+          } else if (input.outcome === 'succeeded') succeeded = true;
+        },
+      },
+      provider: {
+        async chatCompletion() {
+          dispatches++;
+          if (dispatches === 1) throw new ProviderUnavailableError('invalid response', true);
+          return {
+            status: 200,
+            json: {
+              choices: [{ message: { role: 'assistant', content: 'ok' } }],
+              usage: { prompt_tokens: 1, completion_tokens: 1 },
+            },
+          };
+        },
+        async chatCompletionStream() {
+          throw new Error('not used');
+        },
+      },
+    });
+    try {
+      const first = await request(app, body);
+      expect(first.statusCode).toBe(502);
+      expect(first.headers['x-combo-call-outcome']).toBe('failed_no_charge');
+      expect(first.json().error.userMessage).toContain('未扣费');
+      expect((await request(app, body)).statusCode).toBe(200);
+      expect((await request(app, body)).statusCode).toBe(409);
+      expect(dispatches).toBe(2);
+      expect(admissions[0]).toEqual(admissions[1]);
+      expect(outcomes).toEqual([
+        { holdId: firstHold, outcome: 'failed_no_charge', failureReason: 'invalid_response' },
+        { holdId: retryHold, outcome: 'succeeded' },
+      ]);
+      expect(
+        billing.state.usageReports[0]?.every(
+          (event) => event.turnId === 'internal-retry' && event.holdId === retryHold,
+        ),
+      ).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+  it.each(['network', 'receipt'])(
+    'does not advertise safe retry when %s is uncertain',
+    async (kind) => {
+      const billing = createFakeBillingClient();
+      const finish = vi.fn().mockImplementation(async () => {
+        if (kind === 'receipt') throw new Error('lost');
+      });
+      const app = await buildApp({
+        billing: billing.client,
+        gatewayToken: 'test-gateway-token',
+        pricing: { default: { input: 1, output: 2 } },
+        holdFixedCostCents: 1,
+        defaultMaxTokens: 4096,
+        paymentAdmission: {
+          admit: async () => ({
+            kind: 'admitted',
+            holdId: randomUUID(),
+            executionId: 'call-1',
+            replayed: false,
+          }),
+          finish,
+        },
+        provider: {
+          async chatCompletion() {
+            throw kind === 'network'
+              ? new Error('connection lost')
+              : new ProviderUnavailableError('invalid', true);
+          },
+          async chatCompletionStream() {
+            throw new Error('unused');
+          },
+        },
+      });
+      try {
+        const result = await request(app, body);
+        expect(result.statusCode).toBe(503);
+        expect(result.headers['x-combo-call-outcome']).toBeUndefined();
+        expect(result.json().error.userMessage).not.toContain('未扣费');
+        expect(finish.mock.calls[0]?.[0].outcome).toBe(
+          kind === 'network' ? 'unknown' : 'failed_no_charge',
+        );
+      } finally {
+        await app.close();
+      }
+    },
+  );
 });

@@ -445,7 +445,7 @@ pgDescribe('pending usage recovery on PostgreSQL 16', () => {
     const migration = await owner.query<{ filename: string }>(
       'SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1',
     );
-    expect(migration.rows[0]?.filename).toBe('0020_private_agent_drafts.sql');
+    expect(migration.rows[0]?.filename).toBe('0021_agent_package_publication.sql');
   });
 
   afterAll(async () => {

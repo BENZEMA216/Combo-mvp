@@ -4,8 +4,10 @@ import {
   serializeCreatorAgentPackageDraftSnapshotV2,
 } from '@cb/creator-agent-protocol/agent-package-draft';
 import { compileCreatorAgentPackageDraftV2 } from '@cb/creator-worker/agent-package-compiler';
+import { compileCreatorAgentPackageFromContext } from '@cb/creator-worker/agent-package-context-compiler';
 import {
   AgentDraftFailure,
+  type AgentContextUpload,
   type DraftRepository,
   type DraftRow,
 } from '../modules/agent-draft/service.js';
@@ -55,6 +57,37 @@ export function uploadFixture(draft = draftFixture(), requestId: string = random
       packageDigest: compiled.packageDigest,
       compilationReceiptText: compiled.compilationReceiptText,
       files: compiled.files.map((file) => ({ ...file })),
+    },
+  };
+}
+export function contextUploadFixture(
+  requestId: string = randomUUID(),
+  name = '证据检查助手',
+): AgentContextUpload {
+  const compiled = compileCreatorAgentPackageFromContext(
+    JSON.stringify({
+      protocol: 'combo.agent-context-request/1',
+      request: '把当前可用的方法整理为 Agent。',
+      content: {
+        name,
+        description: '核对证据再形成结论。',
+        instructions: '先检查来源，再列出缺口，最后给出结论。',
+        starterPrompts: ['检查这份结论。'],
+        outputDescription: '结论与证据缺口。',
+        coverageSummary: '合成测试方法，不代表读取真实任务或完整对话。',
+      },
+    }),
+  );
+  return {
+    protocol: 'combo.agent-context-upload/1',
+    requestId,
+    draftText: compiled.draftText,
+    candidate: {
+      manifestText: compiled.manifestText,
+      packageDigest: compiled.packageDigest,
+      files: compiled.files
+        .filter((file) => file.path !== 'agent.json')
+        .map((file) => ({ path: file.path, text: file.content })),
     },
   };
 }
