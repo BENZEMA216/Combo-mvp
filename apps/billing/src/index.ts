@@ -88,7 +88,7 @@ const app = await buildApp({
       await pool.query('SELECT 1');
       if (paymentConfig) {
         const result = await pool.query<{ ready: boolean }>(
-          "SELECT to_regclass('public.v2_payment_channel_orders') IS NOT NULL AND to_regclass('public.v2_payment_channel_events') IS NOT NULL AS ready",
+          "SELECT to_regclass('public.v2_payment_channel_orders') IS NOT NULL AND to_regclass('public.v2_payment_channel_events') IS NOT NULL AND to_regclass('public.v2_call_attempts') IS NOT NULL AS ready",
         );
         if (!result.rows[0]?.ready) return false;
       }
