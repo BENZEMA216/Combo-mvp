@@ -176,6 +176,7 @@ export async function executeCreatorAgentPackageCli(
   );
   let authored: CreatorAgentPackageAuthoringResult;
   try {
+    // 创作阶段内部完成扫描、确定性构建、原子保存与正式重载，成功后才返回 Package。
     authored = await dependencies.authorPackage({
       sourceProjectPath,
       storeDirectory,
@@ -205,6 +206,7 @@ export async function executeCreatorAgentPackageCli(
   );
   let session: CreatorAgentPackageSession;
   try {
+    // 推理阶段只接收已重载的 Package 与独立 Consumer Project，不再读取 Source。
     session = await dependencies.startSession({
       packagePath: authored.packagePath,
       projectPath: consumerProjectPath,
@@ -222,6 +224,7 @@ export async function executeCreatorAgentPackageCli(
       throw new Error('AGENT_PACKAGE_DIGEST_MISMATCH');
     }
     io.stderr.write('[3/5] 新的 Codex Agent Session 已加载 exact Package。\n');
+    // 两次 send 复用同一个 Session，从而落在同一个 Codex thread 中。
     const first = await session.send(authored.starterPrompts[0]!);
     signal.throwIfAborted();
     io.stderr.write('[4/5] 第一轮已完成；正在同一个 Codex thread 中执行连续任务。\n');
