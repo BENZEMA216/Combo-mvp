@@ -9,6 +9,8 @@ export interface CopyButtonProps {
   /** 可把简短视觉文案补成带对象语境的无障碍名称。 */
   ariaLabel?: string;
   className?: string;
+  /** 由调用方呈现成功说明或真正可选中的失败备用文本。 */
+  onCopyResult?: (copied: boolean) => void;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -25,6 +27,7 @@ export function CopyButton({
   label = '复制',
   ariaLabel,
   className,
+  onCopyResult,
 }: CopyButtonProps): ReactElement {
   const [feedback, setFeedback] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,6 +41,7 @@ export function CopyButton({
   const handleClick = async (): Promise<void> => {
     const ok = await copyText(text);
     setFeedback(ok ? '已复制' : '复制失败，请手动选中复制');
+    onCopyResult?.(ok);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setFeedback(null), 2000);
   };

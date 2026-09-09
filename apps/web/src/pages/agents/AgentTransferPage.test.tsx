@@ -76,21 +76,104 @@ afterEach(() => {
 });
 
 describe('Agent transfer explicit approval and publication', () => {
+  it('preserves a leading-zero code and refuses submission if it expires after entry', async () => {
+    const pending = view('pending_approval');
+    pending.transfer.verificationCode = '00AB1234';
+    fetcher.mockResolvedValue(response(pending));
+    const user = userEvent.setup();
+    mount();
+    await user.type(await screen.findByLabelText('原对话中的 8 位确认码'), '00ab1234');
+    expect(screen.getByLabelText('原对话中的 8 位确认码')).toHaveValue('00AB1234');
+    const approve = screen.getByRole('button', { name: '确认并允许保存' });
+    expect(approve).toBeEnabled();
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(pending.transfer.expiresAt) + 1);
+    await user.click(approve);
+    expect(posts()).toHaveLength(0);
+  });
+  it('prepares and cancels sharing locally with fresh consent and focus on review return', async () => {
+    fetcher.mockResolvedValue(response(view('uploaded')));
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('button', { name: '检查完整内容' }));
+    expect(screen.getByText(/<img src="x"/u)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '返回 Agent' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '检查完整内容' })).toHaveFocus());
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '暂不公开' }));
+    expect(screen.getByRole('heading', { name: '先留给自己。' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '准备分享' }));
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(posts()).toHaveLength(0);
+  });
+  it.each(['pending_approval', 'uploaded'] as const)(
+    'locks unknown %s mutations through failed refresh and only unlocks after a successful GET',
+    async (phase) => {
+      const original = view(phase);
+      fetcher
+        .mockResolvedValueOnce(response(original))
+        .mockRejectedValueOnce(new TypeError('lost after commit'))
+        .mockRejectedValueOnce(new TypeError('still offline'))
+        .mockResolvedValueOnce(response(original));
+      const user = userEvent.setup();
+      mount();
+      const approve = phase === 'pending_approval';
+      if (approve)
+        await user.type(await screen.findByLabelText('原对话中的 8 位确认码'), 'AB12CD34');
+      else {
+        await user.click(await screen.findByRole('button', { name: '准备分享' }));
+        await user.click(screen.getByRole('checkbox'));
+      }
+      const label = approve ? '确认并允许保存' : '确认公开';
+      await user.click(screen.getByRole('button', { name: label }));
+      await screen.findByText(/结果未知不代表失败/u);
+      expect(screen.getByRole('button', { name: label })).toBeDisabled();
+      await user.click(screen.getByRole('button', { name: label }));
+      expect(posts()).toHaveLength(1);
+      await user.click(screen.getByRole('button', { name: '刷新状态' }));
+      expect(
+        await screen.findByText('上次操作的结果仍未知。先成功查询状态，再继续。'),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: label })).toBeNull();
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      expect(posts()).toHaveLength(1);
+      await user.click(screen.getByRole('button', { name: '刷新状态' }));
+      await screen.findByRole('button', { name: label });
+      expect(screen.queryByText(/结果未知不代表失败/u)).toBeNull();
+      if (!approve) {
+        expect(screen.getByRole('checkbox')).not.toBeChecked();
+        expect(screen.getByRole('button', { name: label })).toBeDisabled();
+      }
+      expect(posts()).toHaveLength(1);
+    },
+  );
+  it('only polls an approved request and observes upload without sending another operation', async () => {
+    fetcher
+      .mockResolvedValueOnce(response(view('approved')))
+      .mockResolvedValueOnce(response(view('uploaded')));
+    mount();
+    expect(await screen.findByRole('heading', { name: '已允许保存。' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: '先留给自己。' }, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(posts()).toHaveLength(0);
+  });
   it('does nothing on GET and sends only approval after the user matches the Codex code', async () => {
     fetcher
       .mockResolvedValueOnce(response(view('pending_approval')))
       .mockResolvedValueOnce(response(view('approved').transfer));
     const user = userEvent.setup();
     mount();
-    const approve = await screen.findByRole('button', { name: '允许私有上传' });
+    const approve = await screen.findByRole('button', { name: '确认并允许保存' });
     expect(approve).toBeDisabled();
     expect(posts()).toHaveLength(0);
-    await user.type(screen.getByLabelText('Codex 中的 8 位配对码'), 'BAD00000');
+    await user.type(screen.getByLabelText('原对话中的 8 位确认码'), 'BAD00000');
     expect(approve).toBeDisabled();
-    await user.clear(screen.getByLabelText('Codex 中的 8 位配对码'));
-    await user.type(screen.getByLabelText('Codex 中的 8 位配对码'), 'ab12cd34');
+    await user.clear(screen.getByLabelText('原对话中的 8 位确认码'));
+    await user.type(screen.getByLabelText('原对话中的 8 位确认码'), 'ab12cd34');
     await user.click(approve);
-    expect(await screen.findByRole('heading', { name: '已允许私有上传' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '已允许保存。' })).toBeInTheDocument();
     expect(posts()).toHaveLength(1);
     expect(posts()[0]?.[0]).toBe(`/api/v1/agent-package-transfers/${ID}/approval`);
     expect(JSON.parse(posts()[0]?.[1]?.body as string)).toEqual({
@@ -99,7 +182,7 @@ describe('Agent transfer explicit approval and publication', () => {
       draftFingerprint: FINGERPRINT,
       packageDigest: DIGEST,
     });
-    expect(screen.queryByRole('button', { name: '确认公开发布' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '确认公开' })).toBeNull();
   });
   it('requires an explicit matched-code rejection and ends the request', async () => {
     fetcher
@@ -107,25 +190,30 @@ describe('Agent transfer explicit approval and publication', () => {
       .mockResolvedValueOnce(response(view('rejected').transfer));
     const user = userEvent.setup();
     mount();
-    await user.type(await screen.findByLabelText('Codex 中的 8 位配对码'), 'AB12CD34');
+    await user.type(await screen.findByLabelText('原对话中的 8 位确认码'), 'AB12CD34');
+    await user.click(screen.getByText('核对版本与请求'));
     await user.click(screen.getByRole('button', { name: '拒绝此次上传' }));
-    expect(await screen.findByRole('heading', { name: '此次上传已拒绝' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '已拒绝此次保存。' })).toBeInTheDocument();
     expect(JSON.parse(posts()[0]?.[1]?.body as string).decision).toBe('reject');
   });
   it('cannot approve an expired request', async () => {
     fetcher.mockResolvedValue(response(view('pending_approval', true)));
     mount();
-    expect(await screen.findByRole('button', { name: '允许私有上传' })).toBeDisabled();
-    expect(screen.getByText('配对已过期。请回到 Codex 创建新的上传请求。')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '确认并允许保存' })).toBeDisabled();
+    expect(screen.getByText('确认码已过期。请回到原对话重新发起保存。')).toBeInTheDocument();
     expect(posts()).toHaveLength(0);
   });
   it('shows exact plain text and keeps publication separate from refresh even after upload TTL', async () => {
-    fetcher.mockImplementation(async () => response(view('uploaded', true)));
+    const uploaded = view('uploaded', true);
+    fetcher.mockImplementation(async () => response(uploaded));
     const user = userEvent.setup();
     mount();
-    expect(await screen.findByRole('button', { name: '确认公开发布' })).toBeDisabled();
+    await user.click(await screen.findByRole('button', { name: '查看完整方法' }));
     expect(screen.getByText(/<img src="x" onerror="steal\(\)">/u)).toBeInTheDocument();
     expect(document.querySelector('img')).toBeNull();
+    await user.click(screen.getByRole('button', { name: '返回 Agent' }));
+    await user.click(screen.getByRole('button', { name: '准备分享' }));
+    expect(screen.getByRole('button', { name: '确认公开' })).toBeDisabled();
     expect(screen.getByText('来源未核验')).toBeInTheDocument();
     expect(screen.getByText('覆盖可能不完整')).toBeInTheDocument();
     expect(screen.getByText('尚未试运行')).toBeInTheDocument();
@@ -133,7 +221,7 @@ describe('Agent transfer explicit approval and publication', () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(posts()).toHaveLength(0);
     await user.click(screen.getByRole('checkbox'));
-    expect(screen.getByRole('button', { name: '确认公开发布' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '确认公开' })).toBeEnabled();
   });
   it('reuses the persisted publication request after a lost response and page remount', async () => {
     fetcher
@@ -141,8 +229,9 @@ describe('Agent transfer explicit approval and publication', () => {
       .mockRejectedValueOnce(new TypeError('lost after commit'));
     const user = userEvent.setup();
     const first = mount();
-    await user.click(await screen.findByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开' }));
     expect(await screen.findByText(/结果未知不代表失败/u)).toBeInTheDocument();
     const firstBody = JSON.parse(posts()[0]?.[1]?.body as string);
     first.unmount();
@@ -150,12 +239,13 @@ describe('Agent transfer explicit approval and publication', () => {
       .mockResolvedValueOnce(response(view('uploaded')))
       .mockResolvedValueOnce(response(view('published').transfer));
     mount();
-    const checkbox = await screen.findByRole('checkbox');
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    const checkbox = screen.getByRole('checkbox');
     expect(checkbox).not.toBeChecked();
     expect(posts()).toHaveLength(1);
     await user.click(checkbox);
-    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
-    expect(await screen.findByRole('heading', { name: '已按链接公开' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认公开' }));
+    expect(await screen.findByRole('heading', { name: '现在，可以分享了。' })).toBeInTheDocument();
     expect(JSON.parse(posts()[1]?.[1]?.body as string)).toEqual(firstBody);
     expect(firstBody).toMatchObject({
       draftFingerprint: FINGERPRINT,
@@ -171,11 +261,12 @@ describe('Agent transfer explicit approval and publication', () => {
       .mockResolvedValueOnce(response(view('published')));
     const user = userEvent.setup();
     mount();
-    await user.click(await screen.findByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开' }));
     await screen.findByRole('alert');
     await user.click(screen.getByRole('button', { name: '刷新状态' }));
-    expect(await screen.findByRole('heading', { name: '已按链接公开' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '现在，可以分享了。' })).toBeInTheDocument();
     expect(posts()).toHaveLength(1);
   });
   it('rejects a published response for another exact pair without showing a success card or link', async () => {
@@ -191,10 +282,11 @@ describe('Agent transfer explicit approval and publication', () => {
       .mockResolvedValueOnce(response(wrong));
     const user = userEvent.setup();
     mount();
-    await user.click(await screen.findByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开' }));
     expect(await screen.findByText(/结果未知不代表失败/u)).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: '已按链接公开' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '现在，可以分享了。' })).toBeNull();
     expect(screen.queryByRole('link', { name: shareUrl })).toBeNull();
     expect(screen.getByText(DIGEST)).toBeInTheDocument();
     expect(screen.queryByText(wrong.saved.packageDigest)).toBeNull();
@@ -209,8 +301,9 @@ describe('Agent transfer explicit approval and publication', () => {
     expect(sessionStorage.setItem).toBe(setItem);
     const user = userEvent.setup();
     mount();
-    await user.click(await screen.findByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开' }));
     expect(await screen.findByText(/因此尚未发送/u)).toBeInTheDocument();
     expect(setItem).toHaveBeenCalledOnce();
     expect(posts()).toHaveLength(0);
@@ -225,15 +318,23 @@ describe('Agent transfer explicit approval and publication', () => {
       fetcher.mockResolvedValueOnce(response(view(phase))).mockResolvedValueOnce(response(changed));
       const user = userEvent.setup();
       mount();
-      if (phase === 'uploaded') await user.click(await screen.findByRole('checkbox'));
-      else await user.type(await screen.findByLabelText('Codex 中的 8 位配对码'), 'AB12CD34');
-      const label = phase === 'uploaded' ? '确认公开发布' : '允许私有上传';
+      if (phase === 'uploaded') {
+        await user.click(await screen.findByRole('button', { name: '准备分享' }));
+        await user.click(screen.getByRole('checkbox'));
+      } else await user.type(await screen.findByLabelText('原对话中的 8 位确认码'), 'AB12CD34');
+      const label = phase === 'uploaded' ? '确认公开' : '确认并允许保存';
       expect(screen.getByRole('button', { name: label })).toBeEnabled();
       await user.click(screen.getByRole('button', { name: '刷新状态' }));
       await screen.findByText(changed.draftFingerprint);
-      expect(screen.getByRole('button', { name: label })).toBeDisabled();
-      if (phase === 'uploaded') expect(screen.getByRole('checkbox')).not.toBeChecked();
-      else expect(screen.getByLabelText('Codex 中的 8 位配对码')).toHaveValue('');
+      if (phase === 'uploaded') {
+        expect(screen.queryByRole('checkbox')).toBeNull();
+        await user.click(screen.getByRole('button', { name: '准备分享' }));
+        expect(screen.getByRole('button', { name: label })).toBeDisabled();
+        expect(screen.getByRole('checkbox')).not.toBeChecked();
+      } else {
+        expect(screen.getByRole('button', { name: label })).toBeDisabled();
+        expect(screen.getByLabelText('原对话中的 8 位确认码')).toHaveValue('');
+      }
       expect(posts()).toHaveLength(0);
     },
   );
@@ -247,11 +348,12 @@ describe('Agent transfer explicit approval and publication', () => {
     );
     const user = userEvent.setup();
     mount();
-    await user.click(await screen.findByRole('checkbox'));
-    await user.dblClick(screen.getByRole('button', { name: '确认公开发布' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.dblClick(screen.getByRole('button', { name: '确认公开' }));
     expect(posts()).toHaveLength(1);
     finish(response(view('published').transfer));
-    expect(await screen.findByRole('heading', { name: '已按链接公开' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '现在，可以分享了。' })).toBeInTheDocument();
   });
   it.each([404, 503])('shows safe HTTP %s without enabling actions', async (status) => {
     fetcher.mockResolvedValue(response({ secret: 'private-details' }, status));

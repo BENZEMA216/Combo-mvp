@@ -37,12 +37,14 @@ export function App(): ReactElement {
       <Routes>
         <Route element={<ProtectedRoot />}>
           <Route element={<RequireAuth />}>
+            <Route element={<PublicLayout />}>
+              <Route path="/agent-transfers/:transferId" element={<AgentTransferPage />} />
+            </Route>
             <Route element={<ProtectedLayout />}>
               {/* 旧 IA 别名：/creator 是重构前的工作台路径，旧书签/外链落过来不该 404。 */}
               <Route path="/creator" element={<Navigate to="/tasks" replace />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-              <Route path="/agent-transfers/:transferId" element={<AgentTransferPage />} />
               <Route path="/capabilities" element={<CapabilitiesPage />} />
               <Route path="/capabilities/:capabilityId/release" element={<ReleasePage />} />
               <Route path="/capabilities/:capabilityId/release/:step" element={<ReleasePage />} />

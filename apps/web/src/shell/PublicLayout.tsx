@@ -5,12 +5,22 @@
 import type { ReactElement } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { ComboMark, ComboWordmark } from './brand.js';
+import { sanitizeAuthReturnTo } from '@cb/shared';
 
 export function PublicLayout(): ReactElement {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const showAgentEntry = pathname !== '/login';
-  const shellClass =
-    pathname === '/' ? 'cb-public-shell cb-public-shell--landing' : 'cb-public-shell';
+  const transferLogin =
+    pathname === '/login' &&
+    sanitizeAuthReturnTo(new URLSearchParams(search).get('returnTo') ?? '').startsWith(
+      '/agent-transfers/',
+    );
+  const agentSurface =
+    transferLogin ||
+    pathname === '/' ||
+    pathname.startsWith('/agents/') ||
+    pathname.startsWith('/agent-transfers/');
+  const shellClass = agentSurface ? 'cb-public-shell cb-public-shell--agent' : 'cb-public-shell';
 
   return (
     <div className={shellClass}>

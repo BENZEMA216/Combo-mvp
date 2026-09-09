@@ -1,33 +1,22 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
-import {
-  AgentPackageRequestError,
-  TRANSFER_ID_PATTERN,
-  approveAgentTransfer,
-  getAgentTransfer,
-  publicationRequestId,
-  publishAgentTransfer,
-  type AgentTransferReceipt,
-  type TransferPhase,
-} from '../../api/agentPackages.js';
-import { CopyButton } from '../../components/CopyButton.js';
+import { useRef, useState, type ReactElement } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { TRANSFER_ID_PATTERN } from '../../api/agentPackages.js';
+import { AgentIcon, type AgentIconName } from '../../components/AgentIcon.js';
+import { CopyInstruction } from '../../components/CopyInstruction.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { useAuth } from '../../shell/auth.js';
 import {
-  AgentPackageContents,
+  AgentIdentity,
   AgentPackageEvidence,
   AgentPackageMessage,
-} from './AgentReleasePage.js';
+  AgentReviewScreen,
+  packageDescription,
+} from './AgentPackageReview.js';
+import { useAgentTransferState } from './AgentTransferState.js';
 import './agentPackages.css';
 
-const PHASE_LABELS: Record<TransferPhase, string> = {
-  pending_approval: '等待你核对',
-  approved: '等待 Codex 上传',
-  uploaded: '已私有保存，尚未公开',
-  published: '已按链接公开',
-  rejected: '已拒绝此次上传',
-};
+export const CONTINUE_PRIVATE_SAVE =
+  '我已在 Combo 核对确认码并允许保存。请继续刚才同一份 Agent 的私有保存：先查询原上传请求；只在已获授权后继续，不重新提取、不新建请求、不公开发布。';
 
 function TransferContent({
   transferId,
@@ -36,284 +25,309 @@ function TransferContent({
   transferId: string;
   ownerId: string;
 }): ReactElement {
-  const client = useQueryClient();
-  const queryKey = useMemo(() => ['agent-transfer', ownerId, transferId], [ownerId, transferId]);
-  const query = useQuery({
-    queryKey,
-    queryFn: ({ signal }) => getAgentTransfer(transferId, signal),
-    retry: false,
-    refetchOnWindowFocus: false,
-    // 最后一个订阅卸载即回收私有内容；已消费的 signal 同时取消旧账号的 GET。
-    gcTime: 0,
-  });
-  const [codeEntry, setCodeEntry] = useState<{ identity: string; text: string } | null>(null);
-  const [confirmedIdentity, setConfirmedIdentity] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
-  const activeRef = useRef(false);
-  useEffect(() => {
-    activeRef.current = true;
-    return () => {
-      activeRef.current = false;
-    };
-  }, []);
-  const [actionError, setActionError] = useState<unknown>(null);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  useDocumentTitle(
-    query.data ? `${query.data.name} · 上传与发布 · Combo` : 'Agent 上传与发布 · Combo',
-  );
-  const view = query.data;
-  const identity = view
-    ? JSON.stringify([
-        view.draftFingerprint,
-        view.packageDigest,
-        view.transfer.verificationCode,
-        view.transfer.expiresAt,
-      ])
-    : '';
-  // 确认绑定到屏幕上那一份内容；刷新若返回不同身份，不继承旧输入或勾选。
-  const code = codeEntry?.identity === identity ? codeEntry.text : '';
-  const confirmed = identity !== '' && confirmedIdentity === identity;
-  const phase = view?.transfer.phase;
-  const expired = view ? now >= Date.parse(view.transfer.expiresAt) : false;
-
-  async function action(decision: 'approve' | 'reject' | 'publish'): Promise<void> {
-    if (!view || busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    setActionError(null);
-    try {
-      let transfer: AgentTransferReceipt;
-      const binding = {
-        draftFingerprint: view.draftFingerprint,
-        packageDigest: view.packageDigest,
-      };
-      if (decision === 'publish') {
-        if (phase !== 'uploaded' || !confirmed || !view.review) return;
-        const requestId = publicationRequestId(
-          transferId,
-          binding.draftFingerprint,
-          binding.packageDigest,
-        );
-        transfer = await publishAgentTransfer(transferId, {
-          ...binding,
-          requestId,
-          confirmPublic: true,
-        });
-        if (transfer.phase !== 'published')
-          throw new AgentPackageRequestError('发布结果尚未确认，请刷新状态。', true);
-      } else {
-        if (phase !== 'pending_approval' || expired || code !== view.transfer.verificationCode)
-          return;
-        transfer = await approveAgentTransfer(transferId, {
-          ...binding,
-          verificationCode: code,
-          decision,
-        });
-        if (transfer.phase !== (decision === 'approve' ? 'approved' : 'rejected'))
-          throw new AgentPackageRequestError('确认结果尚未明确，请刷新状态。', true);
-      }
-      if (!activeRef.current) return;
-      await client.cancelQueries({ queryKey });
-      if (!activeRef.current) return;
-      client.setQueryData(queryKey, { ...view, transfer });
-      setCodeEntry(null);
-      setConfirmedIdentity(null);
-    } catch (error) {
-      if (activeRef.current) setActionError(error);
-    } finally {
-      busyRef.current = false;
-      if (activeRef.current) setBusy(false);
-    }
+  const state = useAgentTransferState(transferId, ownerId);
+  const { query, view, identity, code, confirmed, expired, busy, blocked, uncertain, actionError } =
+    state;
+  const [screen, setScreen] = useState<{
+    identity: string;
+    page: 'share' | 'review';
+    returnTo: 'saved' | 'share';
+  } | null>(null);
+  const reviewButtonRef = useRef<HTMLButtonElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useDocumentTitle(view ? view.name + ' · 保存与分享 · Combo' : 'Agent 保存与分享 · Combo');
+  const page = screen?.identity === identity ? screen.page : 'saved';
+  function showReview(returnTo: 'saved' | 'share'): void {
+    setScreen({ identity, page: 'review', returnTo });
+  }
+  function backFromReview(): void {
+    const returnTo = screen?.returnTo ?? 'saved';
+    setScreen(returnTo === 'share' ? { identity, page: 'share', returnTo } : null);
+    requestAnimationFrame(() => reviewButtonRef.current?.focus());
+  }
+  function showShare(): void {
+    state.setConfirmed(false);
+    setScreen({ identity, page: 'share', returnTo: 'saved' });
+    requestAnimationFrame(() => titleRef.current?.focus());
   }
 
   if (query.isPending)
     return (
-      <article className="cb-agent-page">
+      <article className="cb-agent-page cb-agent-page--center">
         <p role="status">正在读取上传请求…</p>
       </article>
     );
   if (query.isError || !view)
     return (
-      <article className="cb-agent-page">
+      <article className="cb-agent-page cb-agent-page--center">
+        <span className="cb-agent-symbol cb-agent-symbol--hero">
+          <AgentIcon name="error" />
+        </span>
         <h1>暂时无法读取上传请求</h1>
         <AgentPackageMessage error={query.error} />
-        <button type="button" onClick={() => void query.refetch()}>
+        {uncertain && <p>上次操作的结果仍未知。先成功查询状态，再继续。</p>}
+        <button
+          type="button"
+          className="cb-agent-primary"
+          disabled={query.isFetching}
+          onClick={() => void state.refresh()}
+        >
           刷新状态
         </button>
+        <p className="cb-agent-subtle">不显示旧账号内容，也不会自动重发请求。</p>
       </article>
     );
   const transfer = view.transfer;
-  const pairMatches = code === transfer.verificationCode;
+  if (page === 'review' && view.review)
+    return (
+      <article className="cb-agent-page">
+        <AgentReviewScreen name={view.name} value={view.review} onBack={backFromReview} />
+      </article>
+    );
+  const sharing = transfer.phase === 'uploaded' && page === 'share';
+  const titles: Record<typeof transfer.phase, [string, string, AgentIconName]> = {
+    pending_approval: [
+      '确认是你发起的保存。',
+      '输入原对话里的 8 位确认码，只保存这一份 Agent。',
+      'shield',
+    ],
+    approved: ['已允许保存。', '回到原对话，继续刚才的私有保存。', 'check'],
+    uploaded: ['先留给自己。', 'Agent 已私有保存。是否公开，仍由你决定。', 'lock'],
+    published: ['现在，可以分享了。', '链接对应这次确认的固定版本。', 'link'],
+    rejected: ['已拒绝此次保存。', '本次授权已结束，未允许上传。', 'error'],
+  };
+  const [title, lead, symbol] = sharing
+    ? (['让别人，也能用。', '公开后，拿到链接的人都能查看和下载这个版本。', 'link'] as const)
+    : titles[transfer.phase];
   return (
-    <article className="cb-agent-page">
+    <article className="cb-agent-page cb-agent-page--center">
       <header className="cb-agent-header">
-        <p className="cb-agent-kicker">FROM YOUR CODEX TASK</p>
-        <h1>{view.name}</h1>
-        <p className="cb-agent-description">先私有保存，再由你决定是否分享。</p>
-        <div className="cb-agent-status">
-          <span>{PHASE_LABELS[transfer.phase]}</span>
-          <button
-            type="button"
-            disabled={busy || query.isFetching}
-            onClick={() => {
-              setActionError(null);
-              void query.refetch();
-            }}
-          >
-            {query.isFetching ? '正在刷新…' : '刷新状态'}
-          </button>
-        </div>
-        <AgentPackageEvidence />
+        <span className="cb-agent-symbol cb-agent-symbol--hero">
+          <AgentIcon name={symbol} />
+        </span>
+        <h1 ref={titleRef} tabIndex={-1}>
+          {title}
+        </h1>
+        <p className="cb-agent-description">{lead}</p>
       </header>
-      {actionError !== null && (
-        <>
-          <AgentPackageMessage error={actionError} />
-          {actionError instanceof AgentPackageRequestError && actionError.outcomeUncertain && (
-            <p className="cb-agent-notice">
-              结果未知不代表失败。请先刷新状态；重新确认发布时会复用原请求编号，不会自动重发。
-            </p>
-          )}
-        </>
+      {actionError !== null && <AgentPackageMessage error={actionError} />}
+      {uncertain && (
+        <p className="cb-agent-notice" role="status">
+          结果未知不代表失败。请先刷新状态；成功查询前不能再次提交，不会自动重发。
+        </p>
       )}
+
       {transfer.phase === 'pending_approval' && (
-        <section className="cb-agent-card" aria-labelledby="pair-title">
-          <p className="cb-agent-kicker">01 · PRIVATE UPLOAD</p>
-          <h2 id="pair-title">核对 Codex 配对码</h2>
-          <p>
-            请回到发起上传的 Codex 任务，核对 Agent 名称与下方两个摘要，再输入该任务给出的 8
-            位配对码。
-          </p>
-          <p className="cb-agent-notice">
-            这次确认只允许保存当前这份私有 Agent，不会公开发布，也不会安装到任何任务或 Project。
-          </p>
+        <section className="cb-agent-card" aria-label="核对私有保存">
+          <AgentIdentity name={view.name} />
+          <p>只保存整理后的 Agent 方法，不读取或保存原始对话。</p>
           <label className="cb-agent-field" htmlFor="agent-verification-code">
-            Codex 中的 8 位配对码
+            原对话中的 8 位确认码
             <input
               id="agent-verification-code"
               value={code}
-              onChange={(event) =>
-                setCodeEntry({
-                  identity,
-                  text: event.target.value
-                    .toUpperCase()
-                    .replace(/[^A-Z0-9]/gu, '')
-                    .slice(0, 8),
-                })
-              }
+              onChange={(event) => state.setCode(event.target.value)}
               autoComplete="off"
               autoCapitalize="characters"
               spellCheck={false}
               maxLength={8}
-              placeholder="例如 A1B2C3D4"
-              disabled={busy || expired}
+              placeholder="8 位字母或数字"
+              disabled={blocked || expired}
               aria-describedby="pair-expiry"
             />
           </label>
           <p id="pair-expiry" className="cb-agent-subtle">
             {expired
-              ? '配对已过期。请回到 Codex 创建新的上传请求。'
-              : `有效至 ${new Date(transfer.expiresAt).toLocaleTimeString('zh-CN')}；超过时间需重新发起。`}
+              ? '确认码已过期。请回到原对话重新发起保存。'
+              : '有效至 ' +
+                new Date(transfer.expiresAt).toLocaleTimeString('zh-CN') +
+                '；仅限本次保存。'}
           </p>
-          <div className="cb-agent-actions">
+          <button
+            type="button"
+            className="cb-agent-primary cb-agent-wide"
+            disabled={blocked || expired || code !== transfer.verificationCode}
+            onClick={() => void state.action('approve')}
+          >
+            {busy ? '正在确认…' : '确认并允许保存'}
+          </button>
+          <p className="cb-agent-subtle">这次确认不授权公开发布，也不会安装或运行。</p>
+          <Link className="cb-agent-text-link" to="/">
+            取消
+          </Link>
+        </section>
+      )}
+
+      {transfer.phase === 'approved' && (
+        <section className="cb-agent-card">
+          <AgentIdentity name={view.name} />
+          {expired ? (
+            <p role="status">上传授权已过期。若尚未保存，请回到原对话重新发起。</p>
+          ) : (
+            <>
+              <p>网页无法替你返回或上传。请切回发起请求的那条对话，粘贴继续指令。</p>
+              <CopyInstruction
+                text={CONTINUE_PRIVATE_SAVE}
+                label="复制继续保存指令"
+                copiedHint="已复制。回到原对话粘贴，继续同一份保存。"
+                className="cb-agent-primary cb-agent-wide"
+              />
+              <p className="cb-agent-subtle" role="status">
+                等待原对话完成上传；此页只查询状态。
+              </p>
+            </>
+          )}
+        </section>
+      )}
+
+      {transfer.phase === 'rejected' && <p>若要继续，请回到原对话发起新的保存请求。</p>}
+
+      {transfer.phase === 'uploaded' && (
+        <>
+          <section className="cb-agent-card">
+            <AgentIdentity
+              name={view.name}
+              description={view.review ? packageDescription(view.review) : undefined}
+            />
+            {sharing ? (
+              <p>
+                公开完整方法与文件，不公开原始对话。
+                <br />
+                已下载的副本无法收回。
+              </p>
+            ) : (
+              <p className="cb-agent-private">
+                <AgentIcon name="lock" /> 仅你可见，尚未公开
+              </p>
+            )}
+            {view.review && (
+              <button
+                ref={reviewButtonRef}
+                type="button"
+                className="cb-agent-text-button"
+                onClick={() => showReview(sharing ? 'share' : 'saved')}
+              >
+                {sharing ? '检查完整内容' : '查看完整方法'}
+              </button>
+            )}
+          </section>
+          {sharing ? (
+            <section className="cb-agent-public-confirm" aria-label="独立公开确认">
+              <label className="cb-agent-confirm">
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  disabled={blocked}
+                  onChange={(event) => state.setConfirmed(event.target.checked)}
+                />
+                <span>
+                  我已检查完整内容，确认没有隐私、凭证或无权分享的内容，同意公开这个版本。
+                </span>
+              </label>
+              <button
+                type="button"
+                className="cb-agent-primary"
+                disabled={!confirmed || blocked || !view.review}
+                onClick={() => void state.action('publish')}
+              >
+                {busy ? '正在确认发布…' : '确认公开'}
+              </button>
+              <button
+                type="button"
+                className="cb-agent-text-button"
+                disabled={busy}
+                onClick={() => {
+                  state.setConfirmed(false);
+                  setScreen(null);
+                  requestAnimationFrame(() => titleRef.current?.focus());
+                }}
+              >
+                暂不公开
+              </button>
+            </section>
+          ) : (
             <button
               type="button"
               className="cb-agent-primary"
-              disabled={busy || expired || !pairMatches}
-              onClick={() => void action('approve')}
+              disabled={blocked || !view.review}
+              onClick={showShare}
             >
-              {busy ? '正在提交…' : '允许私有上传'}
+              准备分享
             </button>
-            <button
-              type="button"
-              disabled={busy || expired || !pairMatches}
-              onClick={() => void action('reject')}
-            >
-              拒绝此次上传
-            </button>
-          </div>
-        </section>
+          )}
+        </>
       )}
-      {transfer.phase === 'approved' && (
-        <section className="cb-agent-card">
-          <p className="cb-agent-kicker">01 · PRIVATE UPLOAD</p>
-          <h2>已允许私有上传</h2>
-          <p>
-            {expired
-              ? '上传授权已过期。若 Codex 尚未完成上传，请在原任务重新发起。'
-              : '请回到发起请求的 Codex 任务，让它完成上传，再点击“刷新状态”。'}
-          </p>
-          <p className="cb-agent-subtle">浏览器不持有上传 secret；此时尚不能公开发布。</p>
-        </section>
-      )}
-      {transfer.phase === 'rejected' && (
-        <section className="cb-agent-card">
-          <h2>此次上传已拒绝</h2>
-          <p>本次授权已结束。若要继续，请回到 Codex 发起新的请求。</p>
-        </section>
-      )}
-      {(transfer.phase === 'uploaded' || transfer.phase === 'published') && view.review && (
-        <AgentPackageContents value={view.review} />
-      )}
-      {transfer.phase === 'uploaded' && (
-        <section className="cb-agent-card" aria-labelledby="publish-title">
-          <p className="cb-agent-kicker">02 · SEPARATE PUBLICATION</p>
-          <h2 id="publish-title">要将这份 Agent 按链接公开吗？</h2>
-          <p>
-            目前仅私有保存。公开后，任何拿到链接的人都能查看与下载上面的完整内容；已经下载的副本无法收回。
-          </p>
-          <label className="cb-agent-confirm">
-            <input
-              type="checkbox"
-              checked={confirmed}
-              onChange={(event) => setConfirmedIdentity(event.target.checked ? identity : null)}
-              disabled={busy}
-            />
-            <span>
-              我已核对 AGENT.md、Skill
-              和其他文件，确认没有隐私、凭证或无权分享的内容，并同意按链接公开。
-            </span>
-          </label>
-          <button
-            type="button"
-            className="cb-agent-primary"
-            disabled={!confirmed || busy || !view.review}
-            onClick={() => void action('publish')}
-          >
-            {busy ? '正在确认发布…' : '确认公开发布'}
-          </button>
-          <p className="cb-agent-subtle">
-            只发布当前两个摘要对应的内容。此操作不会自动安装或试运行。
-          </p>
-        </section>
-      )}
+
       {transfer.phase === 'published' && transfer.release && (
         <section className="cb-agent-card">
-          <p className="cb-agent-kicker">PUBLICATION COMPLETE</p>
-          <h2>已按链接公开</h2>
-          <p>发布的是当前内容的固定版本，不代表已经安装或运行。</p>
+          <AgentIdentity
+            name={view.name}
+            description={view.review ? packageDescription(view.review) : undefined}
+          />
           <a className="cb-agent-share" href={transfer.release.shareUrl}>
             {transfer.release.shareUrl}
           </a>
-          <div className="cb-agent-actions">
-            <CopyButton text={transfer.release.shareUrl} label="复制分享链接" />
-            <CopyButton text={transfer.release.acquirePrompt} label="复制获取提示词" />
-          </div>
-          <div className="cb-agent-prompt">
-            <p>{transfer.release.acquirePrompt}</p>
+          <CopyInstruction
+            text={transfer.release.shareUrl}
+            label="复制分享链接"
+            copiedHint="已复制分享链接。拿到链接的人可以查看这个版本。"
+            className="cb-agent-primary cb-agent-wide"
+          />
+          <div className="cb-agent-secondary-actions">
+            <CopyInstruction
+              text={transfer.release.acquirePrompt}
+              label="复制使用指令"
+              copiedHint="已复制。交给你当前对话中的 Agent；尚未安装或运行。"
+            />
+            {view.review && (
+              <button
+                ref={reviewButtonRef}
+                type="button"
+                className="cb-agent-text-button"
+                onClick={() => showReview('saved')}
+              >
+                查看完整方法
+              </button>
+            )}
           </div>
         </section>
       )}
-      <section className="cb-agent-digest" aria-label="待确认内容摘要">
-        <span>Draft fingerprint</span>
-        <code>{view.draftFingerprint}</code>
-        <span>Package digest</span>
-        <code>{view.packageDigest}</code>
-      </section>
+
+      <footer className="cb-agent-footer">
+        <AgentPackageEvidence />
+        <button
+          type="button"
+          className="cb-agent-text-button"
+          disabled={busy || query.isFetching}
+          onClick={() => void state.refresh()}
+        >
+          {query.isFetching ? '正在刷新…' : '刷新状态'}
+        </button>
+        <details className="cb-agent-technical">
+          <summary>核对版本与请求</summary>
+          <dl className="cb-agent-digest">
+            <dt>Draft fingerprint</dt>
+            <dd>
+              <code>{view.draftFingerprint}</code>
+            </dd>
+            <dt>Package digest</dt>
+            <dd>
+              <code>{view.packageDigest}</code>
+            </dd>
+            <dt>保存状态</dt>
+            <dd>{transfer.phase}</dd>
+          </dl>
+          {transfer.phase === 'pending_approval' && (
+            <button
+              type="button"
+              disabled={blocked || expired || code !== transfer.verificationCode}
+              onClick={() => void state.action('reject')}
+            >
+              拒绝此次上传
+            </button>
+          )}
+        </details>
+      </footer>
     </article>
   );
 }
@@ -323,9 +337,9 @@ export function AgentTransferPage(): ReactElement {
   const { me } = useAuth();
   if (!TRANSFER_ID_PATTERN.test(transferId))
     return (
-      <article className="cb-agent-page">
+      <article className="cb-agent-page cb-agent-page--center">
         <h1>这个上传链接不正确</h1>
-        <p>请从 Codex 打开完整的确认链接。</p>
+        <p>请从原对话打开完整的确认链接。</p>
       </article>
     );
   if (!me)
@@ -334,5 +348,5 @@ export function AgentTransferPage(): ReactElement {
         <p role="status">正在确认登录身份…</p>
       </article>
     );
-  return <TransferContent key={`${me.id}:${transferId}`} transferId={transferId} ownerId={me.id} />;
+  return <TransferContent key={me.id + ':' + transferId} transferId={transferId} ownerId={me.id} />;
 }

@@ -1,0 +1,42 @@
+.cb-copy-instruction {
+  width: 100%;
+  min-width: 0;
+}
+
+.cb-copy-instruction__feedback {
+  margin: 12px 0 0;
+  color: var(--cb-muted);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.cb-copy-instruction__fallback {
+  margin-top: 16px;
+  text-align: left;
+}
+
+.cb-copy-instruction__fallback p {
+  color: var(--cb-body);
+  font-size: 0.875rem;
+}
+
+.cb-copy-instruction__fallback textarea {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 120px;
+  padding: 16px;
+  border: 1px solid var(--cb-border);
+  border-radius: 12px;
+  background: var(--cb-surface);
+  color: var(--cb-body);
+  font: 0.875rem/1.7 var(--cb-font-sans);
+  overflow-wrap: anywhere;
+  resize: vertical;
+}
+
+.cb-copy-instruction__fallback textarea:focus-visible {
+  outline: 2px solid var(--cb-focus-ring);
+  outline-offset: 3px;
+}

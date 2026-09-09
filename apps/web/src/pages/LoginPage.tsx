@@ -22,6 +22,8 @@ import {
 } from '../api/auth.js';
 import { logoutSession } from '../api/sessionLogout.js';
 import { useDocumentTitle } from '../shell/useDocumentTitle.js';
+import { AgentIcon } from '../components/AgentIcon.js';
+import '../pages/agents/agentPackages.css';
 
 export type LoginUiState =
   | 'email'
@@ -93,6 +95,7 @@ export function LoginPage({
     [params],
   );
   const [state, setState] = useState<LoginUiState>('confirming-session');
+  const transferContext = returnTo.startsWith('/agent-transfers/');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -116,7 +119,7 @@ export function LoginPage({
   const initialProbeStartedRef = useRef(false);
   const operationGenerationRef = useRef(0);
 
-  useDocumentTitle('邮箱登录 · Combo');
+  useDocumentTitle(transferContext ? '登录并保存 Agent · Combo' : '邮箱登录 · Combo');
 
   const finishLogin = useCallback(
     (target: string): void => {
@@ -548,8 +551,16 @@ export function LoginPage({
               : '使用邮箱登录';
 
   return (
-    <section className="cb-page cb-login-page" aria-labelledby="cb-login-title">
+    <section
+      className={'cb-page cb-login-page' + (transferContext ? ' cb-agent-login' : '')}
+      aria-labelledby="cb-login-title"
+    >
       <div className="cb-login" data-state={state}>
+        {transferContext && (
+          <span className="cb-agent-symbol cb-agent-symbol--hero">
+            <AgentIcon name="lock" />
+          </span>
+        )}
         <p
           className="cb-login__step"
           aria-label={inCodeContext ? '登录步骤 2，共 2 步' : '登录步骤 1，共 2 步'}
@@ -557,12 +568,14 @@ export function LoginPage({
           {inCodeContext ? '步骤 2 / 2' : '步骤 1 / 2'}
         </p>
         <h1 className="cb-login__title" id="cb-login-title">
-          {heading}
+          {transferContext && state === 'email' ? '先把 Agent，留给自己。' : heading}
         </h1>
         <p className="cb-login__lead">
-          {inCodeContext
-            ? '输入邮件里的验证码，完成首次建号或登录。'
-            : '无需密码。验证邮箱后即可进入创作者中心。'}
+          {transferContext
+            ? '登录后回到这次保存，核对原对话中的确认码。'
+            : inCodeContext
+              ? '输入邮件里的验证码，完成首次建号或登录。'
+              : '无需密码。验证邮箱后即可进入创作者中心。'}
         </p>
 
         <div className="cb-login__panel">

@@ -67,7 +67,9 @@ describe('App Agent routes', () => {
   it('preserves the exact transfer deep link through login without reading the transfer anonymously', async () => {
     fetcher.mockImplementation(async () => response({}, 401));
     mount(`/agent-transfers/${ID}`);
-    expect(await screen.findByRole('heading', { name: '使用邮箱登录' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: '先把 Agent，留给自己。' }),
+    ).toBeInTheDocument();
     expect(window.location.pathname + window.location.search).toBe(
       `/login?returnTo=${encodeURIComponent(`/agent-transfers/${ID}`)}`,
     );
@@ -100,11 +102,14 @@ describe('App Agent routes', () => {
           }),
     );
     mount(`/agent-transfers/${ID}`);
-    expect(await screen.findByRole('heading', { name: '核对 Codex 配对码' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: '确认是你发起的保存。' }),
+    ).toBeInTheDocument();
     expect(
       fetcher.mock.calls.some((call) => call[0] === `/api/v1/agent-package-transfers/${ID}`),
     ).toBe(true);
     expect(fetcher.mock.calls.every((call) => call[1]?.method !== 'POST')).toBe(true);
+    expect(screen.queryByRole('navigation', { name: '主导航' })).toBeNull();
   });
   it('immediately hides the previous owner content and approval state on /me account switch', async () => {
     const ownerA = ID;
@@ -155,8 +160,12 @@ describe('App Agent routes', () => {
     });
     const user = userEvent.setup();
     const client = mount(`/agent-transfers/${ID}`);
-    await user.click(await screen.findByRole('checkbox'));
-    expect(screen.getByRole('button', { name: '确认公开发布' })).toBeEnabled();
+    await user.click(await screen.findByRole('button', { name: '查看完整方法' }));
+    expect(screen.getByText('Owner A private method only')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '返回 Agent' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    expect(screen.getByRole('button', { name: '确认公开' })).toBeEnabled();
     owner = ownerB;
     await act(() => client.invalidateQueries({ queryKey: ['me'] }));
     await waitFor(() => expect(screen.queryByText('Owner A private method only')).toBeNull());
@@ -215,8 +224,12 @@ describe('App Agent routes', () => {
     });
     const user = userEvent.setup();
     const client = mount(`/agent-transfers/${ID}`);
-    await user.click(await screen.findByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: '确认公开发布' }));
+    await user.click(await screen.findByRole('button', { name: '查看完整方法' }));
+    expect(screen.getByText('Owner A private method only')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '返回 Agent' }));
+    await user.click(await screen.findByRole('button', { name: '准备分享' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: '确认公开' }));
     owner = ownerB;
     await act(() => client.invalidateQueries({ queryKey: ['me'] }));
     expect(await screen.findByRole('alert')).toHaveTextContent('不属于当前账号');
@@ -235,7 +248,7 @@ describe('App Agent routes', () => {
       ),
     );
     expect(screen.queryByText('Owner A private method only')).toBeNull();
-    expect(screen.queryByRole('heading', { name: '已按链接公开' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '现在，可以分享了。' })).toBeNull();
     await waitFor(() =>
       expect(client.getQueryData(['agent-transfer', ownerA, ID])).toBeUndefined(),
     );

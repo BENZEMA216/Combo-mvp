@@ -1,79 +1,43 @@
-import { useRef, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import {
-  AgentPackageRequestError,
   RELEASE_ID_PATTERN,
   getAgentPackageDownload,
   getAgentPublication,
-  type AgentPackageReview,
 } from '../../api/agentPackages.js';
-import { CopyButton } from '../../components/CopyButton.js';
+import { AgentIcon } from '../../components/AgentIcon.js';
+import { CopyInstruction } from '../../components/CopyInstruction.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
+import {
+  AgentIdentity,
+  AgentMethodExcerpt,
+  AgentPackageEvidence,
+  AgentPackageMessage,
+  AgentReviewScreen,
+} from './AgentPackageReview.js';
 import './agentPackages.css';
-
-export function AgentPackageContents({ value }: { value: AgentPackageReview }): ReactElement {
-  return (
-    <section className="cb-agent-content" aria-labelledby="agent-content-title">
-      <div className="cb-agent-section-heading">
-        <div>
-          <p className="cb-agent-kicker">PACKAGE CONTENTS</p>
-          <h2 id="agent-content-title">查看实际内容</h2>
-        </div>
-        <span className="cb-agent-subtle">原文展示 · 不执行内容</span>
-      </div>
-      <p className="cb-agent-subtle">
-        以下为服务端读取并校验的包内容。网页未运行这个 Agent，也未独立重算文件摘要。
-      </p>
-      {value.files.map((file) => (
-        <details
-          className="cb-agent-file"
-          key={file.path}
-          open={file.path === 'AGENT.md' || file.path.endsWith('/SKILL.md')}
-        >
-          <summary>{file.path}</summary>
-          <pre>{file.text}</pre>
-        </details>
-      ))}
-      <details className="cb-agent-file">
-        <summary>agent.json</summary>
-        <pre>{value.manifestText}</pre>
-      </details>
-    </section>
-  );
-}
-
-export function AgentPackageEvidence(): ReactElement {
-  return (
-    <div className="cb-agent-evidence" aria-label="证据边界">
-      <span>来源未核验</span>
-      <span>覆盖可能不完整</span>
-      <span>尚未试运行</span>
-    </div>
-  );
-}
-
-export function AgentPackageMessage({ error }: { error: unknown }): ReactElement {
-  return (
-    <p role="alert" className="cb-agent-error">
-      {error instanceof AgentPackageRequestError
-        ? error.userMessage
-        : '暂时无法读取，请稍后刷新状态。'}
-    </p>
-  );
-}
 
 function ReleaseContent({ releaseId }: { releaseId: string }): ReactElement {
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<unknown>(null);
+  const [reviewing, setReviewing] = useState(false);
   const downloadRef = useRef(false);
+  const activeRef = useRef(false);
+  const reviewButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+    };
+  }, []);
   const query = useQuery({
     queryKey: ['agent-publication', releaseId],
     queryFn: ({ signal }) => getAgentPublication(releaseId, signal),
     retry: false,
     refetchOnWindowFocus: false,
   });
-  useDocumentTitle(query.data ? `${query.data.name} · Agent · Combo` : 'Agent 分享 · Combo');
+  useDocumentTitle(query.data ? query.data.name + ' · Agent · Combo' : 'Agent 分享 · Combo');
   if (query.isPending)
     return (
       <article className="cb-agent-page cb-agent-page--public">
@@ -82,12 +46,21 @@ function ReleaseContent({ releaseId }: { releaseId: string }): ReactElement {
     );
   if (query.isError || !query.data)
     return (
-      <article className="cb-agent-page cb-agent-page--public">
+      <article className="cb-agent-page cb-agent-page--center">
+        <span className="cb-agent-symbol cb-agent-symbol--hero">
+          <AgentIcon name="error" />
+        </span>
         <h1>暂时无法查看这个 Agent</h1>
         <AgentPackageMessage error={query.error} />
-        <button type="button" onClick={() => void query.refetch()}>
+        <button
+          type="button"
+          className="cb-agent-primary"
+          disabled={query.isFetching}
+          onClick={() => void query.refetch()}
+        >
           重新读取
         </button>
+        <p className="cb-agent-subtle">链接可能已失效。你也可以向发布者索取完整链接。</p>
       </article>
     );
   const view = query.data;
@@ -98,75 +71,108 @@ function ReleaseContent({ releaseId }: { releaseId: string }): ReactElement {
     setDownloadError(null);
     try {
       const blob = await getAgentPackageDownload(releaseId, view.release.packageDigest);
+      if (!activeRef.current) return;
       const url = URL.createObjectURL(blob);
       try {
         const anchor = document.createElement('a');
         anchor.href = url;
-        anchor.download = `agent-package-${releaseId.slice(-32)}.json`;
+        anchor.download = 'agent-package-' + releaseId.slice(-32) + '.json';
         anchor.click();
       } finally {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
     } catch (error) {
-      setDownloadError(error);
+      if (activeRef.current) setDownloadError(error);
     } finally {
       downloadRef.current = false;
-      setDownloading(false);
+      if (activeRef.current) setDownloading(false);
     }
   }
+  if (reviewing)
+    return (
+      <article className="cb-agent-page">
+        <AgentReviewScreen
+          name={view.name}
+          value={view.package}
+          onBack={() => {
+            setReviewing(false);
+            requestAnimationFrame(() => reviewButtonRef.current?.focus());
+          }}
+        />
+      </article>
+    );
   return (
     <article className="cb-agent-page cb-agent-page--public">
-      <header className="cb-agent-header">
-        <p className="cb-agent-kicker">SHARED AGENT</p>
-        <h1>{view.name}</h1>
-        <p className="cb-agent-description">{view.description}</p>
-        <p className="cb-agent-subtle">
-          发布者 {view.publisher.account} ·{' '}
-          <time dateTime={view.publishedAt}>
-            {new Date(view.publishedAt).toLocaleDateString('zh-CN')}
-          </time>
-        </p>
+      <section className="cb-agent-card cb-agent-release-card">
+        <AgentIdentity
+          name={view.name}
+          description={view.description}
+          publisher={view.publisher.account}
+          primaryHeading
+        />
+        <AgentMethodExcerpt value={view.package} />
+        <CopyInstruction
+          text={view.acquirePrompt}
+          label="复制使用指令"
+          copiedHint="已复制。粘贴到当前对话，让你的 Agent 先校验这个版本，再应用方法。"
+          className="cb-agent-primary cb-agent-wide"
+        />
+        <button
+          ref={reviewButtonRef}
+          type="button"
+          className="cb-agent-text-button cb-agent-review-entry"
+          onClick={() => setReviewing(true)}
+        >
+          查看完整方法
+        </button>
+      </section>
+      <footer className="cb-agent-footer">
+        <p className="cb-agent-description">复制后，粘贴到你的 Agent 对话。</p>
         <AgentPackageEvidence />
-      </header>
-      <section className="cb-agent-card" aria-labelledby="acquire-title">
-        <p className="cb-agent-kicker">USE IN YOUR TASK</p>
-        <h2 id="acquire-title">在自己的 Codex 项目中使用</h2>
-        <p>
-          点击下面的按钮，把指令粘贴到你已打开项目的 Codex 对话。Codex 会先校验，再把原包和 Skill
-          入口安装到这个项目，并在当前对话中使用。无需 Combo 插件或主站登录。
-        </p>
-        <div className="cb-agent-prompt">
-          <p>{view.acquirePrompt}</p>
-          <CopyButton
-            text={view.acquirePrompt}
-            label="在 Codex 中使用 · 复制指令"
-            className="cb-agent-primary"
-          />
-        </div>
-        <p className="cb-agent-subtle">
-          首版支持 macOS / Linux，需要已有 Node.js 24.2
-          或更新版本。当前支持轻量文本方法，不自动安装外部工具；只新增项目内文件，
-          遇到冲突会停止。项目 Skill 可供后续明确调用，不会修改 AGENTS.md 或全局配置。
-        </p>
-        <p className="cb-agent-subtle">
-          复制指令不会自动打开或操作 Codex。打开网页、安装完成与真实运行是三件不同的事。
-        </p>
-        <p className="cb-agent-subtle">这是按链接公开的内容，任何拿到链接的人都能查看和下载。</p>
-        <div className="cb-agent-actions">
-          <CopyButton text={view.shareUrl} label="复制分享链接" />
-          <button type="button" disabled={downloading} onClick={() => void download()}>
-            {downloading ? '正在下载…' : '下载包 JSON'}
-          </button>
-        </div>
-        {downloadError !== null && <AgentPackageMessage error={downloadError} />}
-      </section>
-      <section className="cb-agent-digest" aria-label="包标识">
-        <span>Package digest</span>
-        <code>{view.release.packageDigest}</code>
-        <span>Release</span>
-        <code>{view.release.releaseId}</code>
-      </section>
-      <AgentPackageContents value={view.package} />
+        <p className="cb-agent-subtle">不包含创作者的原始对话。复制、安装和实际运行分别确认。</p>
+        <details className="cb-agent-technical">
+          <summary>接收要求与版本信息</summary>
+          <p>
+            在已经选定项目的 Codex 或 Claude Code 对话中使用。指令以服务端返回的这个固定版本为准。
+          </p>
+          <p>
+            支持 macOS / Linux，需已有 Node.js 24.2
+            或更新版本。当前支持轻量文本方法，不自动安装外部工具；遇到文件冲突会停止，不覆盖
+            AGENTS.md 或全局配置。
+          </p>
+          <p>
+            无需主站登录。复制不会自动操作客户端或创建新对话；安装后仍需读取原始方法，并单独确认真实运行。
+          </p>
+          <p>按链接公开；任何拿到链接的人都能查看和下载。已下载的副本无法收回。</p>
+          <dl className="cb-agent-digest">
+            <dt>Package digest</dt>
+            <dd>
+              <code>{view.release.packageDigest}</code>
+            </dd>
+            <dt>Release</dt>
+            <dd>
+              <code>{view.release.releaseId}</code>
+            </dd>
+            <dt>发布时间</dt>
+            <dd>
+              <time dateTime={view.publishedAt}>
+                {new Date(view.publishedAt).toLocaleDateString('zh-CN')}
+              </time>
+            </dd>
+          </dl>
+          <div className="cb-agent-secondary-actions">
+            <CopyInstruction
+              text={view.shareUrl}
+              label="复制分享链接"
+              copiedHint="已复制这个版本的分享链接。"
+            />
+            <button type="button" disabled={downloading} onClick={() => void download()}>
+              {downloading ? '正在下载…' : '下载包 JSON'}
+            </button>
+          </div>
+          {downloadError !== null && <AgentPackageMessage error={downloadError} />}
+        </details>
+      </footer>
     </article>
   );
 }
@@ -175,7 +181,7 @@ export function AgentReleasePage(): ReactElement {
   const { releaseId = '' } = useParams();
   if (!RELEASE_ID_PATTERN.test(releaseId))
     return (
-      <article className="cb-agent-page cb-agent-page--public">
+      <article className="cb-agent-page cb-agent-page--center">
         <h1>这个 Agent 链接不正确</h1>
         <p>请向发布者索取完整的分享链接。</p>
       </article>

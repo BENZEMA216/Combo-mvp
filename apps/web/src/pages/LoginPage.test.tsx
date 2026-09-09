@@ -51,6 +51,40 @@ function renderLogin(
 }
 
 describe('LoginPage two-step email OTP flow', () => {
+  it('returns the complete email flow to the exact Agent save request without fetching it anonymously', async () => {
+    const transferPath = '/agent-transfers/11111111-1111-4111-8111-111111111111';
+    fetchMock = installFetchMock([
+      { status: 401, json: {} },
+      challengeAccepted,
+      {
+        status: 200,
+        json: {
+          data: { user: USER, returnTo: transferPath },
+          meta: { traceId: 'trace-agent-save-return' },
+        },
+      },
+    ]);
+    const navigate = renderLogin(undefined, '/login?returnTo=' + encodeURIComponent(transferPath));
+    const user = userEvent.setup();
+    expect(
+      await screen.findByRole('heading', { name: '先把 Agent，留给自己。' }),
+    ).toBeInTheDocument();
+    await user.type(await screen.findByRole('textbox', { name: '邮箱' }), 'Alice@example.com');
+    await user.click(screen.getByRole('button', { name: '发送验证码' }));
+    await user.type(await screen.findByRole('textbox', { name: '六位验证码' }), '004271');
+    await user.click(screen.getByRole('button', { name: '验证并登录' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(transferPath));
+    expect(fetchMock.calls[2]?.body).toEqual({
+      email: 'Alice@example.com',
+      code: '004271',
+      returnTo: transferPath,
+    });
+    expect(fetchMock.calls.map(({ url }) => url)).toEqual([
+      '/api/v1/me',
+      '/api/v1/auth/email/challenges',
+      '/api/v1/auth/email/verifications',
+    ]);
+  });
   it('redirects an existing session after the initial /me probe without showing the form', async () => {
     fetchMock = installFetchMock({
       status: 200,
