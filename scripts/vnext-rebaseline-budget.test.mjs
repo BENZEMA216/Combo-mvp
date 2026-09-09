@@ -63,6 +63,7 @@ const authoringBillingRecoveryFiles = Object.freeze([
   'apps/authoring/src/modules/billing/service.ts',
   'apps/authoring/src/modules/billing/types.ts',
 ]);
+const researchDevelopmentAuditFile = 'docs/research-development-issues-audit.md';
 
 // User-approved private persistence scope. This does not attest Desktop sources,
 // authorize public publishing, change migration history, or waive product acceptance.
@@ -938,12 +939,54 @@ test('product edits must stay inside the declared rebuild surface', () => {
   );
 });
 
+test('the research and development audit opens only its exact public document path', () => {
+  assert.equal(
+    contract.allowedFiles.filter((path) => path === researchDevelopmentAuditFile).length,
+    1,
+  );
+  assert.equal(
+    contract.allowedPathPrefixes.some((prefix) => researchDevelopmentAuditFile.startsWith(prefix)),
+    false,
+  );
+  assert.equal(assessPullRequest(contract, [entry(researchDevelopmentAuditFile)]).mode, 'PRODUCT');
+
+  for (const path of [
+    'docs/research-development-issues-audit.md.bak',
+    'docs/research-development-issues-audits.md',
+    'docs/research-development-issues-audit/index.md',
+    'docs/Research-development-issues-audit.md',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+      path,
+    );
+  }
+
+  assert.throws(
+    () => assessPullRequest(contract, [entry(contractPath), entry(researchDevelopmentAuditFile)]),
+    /governance-only/,
+  );
+
+  const contractBeforeAudit = structuredClone(contract);
+  contractBeforeAudit.allowedFiles = contractBeforeAudit.allowedFiles.filter(
+    (path) => path !== researchDevelopmentAuditFile,
+  );
+  assert.equal(
+    createHash('sha256')
+      .update(`${JSON.stringify(contractBeforeAudit, null, 2)}\n`)
+      .digest('hex'),
+    '729464fa5d3d8538bdebef23c73b9ebe17076758bc74412177eecd545199e9df',
+  );
+});
+
 test('the knowledge Agent Test scope opens only its named surface and exact files', () => {
   const allowedKnowledgeControlFiles = [
     '.github/workflows/ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
     'docs/leshouying-test-acceptance.md',
+    researchDevelopmentAuditFile,
     'scripts/check-production-artifacts.sh',
   ];
   const allowedControlFiles = [
@@ -1410,7 +1453,8 @@ test('Authoring billing recovery scope opens only its ten exact tracked paths', 
   );
   const contractBeforeRecovery = JSON.parse(previousSource);
   contractBeforeRecovery.allowedFiles = contractBeforeRecovery.allowedFiles.filter(
-    (path) => !authoringBillingRecoveryFiles.includes(path),
+    (path) =>
+      path !== researchDevelopmentAuditFile && !authoringBillingRecoveryFiles.includes(path),
   );
   assert.equal(
     createHash('sha256')

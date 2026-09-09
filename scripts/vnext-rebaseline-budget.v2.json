@@ -55,6 +55,7 @@
     "docs/deployment-topology.md",
     "docs/knowledge-agent-test-acceptance.md",
     "docs/leshouying-test-acceptance.md",
+    "docs/research-development-issues-audit.md",
     "infra/Dockerfile.api",
     "infra/Dockerfile.runtime",
     "infra/README.md",
