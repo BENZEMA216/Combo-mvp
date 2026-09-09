@@ -6,11 +6,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   archivedBudgetPath,
   legacyV5Lock,
-  parseTrancheContract,
   trancheContractPath,
   verifyLegacyV5Receipt,
   verifyMainlineTrancheBase,
 } from './vnext-rebaseline-budget-tranche.mjs';
+import {
+  designScopeContractPath,
+  legacyV6Lock,
+  parseDesignScopeContract,
+  verifyLegacyV6Receipt,
+} from './vnext-rebaseline-budget-design-scope.mjs';
 
 export { archivedBudgetPath } from './vnext-rebaseline-budget-tranche.mjs';
 
@@ -19,7 +24,7 @@ export const legacyContractPath = 'scripts/vnext-rebaseline-budget.v1.json';
 export const previousContractPath = 'scripts/vnext-rebaseline-budget.v2.json';
 export const supersededContractPath = 'scripts/vnext-rebaseline-budget.v3.json';
 export const previousBudgetPath = 'scripts/vnext-rebaseline-budget.v4.json';
-export const contractPath = trancheContractPath;
+export const contractPath = designScopeContractPath;
 export const archivedPolicyPaths = Object.freeze([
   '.agents/skills/github-collaboration/SKILL.md',
   '.agents/skills/github-collaboration/references/governance-and-contributions.md',
@@ -36,12 +41,19 @@ export const archivedPolicyPaths = Object.freeze([
   'scripts/vnext-rebaseline-budget.mjs',
   'scripts/vnext-rebaseline-budget.test.mjs',
 ]);
-export const policyPaths = Object.freeze([
+export const archivedTranchePolicyPaths = Object.freeze([
   ...archivedPolicyPaths,
-  contractPath,
+  trancheContractPath,
   'scripts/vnext-rebaseline-budget-tranche.mjs',
   'scripts/vnext-rebaseline-budget-tranche.test.mjs',
   'scripts/vnext-rebaseline-budget.v6.md',
+]);
+export const policyPaths = Object.freeze([
+  ...archivedTranchePolicyPaths,
+  contractPath,
+  'scripts/vnext-rebaseline-budget-design-scope.mjs',
+  'scripts/vnext-rebaseline-budget-design-scope.test.mjs',
+  'scripts/vnext-rebaseline-budget.v7.md',
 ]);
 
 const protocol = 'combo.vnext-rebaseline-budget/5';
@@ -641,7 +653,12 @@ export function assessPullRequest(
 }
 
 export function assessCumulative(contract, entries) {
-  const allowedPolicyPaths = contract.protocol === protocol ? archivedPolicyPaths : policyPaths;
+  const allowedPolicyPaths =
+    contract.protocol === protocol
+      ? archivedPolicyPaths
+      : contract.protocol === legacyV6Lock.protocol
+        ? archivedTranchePolicyPaths
+        : policyPaths;
   for (const { path } of entries) {
     invariant(
       allowedPolicyPaths.includes(path) ||
@@ -1135,8 +1152,10 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
   const resolvedBaseRef = baseRef ?? defaultBaseRef(environment);
   const archivedSource = readFileSync(join(repoRoot, archivedBudgetPath), 'utf8');
   const archivedBudget = parseContract(archivedSource);
-  const contract = parseTrancheContract(
+  const archivedTrancheSource = readFileSync(join(repoRoot, trancheContractPath), 'utf8');
+  const contract = parseDesignScopeContract(
     readFileSync(join(repoRoot, contractPath), 'utf8'),
+    archivedTrancheSource,
     archivedBudget,
   );
   if (environment.GITHUB_ACTIONS === 'true') {
@@ -1168,6 +1187,17 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     baseSha: contract.baseSha,
     comparisonBase,
     environment,
+  });
+  // This is a scope extension on the same tranche, never a cumulative-budget reset.
+  const scopeBase = verifyMainlineTrancheBase({
+    repoRoot,
+    baseSha: legacyV6Lock.headSha,
+    comparisonBase,
+    environment,
+  });
+  const legacyV6 = verifyLegacyV6Receipt({
+    source: archivedTrancheSource,
+    committedSource: git(['show', `${legacyV6Lock.headSha}:${trancheContractPath}`]),
   });
   invariant(
     isAncestor(legacyV5Lock.baseSha, legacyV5Lock.headSha),
@@ -1272,7 +1302,9 @@ export function verifyRepository({ baseRef, environment = process.env } = {}) {
     supersededAdmission,
     platformV2Bootstrap,
     legacyV5,
+    legacyV6,
     trancheBase,
+    scopeBase,
     cumulative,
   };
 }
